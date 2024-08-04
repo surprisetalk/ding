@@ -84,6 +84,16 @@ const NotFound = () => (
   </Layout>
 );
 
+const NotAuthorized = () => (
+  <Layout title="not found">
+    <section>
+      <p style="text-align: center;">
+        <a href="/">Not authorized.</a>
+      </p>
+    </section>
+  </Layout>
+);
+
 //// HONO //////////////////////////////////////////////////////////////////////
 
 const cookieSecret = Deno.env.get("COOKIE_SECRET") ?? Math.random().toString();
@@ -123,6 +133,8 @@ app.get("/", c => {
   return c.html(<Layout desc="TODO"></Layout>);
 });
 
+/*
+// Invite-only for now.
 app.post("/signup", async c => {
   try {
     const body = await c.req.parseBody();
@@ -142,6 +154,7 @@ app.post("/signup", async c => {
     return c.redirect("/");
   }
 });
+*/
 
 app.post("/login", async c => {
   const { email, password } = await c.req.parseBody();
@@ -261,9 +274,24 @@ app.post("/reset-password", async c => {
   return c.redirect("/u");
 });
 
+app.post("/send-invite", async c => {
+  const usr_id = await getSignedCookie(c, cookieSecret, "usr_id");
+  if (!usr_id) return c.html(<NotAuthorized />, 401);
+  const usr = {
+    email: Object.fromEntries(await c.req.formData()).email.toString(),
+    password: null,
+  };
+  const [{ email, token }] = await sql`
+    with usr_ as (insert into usr ${sql(usr)} returning *)
+    select usr_id, email, email_token(now(), email) as token from usr_
+  `;
+  await sendVerificationEmail(email, token);
+  return c.redirect("/u");
+});
+
 app.get("/u", async c => {
   const usr_id = await getSignedCookie(c, cookieSecret, "usr_id");
-  if (!usr_id) return c.html(<Layout title="welcome"></Layout>);
+  if (!usr_id) return c.html(<NotAuthorized />, 401);
   const [usr] = await sql`
     select u.*
     from usr u
@@ -290,10 +318,9 @@ usr (invite-only?), thread, comment
 todo: automatically issue api keys
 todo: every route should turn into rss by adding .xml to the end?
 
-get /verify-email : todo
-post /forgot-password : todo
-post /reset-password : todo
-post /u : insert into usr values ${sql(usr,'uid','name','bio','email')}
+post /send-invite
+
+post /u : insert into usr ${sql(usr,'uid','name','bio','email')}
 get /u/:uid : select uid, name, bio from usr where uid = ${uid}
 put /u/:uid : update usr set ${sql(usr,'uid','name','bio','email')} where uid = ${uid}
 delete /u/:uid : delete from usr where uid = ${uid}
