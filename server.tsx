@@ -3,20 +3,16 @@
 
 //// IMPORTS ///////////////////////////////////////////////////////////////////
 
-import type { FC } from "jsr:@hono/hono/jsx";
-import { PropsWithChildren, Fragment } from "jsr:@hono/hono/jsx";
-import { HTTPException } from 'jsr:@hono/hono/http-exception'
+import { HTTPException } from "jsr:@hono/hono/http-exception";
 import { Hono, Context } from "jsr:@hono/hono";
 import { some, every, except } from "jsr:@hono/hono/combine";
 import { createMiddleware } from "jsr:@hono/hono/factory";
 import { logger } from "jsr:@hono/hono/logger";
 import { prettyJSON } from "jsr:@hono/hono/pretty-json";
 import { basicAuth } from "jsr:@hono/hono/basic-auth";
-import { bearerAuth } from "jsr:@hono/hono/bearer-auth";
-import { decode, sign, verify } from "jsr:@hono/hono/jwt";
-import { html, raw } from "jsr:@hono/hono/html";
+import { html } from "jsr:@hono/hono/html";
 import { getSignedCookie, setSignedCookie, deleteCookie } from "jsr:@hono/hono/cookie";
-import { serveStatic } from 'jsr:@hono/hono/deno'
+import { serveStatic } from "jsr:@hono/hono/deno";
 
 import pg from "https://deno.land/x/postgresjs@v3.4.3/mod.js";
 
@@ -84,46 +80,15 @@ const Layout = (props: { title?: string; keywords?: string; desc?: string; child
     </body>
   </html>`;
 
-const NotAuthorized = () => (
-  <Layout title="not found">
-    <section>
-      <p style="text-align: center;">
-        <a href="/">Not authorized.</a>
-      </p>
-    </section>
-  </Layout>
-);
-
 //// HONO //////////////////////////////////////////////////////////////////////
 
 const cookieSecret = Deno.env.get("COOKIE_SECRET") ?? Math.random().toString();
 
-const error = (err: any, c: Context, status = 500, msg =) => {
-  if (err) console.error(err);
-  if (err instanceof HTTPException) {
-    return err.getResponse()
-  }
-  const message = "Sorry, this computer is мᎥｓβ𝕖𝓱𝐀𝓋𝓲𝓷g.";
-  switch (c.req.header("host")) {
-    case "api":
-      return c.json({ message }, 500);
-    case "rss":
-      return c.text(message, 500);
-    default:
-      return c.html(
-        <Layout title="error">
-          <section>
-            <p>{message}</p>
-          </section>
-        </Layout>,
-        500
-      );
-  }
+const notFound = () => {
+  throw new HTTPException(404, { message: "Not found." });
 };
 
-const notFound = () => { throw new HTTPException(404, { message: 'Not found.' }) };
-
-const ok(c: Context) => {
+const ok = (c: Context) => {
   switch (c.req.header("host")) {
     case "api":
       return c.json(null, 204);
@@ -135,7 +100,7 @@ const ok(c: Context) => {
 const authed = some(
   createMiddleware(async (c, next) => {
     const usr_id = await getSignedCookie(c, cookieSecret, "usr_id");
-    if (!usr_id) throw new HTTPException(401, { message: 'Unauthorized.' });
+    if (!usr_id) throw new HTTPException(401, { message: "Not authorized." });
     c.set("usr_id", usr_id);
     await next();
   }),
@@ -158,12 +123,35 @@ const authed = some(
 );
 
 // TODO: Add rate-limiting middleware everywhere.
-const app = new Hono<{ Variables: { usr_id: string } }>();
+const app = new Hono<{ Variables: { usr_id?: string } }>();
 
 app.use(logger());
 app.use(prettyJSON());
+
 app.notFound(notFound);
-app.onError(error);
+
+app.onError((err, c) => {
+  if (err) console.error(err);
+  if (err instanceof HTTPException) {
+    return err.getResponse();
+  }
+  const message = "Sorry, this computer is мᎥｓβ𝕖𝓱𝐀𝓋𝓲𝓷g.";
+  switch (c.req.header("host")) {
+    case "api":
+      return c.json({ error: message }, 500);
+    case "rss":
+      return c.text(message, 500);
+    default:
+      return c.html(
+        <Layout title="error">
+          <section>
+            <p>{message}</p>
+          </section>
+        </Layout>,
+        500
+      );
+  }
+});
 
 app.get("/robots.txt", c => c.text(`User-agent: *\nDisallow:`));
 
@@ -198,7 +186,7 @@ app.post("/login", async c => {
 });
 
 app.post("/logout", authed, c => {
-  deleteCookie(c, c.get("usr_id"));
+  deleteCookie(c, c.get("usr_id")!);
   return ok(c);
 });
 
@@ -295,11 +283,13 @@ app.post("/password", async c => {
 
 app.post("/invite", authed, async c => {
   const usr = {
+    name: Math.random().toString().slice(2),
     email: Object.fromEntries(await c.req.formData()).email.toString(),
     password: null,
     invited_by: c.get("usr_id")!,
   };
-  if ((await sql`select count(*) as "count" from usr where invited_by = ${c.get("usr_id")!}`)?.[0]?.count >= 4) throw new HTTPException(400, { message: "No more invites remaining." });
+  if ((await sql`select count(*) as "count" from usr where invited_by = ${c.get("usr_id")!}`)?.[0]?.count >= 4)
+    throw new HTTPException(400, { message: "No more invites remaining." });
   const [{ email = undefined, token = undefined } = {}] = await sql`
     with usr_ as (insert into usr ${sql(usr)} on conflict do nothing returning *)
     select usr_id, email, email_token(now(), email) as token from usr_
@@ -315,9 +305,11 @@ app.get("/u", authed, async c => {
   return c.html(<Layout title="your account">TODO</Layout>);
 });
 
-app.put("/u", authed, async c => {
-  const { name = null, bio = null } = Object.fromEntries(await c.req.formData());
-  await sql`update usr set ${sql({ name: name?.toString, bio: bio?.toString() })} where usr_id = ${c.get("usr_id")}`;
+app.patch("/u", authed, async c => {
+  const usr = Object.fromEntries(await c.req.formData());
+  for (const i in usr) if (!usr[i]) delete usr[i];
+  await sql`update usr set ${sql(usr, "name", "bio")} where usr_id = ${c.get("usr_id")!}`;
+  return ok(c);
 });
 
 /*
@@ -326,8 +318,6 @@ get /u/:uid/c : select cid, body from comments where uid = ${uid}
 post /c : todo
 get /c/:cid : todo
 post /c/:cid : todo
-put /c/:cid : todo
-delete /c/:cid : todo
 */
 
 app.use("/*", serveStatic({ root: "./public" }));
