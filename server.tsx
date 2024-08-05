@@ -1,8 +1,12 @@
+/** @jsx jsx */
+/** @jsxImportSource jsr:@hono/hono/jsx */
+
 //// IMPORTS ///////////////////////////////////////////////////////////////////
 
 import type { FC } from "jsr:@hono/hono/jsx";
 import { PropsWithChildren, Fragment } from "jsr:@hono/hono/jsx";
-import { Hono } from "jsr:@hono/hono";
+import { HTTPException } from 'jsr:@hono/hono/http-exception'
+import { Hono, Context } from "jsr:@hono/hono";
 import { some, every, except } from "jsr:@hono/hono/combine";
 import { createMiddleware } from "jsr:@hono/hono/factory";
 import { logger } from "jsr:@hono/hono/logger";
@@ -11,7 +15,8 @@ import { basicAuth } from "jsr:@hono/hono/basic-auth";
 import { bearerAuth } from "jsr:@hono/hono/bearer-auth";
 import { decode, sign, verify } from "jsr:@hono/hono/jwt";
 import { html, raw } from "jsr:@hono/hono/html";
-import { getCookie, getSignedCookie, setCookie, setSignedCookie, deleteCookie } from "jsr:@hono/hono/cookie";
+import { getSignedCookie, setSignedCookie, deleteCookie } from "jsr:@hono/hono/cookie";
+import { serveStatic } from 'jsr:@hono/hono/deno'
 
 import pg from "https://deno.land/x/postgresjs@v3.4.3/mod.js";
 
@@ -42,12 +47,12 @@ const sendVerificationEmail = async (email: string, token: string) =>
         `Welcome to ᵗ𝕙𝔢 𝐟𝐔𝓉𝓾гє 𝔬𝔣 ᑕⓞ𝓓ƗŇg.` +
         `\n\n` +
         `Please verify your email: ` +
-        `https://futureofcod.ing/verify-email` +
+        `https://futureofcod.ing/verify` +
         `?email=${encodeURIComponent(email)}` +
         `&token=${encodeURIComponent(token)}`,
     })
     .catch(err => {
-      console.log(`/verify-email?email=${email}&token=${token}`);
+      console.log(`/verify?email=${email}&token=${token}`);
       console.error(`Could not send verification email to ${email}:`, err?.response?.body || err);
     });
 
@@ -79,16 +84,6 @@ const Layout = (props: { title?: string; keywords?: string; desc?: string; child
     </body>
   </html>`;
 
-const NotFound = () => (
-  <Layout title="not found">
-    <section>
-      <p style="text-align: center;">
-        <a href="/">Not found.</a>
-      </p>
-    </section>
-  </Layout>
-);
-
 const NotAuthorized = () => (
   <Layout title="not found">
     <section>
@@ -103,12 +98,45 @@ const NotAuthorized = () => (
 
 const cookieSecret = Deno.env.get("COOKIE_SECRET") ?? Math.random().toString();
 
-const app = new Hono();
+const error = (err: any, c: Context, status = 500, msg =) => {
+  if (err) console.error(err);
+  if (err instanceof HTTPException) {
+    return err.getResponse()
+  }
+  const message = "Sorry, this computer is мᎥｓβ𝕖𝓱𝐀𝓋𝓲𝓷g.";
+  switch (c.req.header("host")) {
+    case "api":
+      return c.json({ message }, 500);
+    case "rss":
+      return c.text(message, 500);
+    default:
+      return c.html(
+        <Layout title="error">
+          <section>
+            <p>{message}</p>
+          </section>
+        </Layout>,
+        500
+      );
+  }
+};
+
+const notFound = () => { throw new HTTPException(404, { message: 'Not found.' }) };
+
+const ok(c: Context) => {
+  switch (c.req.header("host")) {
+    case "api":
+      return c.json(null, 204);
+    default:
+      return c.redirect("/u");
+  }
+};
 
 const authed = some(
-  // bearerAuth({ token: Deno.env.get("BEARER_SECRET") ?? Math.random().toString() }),
   createMiddleware(async (c, next) => {
-    if (!(await getSignedCookie(c, cookieSecret, "usr_id"))) throw new Error("TODO: unauthorized");
+    const usr_id = await getSignedCookie(c, cookieSecret, "usr_id");
+    if (!usr_id) throw new HTTPException(401, { message: 'Unauthorized.' });
+    c.set("usr_id", usr_id);
     await next();
   }),
   basicAuth({
@@ -129,22 +157,13 @@ const authed = some(
   })
 );
 
+// TODO: Add rate-limiting middleware everywhere.
+const app = new Hono<{ Variables: { usr_id: string } }>();
+
 app.use(logger());
 app.use(prettyJSON());
-
-app.notFound(c => c.html(<NotFound />, 404));
-
-app.onError((err, c) => {
-  console.error(`${err}`);
-  return c.html(
-    <Layout title="error">
-      <section>
-        <p>Sorry, this computer is мᎥｓβ𝕖𝓱𝐀𝓋𝓲𝓷g.</p>
-      </section>
-    </Layout>,
-    500
-  );
-});
+app.notFound(notFound);
+app.onError(error);
 
 app.get("/robots.txt", c => c.text(`User-agent: *\nDisallow:`));
 
@@ -153,31 +172,8 @@ app.get("/sitemap.txt", c => {
 });
 
 app.get("/", c => {
-  return c.html(<Layout desc="TODO"></Layout>);
+  return c.html(<Layout desc="TODO">TODO</Layout>);
 });
-
-/*
-// Invite-only for now.
-app.post("/signup", async c => {
-  try {
-    const body = await c.req.parseBody();
-    const usr = {
-      email: body.email.toString(),
-      password: sql`crypt(${body.password.toString()}, gen_salt('bf', 8))`,
-    } as Record<string, unknown>;
-    const [{ usr_id, email, token }] = await sql`
-      with usr_ as (insert into usr ${sql(usr)} returning *)
-      select usr_id, email, email_token(now(), email) as token from usr_
-    `;
-    await sendVerificationEmail(email, token);
-    await setSignedCookie(c, "usr_id", usr_id, cookieSecret);
-    return c.redirect("/u");
-  } catch (err) {
-    console.error(err);
-    return c.redirect("/");
-  }
-});
-*/
 
 app.post("/login", async c => {
   const { email, password } = await c.req.parseBody();
@@ -201,12 +197,12 @@ app.post("/login", async c => {
   return c.redirect("/u");
 });
 
-app.get("/logout", c => {
-  deleteCookie(c, "usr_id");
-  return c.redirect("/u");
+app.post("/logout", authed, c => {
+  deleteCookie(c, c.get("usr_id"));
+  return ok(c);
 });
 
-app.get("/verify-email", async c => {
+app.get("/verify", async c => {
   const email = c.req.query("email") ?? "";
   const token = c.req.query("token") ?? "";
   await sql`
@@ -218,14 +214,14 @@ app.get("/verify-email", async c => {
       and ${token} = email_token(to_timestamp(split_part(${token},':',1)::bigint), email)
     returning usr_id
   `;
-  return c.redirect("/u");
+  return ok(c);
 });
 
-app.get("/forgot-password", c => {
+app.get("/forgot", c => {
   return c.html(
     <Layout title="welcome">
       <section>
-        <form method="post" action="/forgot-password">
+        <form method="post" action="/forgot">
           <input required name="email" type="email" placeholder="hello@example.com" />
           <p>
             <button type="submit">send email</button>
@@ -236,7 +232,7 @@ app.get("/forgot-password", c => {
   );
 });
 
-app.post("/forgot-password", async c => {
+app.post("/forgot", async c => {
   const email = Object.fromEntries(await c.req.formData()).email.toString();
   const [usr] = await sql`
     select email_token(now(), email) as token from usr where email = ${email}
@@ -250,31 +246,31 @@ app.post("/forgot-password", async c => {
         text:
           `` +
           `Click here to reset your password: ` +
-          `https://futureofcod.ing/reset-password` +
+          `https://futureofcod.ing/password` +
           `?email=${encodeURIComponent(email)}` +
           `&token=${encodeURIComponent(usr.token)}` +
           `\n\n` +
           `If you didn't request a password reset, please ignore this message.`,
       })
       .catch(err => {
-        console.log(`/reset-password?email=${email}&token=${usr.token}`);
+        console.log(`/password?email=${email}&token=${usr.token}`);
         console.error(`Could not send password reset email to ${email}:`, err?.response?.body || err);
       });
-  return c.redirect("/u");
+  return ok(c);
 });
 
-app.get("/reset-password", c => {
+app.get("/password", c => {
   const email = c.req.query("email") ?? "";
   const token = c.req.query("token") ?? "";
   return c.html(
     <Layout title="welcome">
       <section>
-        <form method="post" action="/reset-password">
+        <form method="post" action="/password">
           <input required name="email" value={email} class="hidden" />
           <input required name="token" value={token} class="hidden" />
           <input required name="password" type="password" placeholder="password1!" />
           <p>
-            <button type="submit">reset password</button>
+            <button type="submit">set password</button>
           </p>
         </form>
       </section>
@@ -282,7 +278,7 @@ app.get("/reset-password", c => {
   );
 });
 
-app.post("/reset-password", async c => {
+app.post("/password", async c => {
   const { email, token, password } = Object.fromEntries(await c.req.formData());
   const [usr] = await sql`
     update usr
@@ -294,56 +290,38 @@ app.post("/reset-password", async c => {
     returning usr_id
   `;
   if (usr) await setSignedCookie(c, "usr_id", usr.usr_id, cookieSecret);
-  return c.redirect("/u");
+  return ok(c);
 });
 
-app.post("/send-invite", async c => {
-  const usr_id = await getSignedCookie(c, cookieSecret, "usr_id");
-  if (!usr_id) return c.html(<NotAuthorized />, 401);
+app.post("/invite", authed, async c => {
   const usr = {
     email: Object.fromEntries(await c.req.formData()).email.toString(),
     password: null,
+    invited_by: c.get("usr_id")!,
   };
-  const [{ email, token }] = await sql`
-    with usr_ as (insert into usr ${sql(usr)} returning *)
+  if ((await sql`select count(*) as "count" from usr where invited_by = ${c.get("usr_id")!}`)?.[0]?.count >= 4) throw new HTTPException(400, { message: "No more invites remaining." });
+  const [{ email = undefined, token = undefined } = {}] = await sql`
+    with usr_ as (insert into usr ${sql(usr)} on conflict do nothing returning *)
     select usr_id, email, email_token(now(), email) as token from usr_
   `;
-  await sendVerificationEmail(email, token);
-  return c.redirect("/u");
+  if (email && token) await sendVerificationEmail(email, token);
+  return ok(c);
 });
 
-app.get("/u", async c => {
-  const usr_id = await getSignedCookie(c, cookieSecret, "usr_id");
-  if (!usr_id) return c.html(<NotAuthorized />, 401);
-  const [usr] = await sql`select * from usr u where usr_id = ${usr_id}`;
-  if (!usr) return c.html(<NotFound />, 404);
-  if (!usr.email_verified_at)
-    return c.html(
-      <Layout title="login">
-        <section>
-          <p>email not yet verified</p>
-        </section>
-      </Layout>
-    );
-  return c.html(<Layout title="your account"></Layout>);
+app.get("/u", authed, async c => {
+  const [usr] = await sql`select * from usr u where usr_id = ${c.get("usr_id")!}`;
+  if (!usr) return notFound();
+  if (!usr.password) return c.redirect("/password");
+  return c.html(<Layout title="your account">TODO</Layout>);
+});
+
+app.put("/u", authed, async c => {
+  const { name = null, bio = null } = Object.fromEntries(await c.req.formData());
+  await sql`update usr set ${sql({ name: name?.toString, bio: bio?.toString() })} where usr_id = ${c.get("usr_id")}`;
 });
 
 /*
- 
-https://hono.dev/docs/guides/middleware#custom-middleware
-  use custom middleware to check basic auth headers (for api) OR cookie
-  also return error that conforms to correct output type
-
-switch req.headers.get("host") || "" {
-  "api": return ...;
-  "rss": return ...;
-  default: return ...;
-}
-
-post /u : insert into usr ${sql(usr,'uid','name','bio','email')}
 get /u/:uid : select uid, name, bio from usr where uid = ${uid}
-put /u/:uid : update usr set ${sql(usr,'uid','name','bio','email')} where uid = ${uid}
-delete /u/:uid : delete from usr where uid = ${uid}
 get /u/:uid/c : select cid, body from comments where uid = ${uid}
 post /c : todo
 get /c/:cid : todo
