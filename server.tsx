@@ -1,12 +1,17 @@
-/** @jsx jsx */
-
 //// IMPORTS ///////////////////////////////////////////////////////////////////
 
-import { Hono } from "https://deno.land/x/hono@v3.11.3/mod.ts";
-
-import { serveStatic, jsx, html } from "https://deno.land/x/hono@v3.11.3/middleware.ts";
-
-import { getSignedCookie, setSignedCookie, deleteCookie } from "https://deno.land/x/hono@v3.11.3/helper.ts";
+import type { FC } from "jsr:@hono/hono/jsx";
+import { PropsWithChildren, Fragment } from "jsr:@hono/hono/jsx";
+import { Hono } from "jsr:@hono/hono";
+import { some, every, except } from "jsr:@hono/hono/combine";
+import { createMiddleware } from "jsr:@hono/hono/factory";
+import { logger } from "jsr:@hono/hono/logger";
+import { prettyJSON } from "jsr:@hono/hono/pretty-json";
+import { basicAuth } from "jsr:@hono/hono/basic-auth";
+import { bearerAuth } from "jsr:@hono/hono/bearer-auth";
+import { decode, sign, verify } from "jsr:@hono/hono/jwt";
+import { html, raw } from "jsr:@hono/hono/html";
+import { getCookie, getSignedCookie, setCookie, setSignedCookie, deleteCookie } from "jsr:@hono/hono/cookie";
 
 import pg from "https://deno.land/x/postgresjs@v3.4.3/mod.js";
 
@@ -100,14 +105,32 @@ const cookieSecret = Deno.env.get("COOKIE_SECRET") ?? Math.random().toString();
 
 const app = new Hono();
 
-// const app = new Hono({
-//   getPath: req => "/" + req.headers.get("host") + "/" + req.url.replace(/^https?:\/\/[^/]+(\/[^?]*)/, "$1"),
-// });
+const authed = some(
+  // bearerAuth({ token: Deno.env.get("BEARER_SECRET") ?? Math.random().toString() }),
+  createMiddleware(async (c, next) => {
+    if (!(await getSignedCookie(c, cookieSecret, "usr_id"))) throw new Error("TODO: unauthorized");
+    await next();
+  }),
+  basicAuth({
+    verifyUser: async (email, password, c) => {
+      const [usr] = await sql`
+        select *, password = crypt(${password.toString()}, password) AS is_password_correct
+        from usr where email = ${email.toString()}
+      `;
+      if (!usr || !usr.is_password_correct) return false;
+      if (!usr.email_verified_at) {
+        await sendVerificationEmail(usr.email, usr.token);
+        return false;
+      }
+      await setSignedCookie(c, "usr_id", usr.usr_id, cookieSecret);
+      c.set("usr_id", usr.usr_id);
+      return true;
+    },
+  })
+);
 
-app.use("*", async (c, next) => {
-  console.log(c.req.method, c.req.url);
-  await next();
-});
+app.use(logger());
+app.use(prettyJSON());
 
 app.notFound(c => c.html(<NotFound />, 404));
 
@@ -292,11 +315,7 @@ app.post("/send-invite", async c => {
 app.get("/u", async c => {
   const usr_id = await getSignedCookie(c, cookieSecret, "usr_id");
   if (!usr_id) return c.html(<NotAuthorized />, 401);
-  const [usr] = await sql`
-    select u.*
-    from usr u
-    where usr_id = ${usr_id}
-  `;
+  const [usr] = await sql`select * from usr u where usr_id = ${usr_id}`;
   if (!usr) return c.html(<NotFound />, 404);
   if (!usr.email_verified_at)
     return c.html(
@@ -310,15 +329,16 @@ app.get("/u", async c => {
 });
 
 /*
+ 
+https://hono.dev/docs/guides/middleware#custom-middleware
+  use custom middleware to check basic auth headers (for api) OR cookie
+  also return error that conforms to correct output type
 
-almost all the routes are public, so we can afford to switch response types based on req.headers.get("host")
-
-usr (invite-only?), thread, comment
-
-todo: automatically issue api keys
-todo: every route should turn into rss by adding .xml to the end?
-
-post /send-invite
+switch req.headers.get("host") || "" {
+  "api": return ...;
+  "rss": return ...;
+  default: return ...;
+}
 
 post /u : insert into usr ${sql(usr,'uid','name','bio','email')}
 get /u/:uid : select uid, name, bio from usr where uid = ${uid}
