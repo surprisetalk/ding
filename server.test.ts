@@ -76,6 +76,11 @@ Deno.test("TODO", async t => {
     assertEquals(res.status, 200);
   });
 
+  await t.step("GET /c all comments (page 2)", async () => {
+    const res = await app.request("/c?p=1");
+    assertEquals(res.status, 200);
+  });
+
   await t.step("GET /verify invalid token", async () => {
     const res = await app.request("/verify?email=john@example.com&token=123:invalid_token");
     assertEquals(res.status, 302);
@@ -99,7 +104,9 @@ Deno.test("TODO", async t => {
   });
 
   await t.step("GET /u (api) with missing credentials", async () => {
-    const res = await app.request("/u/101", { headers: { Host: "api", Authorization: "Basic " + btoa("john@example.com:password1!") } });
+    const res = await app.request("/u/101", {
+      headers: { Accept: "application/json", Authorization: "Basic " + btoa("john@example.com:password1!") },
+    });
     assertEquals(res.status, 200);
     assertEquals(await res.json(), { bio: "sample bio", name: "john doe", usr_id: 101 });
   });

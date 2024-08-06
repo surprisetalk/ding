@@ -335,6 +335,7 @@ app.post("/c/:parent_comment_id?", authed, async c => {
 });
 
 app.get("/c/:comment_id?", async c => {
+  const p = parseInt(c.req.query("p") ?? "0");
   const comments = await sql`
     select 
       usr_id, 
@@ -345,6 +346,8 @@ app.get("/c/:comment_id?", async c => {
     where comment_id = ${c.req.param("comment_id") ?? null}
     and usr_id = ${c.req.query("usr_id") ?? sql`usr_id`}
     order by created_at desc
+    offset ${p * 25}
+    limit 25
   `;
   switch (host(c)) {
     case "api":
