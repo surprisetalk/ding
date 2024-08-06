@@ -222,12 +222,12 @@ app.get("/", async c => {
       </section>
       <section>
         <form method="post" action="/c">
-          <select name="tag">
+          <select required name="tag">
             {["", "linking", "thinking"].map(x => (
               <option value={x}>{x}</option>
             ))}
           </select>
-          <textarea name="body"></textarea>
+          <textarea requried name="body" minlength={1} maxlength={1441}></textarea>
           <button>create post</button>
         </form>
       </section>
@@ -519,6 +519,7 @@ app.get("/c/:cid?", async c => {
         return c.html(
           <Layout title={post?.body?.slice(0, 16)}>
             <section>
+              {/* TODO: render body as markdown */}
               <pre>{JSON.stringify({ ...post, child_comments: undefined }, null, 2)}</pre>
             </section>
             <section>
