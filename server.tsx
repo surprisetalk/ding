@@ -196,12 +196,12 @@ app.get("/", async c => {
               <tr>
                 <td>{new Date(comment.created_at).toLocaleDateString()}</td>
                 <td>
-                  <a href={`/u/${comment.usr_id}`}>{comment.username}</a>
-                </td>
-                <td>
-                  <a href={`/c/${comment.comment_id}`}>{comment.comments} comments</a>
+                  <a href={`/c/${comment.comment_id}`}>{comment.comments} replies</a>
                 </td>
                 <td>{comment.body.replace(/\W/g, " ").slice(0, 60)}</td>
+                <td>
+                  <a href={`/u/${comment.usr_id}`}>{comment.username}</a>
+                </td>
               </tr>
             ))}
           </tbody>
@@ -212,6 +212,7 @@ app.get("/", async c => {
         </div>
       </div>
       <form method="post" action="/c">
+        {/* TODO: select tag */}
         <textarea name="body"></textarea>
       </form>
       <button>create post</button>
@@ -346,10 +347,17 @@ app.post("/invite", authed, async c => {
 });
 
 app.get("/u", authed, async c => {
-  const [usr] = await sql`select * from usr u where usr_id = ${c.get("usr_id")!}`;
+  const [usr] = await sql`
+    select usr_id, name, email, bio, invited_by, password is not null as password 
+    from usr u where usr_id = ${c.get("usr_id")!}
+  `;
   if (!usr) return notFound();
   if (!usr.password) return c.redirect("/password");
-  return c.html(<Layout title="your account">TODO</Layout>);
+  return c.html(
+    <Layout title="your account">
+      <pre>{JSON.stringify(usr, null, 2)}</pre>
+    </Layout>
+  );
 });
 
 app.patch("/u", authed, async c => {
@@ -360,13 +368,17 @@ app.patch("/u", authed, async c => {
 });
 
 app.get("/u/:usr_id", async c => {
-  const [usr] = await sql`select usr_id, name, bio from usr where usr_id = ${c.req.param("usr_id")}`;
+  const [usr] = await sql`select usr_id, name, bio, invited_by from usr where usr_id = ${c.req.param("usr_id")}`;
   if (!usr) return notFound();
   switch (host(c)) {
     case "api":
       return c.json(usr, 200);
     default:
-      return c.html(<Layout title={usr.name}>TODO</Layout>);
+      return c.html(
+        <Layout title={usr.name}>
+          <pre>{JSON.stringify(usr, null, 2)}</pre>
+        </Layout>
+      );
   }
 });
 
@@ -387,7 +399,35 @@ app.get("/c/:comment_id?", async c => {
       usr_id, 
       parent_comment_id, 
       body,
-      array(select comment_id from comment c_ where c_.parent_comment_id = c.comment_id) as child_comment_ids
+      array(
+        select jsonb_build_object(
+          'body', c_.body,
+          'usr_id', c_.usr_id,
+          'comment_id', c_.comment_id,
+          'created_at', c_.created_at,
+          'username', u_.name,
+          'child_comments', array(
+            select jsonb_build_object(
+              'body', c__.body,
+              'usr_id', c__.usr_id,
+              'comment_id', c__.comment_id,
+              'created_at', c__.created_at,
+              'username', u_.name,
+              'child_comments_ids', array(
+                select c___.comment_id 
+                from comment c___
+                where c___.parent_comment_id = c__.comment_id
+              )
+            )
+            from comment c__ 
+            inner join usr u_ using (usr_id)
+            where c__.parent_comment_id = c_.comment_id
+          )
+        )
+        from comment c_ 
+        inner join usr u_ using (usr_id)
+        where c_.parent_comment_id = c.comment_id
+      ) as child_comments
     from comment c
     where comment_id = ${c.req.param("comment_id") ?? null}
     and usr_id = ${c.req.query("usr_id") ?? sql`usr_id`}
@@ -400,8 +440,25 @@ app.get("/c/:comment_id?", async c => {
       return c.json(comments, 200);
     case "rss":
       return TODO`RSS not yet implemented`;
-    default:
-      return c.html(<Layout>TODO</Layout>);
+    default: {
+      if (comments.length <= 1) {
+        const post = comments?.[0];
+        return c.html(
+          <Layout title={post?.body?.slice(0, 16)}>
+            <div>
+              <pre>{JSON.stringify(post, null, 2)}</pre>
+            </div>
+            <form method="post" action={`/c/${post?.comment_id ?? 0}`}>
+              <textarea name="body"></textarea>
+              <button>reply</button>
+            </form>
+            <pre>{JSON.stringify(post?.child_comments, null, 2)}</pre>
+          </Layout>
+        );
+      } else {
+        <Layout title={"TODO"}>TODO</Layout>;
+      }
+    }
   }
 });
 
