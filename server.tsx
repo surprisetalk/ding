@@ -88,6 +88,9 @@ const notFound = () => {
   throw new HTTPException(404, { message: "Not found." });
 };
 
+const form = async (c: Context): Promise<Record<string, string>> =>
+  Object.fromEntries((await c.req.formData()).entries().map(([k, v]) => [k, v.toString()]));
+
 const ok = (c: Context) => {
   switch (c.req.header("host")) {
     case "api":
@@ -107,8 +110,8 @@ const authed = some(
   basicAuth({
     verifyUser: async (email, password, c) => {
       const [usr] = await sql`
-        select *, password = crypt(${password.toString()}, password) AS is_password_correct
-        from usr where email = ${email.toString()}
+        select *, password = crypt(${password}, password) AS is_password_correct
+        from usr where email = ${email}
       `;
       if (!usr || !usr.is_password_correct) return false;
       if (!usr.email_verified_at) {
@@ -164,10 +167,10 @@ app.get("/", c => {
 });
 
 app.post("/login", async c => {
-  const { email, password } = await c.req.parseBody();
+  const { email, password } = await form(c);
   const [usr] = await sql`
-    select *, password = crypt(${password.toString()}, password) AS is_password_correct
-    from usr where email = ${email.toString()}
+    select *, password = crypt(${password}, password) AS is_password_correct
+    from usr where email = ${email}
   `;
   if (!usr || !usr.is_password_correct)
     return c.html(
@@ -221,7 +224,7 @@ app.get("/forgot", c => {
 });
 
 app.post("/forgot", async c => {
-  const email = Object.fromEntries(await c.req.formData()).email.toString();
+  const { email } = await form(c);
   const [usr] = await sql`
     select email_token(now(), email) as token from usr where email = ${email}
   `;
@@ -267,14 +270,14 @@ app.get("/password", c => {
 });
 
 app.post("/password", async c => {
-  const { email, token, password } = Object.fromEntries(await c.req.formData());
+  const { email, token, password } = await form(c);
   const [usr] = await sql`
     update usr
-    set password = crypt(${password.toString()}, gen_salt('bf', 8))
+    set password = crypt(${password}, gen_salt('bf', 8))
     where true
-      and to_timestamp(split_part(${token.toString()},':',1)::bigint) > now() - interval '2 days'
-      and ${email.toString()} = email
-      and ${token.toString()} = email_token(to_timestamp(split_part(${token.toString()},':',1)::bigint), email)
+      and to_timestamp(split_part(${token},':',1)::bigint) > now() - interval '2 days'
+      and ${email} = email
+      and ${token} = email_token(to_timestamp(split_part(${token},':',1)::bigint), email)
     returning usr_id
   `;
   if (usr) await setSignedCookie(c, "usr_id", usr.usr_id, cookieSecret);
@@ -284,7 +287,7 @@ app.post("/password", async c => {
 app.post("/invite", authed, async c => {
   const usr = {
     name: Math.random().toString().slice(2),
-    email: Object.fromEntries(await c.req.formData()).email.toString(),
+    email: (await form(c)).email,
     password: null,
     invited_by: c.get("usr_id")!,
   };
@@ -312,13 +315,48 @@ app.patch("/u", authed, async c => {
   return ok(c);
 });
 
-/*
-get /u/:uid : select uid, name, bio from usr where uid = ${uid}
-get /u/:uid/c : select cid, body from comments where uid = ${uid}
-post /c : todo
-get /c/:cid : todo
-post /c/:cid : todo
-*/
+app.get("/u/:usr_id", async c => {
+  const [usr] = await sql`select usr_id, name, bio from usr where usr_id = ${c.req.param("usr_id")}`;
+  if (!usr) return notFound();
+  switch (c.req.header("host")) {
+    case "api":
+      return c.json(usr, 204);
+    default:
+      return c.html(<Layout title={usr.name}>TODO</Layout>);
+  }
+});
+
+app.post("/c/:parent_comment_id?", authed, async c => {
+  const comment = {
+    parent_comment_id: c.req.param("parent_comment_id") ?? null,
+    usr_id: c.get("usr_id")!,
+    body: (await form(c)).body,
+  };
+  await sql`insert into comment ${sql(comment)}`;
+  return ok(c);
+});
+
+app.get("/c/:comment_id?", async c => {
+  const comments = await sql`
+    select 
+      usr_id, 
+      parent_comment_id, 
+      body, 
+      array(select comment_id from comment c_ where c_.parent_comment_id = c.comment_id) filter (comment_id is not null) as child_comment_ids
+    from comment
+    where comment_id = ${c.req.param("comment_id") ?? null}
+    and usr_id = ${c.req.query("usr_id") ?? sql`usr_id`}
+    order by created_at desc
+  `;
+  switch (c.req.header("host")) {
+    case "api":
+      return c.json(comments, 204);
+    case "rss":
+      return TODO`RSS not yet implemented`;
+    default:
+      return c.html(<Layout>TODO</Layout>);
+  }
+});
 
 app.use("/*", serveStatic({ root: "./public" }));
 
