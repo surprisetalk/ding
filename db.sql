@@ -53,7 +53,7 @@ values
     101,
     'john doe',
     'john@example.com',
-    'password1!',
+    crypt('password1!', gen_salt('bf', 8)),
     'sample bio',
     null,
     101
@@ -62,7 +62,7 @@ values
     102,
     'jane smith',
     'jane@example.com',
-    'password2!',
+    crypt('password2!', gen_salt('bf', 8)),
     'another sample bio',
     null,
     102

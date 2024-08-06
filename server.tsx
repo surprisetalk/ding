@@ -33,7 +33,8 @@ export const sql = pg(Deno.env.get(`DATABASE_URL`)?.replace(/flycast/, "internal
 sg.setApiKey(Deno.env.get(`SENDGRID_API_KEY`) ?? "");
 
 const sendVerificationEmail = async (email: string, token: string) =>
-  await sg
+  Deno.env.get(`SENDGRID_API_KEY`) &&
+  (await sg
     .send({
       to: email,
       from: "hello@futureofcod.ing",
@@ -50,7 +51,7 @@ const sendVerificationEmail = async (email: string, token: string) =>
     .catch(err => {
       console.log(`/verify?email=${email}&token=${token}`);
       console.error(`Could not send verification email to ${email}:`, err?.response?.body || err);
-    });
+    }));
 
 //// COMPONENTS ////////////////////////////////////////////////////////////////
 
@@ -114,10 +115,7 @@ const authed = some(
         from usr where email = ${email}
       `;
       if (!usr || !usr.is_password_correct) return false;
-      if (!usr.email_verified_at) {
-        await sendVerificationEmail(usr.email, usr.token);
-        return false;
-      }
+      // if (!usr.email_verified_at) await sendVerificationEmail(usr.email, usr.token);
       await setSignedCookie(c, "usr_id", usr.usr_id, cookieSecret);
       c.set("usr_id", usr.usr_id);
       return true;
@@ -219,24 +217,25 @@ app.post("/forgot", async c => {
     select email_token(now(), email) as token from usr where email = ${email}
   `;
   if (usr)
-    await sg
-      .send({
-        to: email,
-        from: "hello@futureofcod.ing",
-        subject: "Reset your password",
-        text:
-          `` +
-          `Click here to reset your password: ` +
-          `https://futureofcod.ing/password` +
-          `?email=${encodeURIComponent(email)}` +
-          `&token=${encodeURIComponent(usr.token)}` +
-          `\n\n` +
-          `If you didn't request a password reset, please ignore this message.`,
-      })
-      .catch(err => {
-        console.log(`/password?email=${email}&token=${usr.token}`);
-        console.error(`Could not send password reset email to ${email}:`, err?.response?.body || err);
-      });
+    Deno.env.get(`SENDGRID_API_KEY`) &&
+      (await sg
+        .send({
+          to: email,
+          from: "hello@futureofcod.ing",
+          subject: "Reset your password",
+          text:
+            `` +
+            `Click here to reset your password: ` +
+            `https://futureofcod.ing/password` +
+            `?email=${encodeURIComponent(email)}` +
+            `&token=${encodeURIComponent(usr.token)}` +
+            `\n\n` +
+            `If you didn't request a password reset, please ignore this message.`,
+        })
+        .catch(err => {
+          console.log(`/password?email=${email}&token=${usr.token}`);
+          console.error(`Could not send password reset email to ${email}:`, err?.response?.body || err);
+        }));
   return ok(c);
 });
 
@@ -310,7 +309,7 @@ app.get("/u/:usr_id", async c => {
   if (!usr) return notFound();
   switch (c.req.header("host")) {
     case "api":
-      return c.json(usr, 204);
+      return c.json(usr, 200);
     default:
       return c.html(<Layout title={usr.name}>TODO</Layout>);
   }
@@ -332,15 +331,15 @@ app.get("/c/:comment_id?", async c => {
       usr_id, 
       parent_comment_id, 
       body, 
-      array(select comment_id from comment c_ where c_.parent_comment_id = c.comment_id) filter (comment_id is not null) as child_comment_ids
-    from comment
+      array(select comment_id from comment c_ where c_.parent_comment_id = c.comment_id) as child_comment_ids
+    from comment c
     where comment_id = ${c.req.param("comment_id") ?? null}
     and usr_id = ${c.req.query("usr_id") ?? sql`usr_id`}
     order by created_at desc
   `;
   switch (c.req.header("host")) {
     case "api":
-      return c.json(comments, 204);
+      return c.json(comments, 200);
     case "rss":
       return TODO`RSS not yet implemented`;
     default:
