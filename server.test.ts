@@ -71,7 +71,7 @@ Deno.test("TODO", async t => {
     assertEquals(res.status, 200);
   });
 
-  await t.step("GET /c all commetns", async () => {
+  await t.step("GET /c all comments", async () => {
     const res = await app.request("/c");
     assertEquals(res.status, 200);
   });
@@ -81,27 +81,27 @@ Deno.test("TODO", async t => {
     assertEquals(res.status, 302);
   });
 
-  await t.step("GET /secure with valid credentials", async () => {
-    const res = await app.request("/u", {
-      headers: {
-        Authorization: "Basic " + btoa("john@example.com:password1!"),
-      },
-    });
+  await t.step("GET /u with valid credentials", async () => {
+    const res = await app.request("/u", { headers: { Authorization: "Basic " + btoa("john@example.com:password1!") } });
     assertEquals(res.status, 200);
   });
 
-  await t.step("GET /secure with invalid credentials", async () => {
+  await t.step("GET /u with invalid credentials", async () => {
     const res = await app.request("/u", {
-      headers: {
-        Authorization: "Basic " + btoa("john@example.com:wrong!"),
-      },
+      headers: { Authorization: "Basic " + btoa("john@example.com:wrong!") },
     });
     assertEquals(res.status, 401);
   });
 
-  await t.step("GET /secure with missing credentials", async () => {
+  await t.step("GET /u with missing credentials", async () => {
     const res = await app.request("/u");
     assertEquals(res.status, 401);
+  });
+
+  await t.step("GET /u (api) with missing credentials", async () => {
+    const res = await app.request("/u/101", { headers: { Host: "api", Authorization: "Basic " + btoa("john@example.com:password1!") } });
+    assertEquals(res.status, 200);
+    assertEquals(await res.json(), { bio: "sample bio", name: "john doe", usr_id: 101 });
   });
 
   await sql.end();

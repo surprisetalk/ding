@@ -92,8 +92,18 @@ const notFound = () => {
 const form = async (c: Context): Promise<Record<string, string>> =>
   Object.fromEntries([...(await c.req.formData()).entries()].map(([k, v]) => [k, v.toString()]));
 
+const host = (c: Context): string | undefined => {
+  const h = c.req.header("host")?.match(/^\([a-z]+\)\./i)?.[1];
+  if (h) return h;
+  if (c.req.header("accept")?.includes("application/xml")) return "rss";
+  if (c.req.header("accept")?.includes("application/json")) return "api";
+  if (c.req.header("accept")?.includes("text/html")) return;
+  if (c.req.header("content-type")?.includes("application/json")) return "api";
+  if (c.req.header("content-type")?.includes("multipart/form-data")) return;
+};
+
 const ok = (c: Context) => {
-  switch (c.req.header("host")) {
+  switch (host(c)) {
     case "api":
       return c.json(null, 204);
     default:
@@ -136,7 +146,7 @@ app.onError((err, c) => {
   }
   if (err) console.error(err);
   const message = "Sorry, this computer is мᎥｓβ𝕖𝓱𝐀𝓋𝓲𝓷g.";
-  switch (c.req.header("host")) {
+  switch (host(c)) {
     case "api":
       return c.json({ error: message }, 500);
     case "rss":
@@ -306,7 +316,7 @@ app.patch("/u", authed, async c => {
 app.get("/u/:usr_id", async c => {
   const [usr] = await sql`select usr_id, name, bio from usr where usr_id = ${c.req.param("usr_id")}`;
   if (!usr) return notFound();
-  switch (c.req.header("host")) {
+  switch (host(c)) {
     case "api":
       return c.json(usr, 200);
     default:
@@ -336,7 +346,7 @@ app.get("/c/:comment_id?", async c => {
     and usr_id = ${c.req.query("usr_id") ?? sql`usr_id`}
     order by created_at desc
   `;
-  switch (c.req.header("host")) {
+  switch (host(c)) {
     case "api":
       return c.json(comments, 200);
     case "rss":
@@ -348,7 +358,7 @@ app.get("/c/:comment_id?", async c => {
 
 app.use("/*", serveStatic({ root: "./public" }));
 
-const server = Deno.serve(
+Deno.serve(
   {
     hostname: Deno.env.get("HOST") ?? "0.0.0.0",
     port: parseInt(Deno.env.get("PORT") ?? "") || 8080,
