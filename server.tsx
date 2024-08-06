@@ -361,6 +361,9 @@ app.get("/u", authed, async c => {
   return c.html(
     <Layout title="your account">
       <section>
+        <a href={`/c?usr_id=${usr.usr_id}`}>my posts</a>
+      </section>
+      <section>
         <pre>{JSON.stringify(usr, null, 2)}</pre>
       </section>
       <section>
@@ -419,6 +422,8 @@ app.get("/c/:comment_id?", async c => {
       parent_comment_id, 
       body,
       c.created_at,
+      (select count(*) from comment c_ where c_.parent_comment_id = c.comment_id) as comments,
+      u.name as username,
       array(
         select jsonb_build_object(
           'body', c_.body,
@@ -449,6 +454,7 @@ app.get("/c/:comment_id?", async c => {
         where c_.parent_comment_id = c.comment_id
       ) as child_comments
     from comment c
+    inner join usr u using (usr_id)
     where ${comment_id ? sql`comment_id = ${comment_id ?? null}` : sql`parent_comment_id is null`}
     and usr_id = ${c.req.query("usr_id") ?? sql`usr_id`}
     order by created_at desc
@@ -461,13 +467,7 @@ app.get("/c/:comment_id?", async c => {
     case "rss":
       return TODO`RSS not yet implemented`;
     default: {
-      if (!comments.length) {
-        return c.html(
-          <Layout title={"TODO"}>
-            <section>no results found</section>
-          </Layout>
-        );
-      } else if (comments.length !== 1) {
+      if (!comment_id) {
         return c.html(
           <Layout title={"TODO"}>
             <section>
