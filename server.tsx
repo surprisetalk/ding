@@ -116,9 +116,9 @@ const ok = (c: Context) => {
 
 const authed = some(
   createMiddleware(async (c, next) => {
-    const usr_id = await getSignedCookie(c, cookieSecret, "usr_id");
-    if (!usr_id) throw new HTTPException(401, { message: "Not authorized." });
-    c.set("usr_id", usr_id);
+    const uid = await getSignedCookie(c, cookieSecret, "uid");
+    if (!uid) throw new HTTPException(401, { message: "Not authorized." });
+    c.set("uid", uid);
     await next();
   }),
   basicAuth({
@@ -128,15 +128,15 @@ const authed = some(
         from usr where email = ${email}
       `;
       if (!usr || !usr.is_password_correct) return false;
-      await setSignedCookie(c, "usr_id", usr.usr_id, cookieSecret);
-      c.set("usr_id", usr.usr_id);
+      await setSignedCookie(c, "uid", usr.uid, cookieSecret);
+      c.set("uid", usr.uid);
       return true;
     },
   })
 );
 
 // TODO: Add rate-limiting middleware everywhere.
-const app = new Hono<{ Variables: { usr_id?: string } }>();
+const app = new Hono<{ Variables: { uid?: string } }>();
 
 app.use(logger());
 app.use(prettyJSON());
@@ -176,15 +176,16 @@ app.get("/", async c => {
   const p = parseInt(c.req.query("p") ?? "0");
   const comments = await sql`
     select 
-      c.comment_id,
-      c.usr_id,
+      c.cid,
+      c.uid,
       c.body,
+      c.tags,
       c.created_at,
-      (select count(*) from comment c_ where c_.parent_comment_id = c.comment_id) as comments,
+      (select count(*) from com c_ where c_.parent_cid = c.cid) as comments,
       u.name as username
-    from comment c
-    inner join usr u using (usr_id)
-    where parent_comment_id is null
+    from com c
+    inner join usr u using (uid)
+    where parent_cid is null
     -- TODO: rank adding log comments + log created_at
     order by c.created_at desc
     offset ${p * 25}
@@ -199,11 +200,16 @@ app.get("/", async c => {
               <tr>
                 <td>{new Date(comment.created_at).toLocaleDateString()}</td>
                 <td>
-                  <a href={`/c/${comment.comment_id}`}>{comment.comments} replies</a>
+                  <a href={`/c/${comment.cid}`}>{comment.comments} replies</a>
                 </td>
                 <td>{comment.body.replace(/\W/g, " ").slice(0, 60)}</td>
                 <td>
-                  <a href={`/u/${comment.usr_id}`}>{comment.username}</a>
+                  <a href={`/u/${comment.uid}`}>{comment.username}</a>
+                </td>
+                <td>
+                  {comment?.tags?.map(tag => (
+                    <a href={`/c?tag=${tag}`}>{tag}</a>
+                  ))}
                 </td>
               </tr>
             ))}
@@ -211,12 +217,16 @@ app.get("/", async c => {
         </table>
         <div>
           {!p || <a href={`/?p=${p - 1}`}>prev</a>}
-          <a href={`/?p=${p + 1}`}>next</a>
+          {!comments.length || <a href={`/?p=${p + 1}`}>next</a>}
         </div>
       </section>
       <section>
         <form method="post" action="/c">
-          {/* TODO: select tag */}
+          <select name="tag">
+            {["", "linking", "thinking"].map(x => (
+              <option value={x}>{x}</option>
+            ))}
+          </select>
           <textarea name="body"></textarea>
           <button>create post</button>
         </form>
@@ -232,13 +242,13 @@ app.post("/login", async c => {
     from usr where email = ${email}
   `;
   if (!usr || !usr.is_password_correct) throw new HTTPException(401, { message: "Wrong credentials." });
-  if (!usr.email_verified_at && !(await getSignedCookie(c, cookieSecret, "usr_id"))) await sendVerificationEmail(usr.email, usr.token);
-  await setSignedCookie(c, "usr_id", usr.usr_id, cookieSecret);
+  if (!usr.email_verified_at && !(await getSignedCookie(c, cookieSecret, "uid"))) await sendVerificationEmail(usr.email, usr.token);
+  await setSignedCookie(c, "uid", usr.uid, cookieSecret);
   return c.redirect("/u");
 });
 
 app.post("/logout", c => {
-  deleteCookie(c, "usr_id");
+  deleteCookie(c, "uid");
   return ok(c);
 });
 
@@ -252,7 +262,7 @@ app.get("/verify", async c => {
       and to_timestamp(split_part(${token},':',1)::bigint) > now() - interval '2 days'
       and ${email} = email
       and ${token} = email_token(to_timestamp(split_part(${token},':',1)::bigint), email)
-    returning usr_id
+    returning uid
   `;
   return ok(c);
 });
@@ -328,9 +338,9 @@ app.post("/password", async c => {
       and to_timestamp(split_part(${token},':',1)::bigint) > now() - interval '2 days'
       and ${email} = email
       and ${token} = email_token(to_timestamp(split_part(${token},':',1)::bigint), email)
-    returning usr_id
+    returning uid
   `;
-  if (usr) await setSignedCookie(c, "usr_id", usr.usr_id, cookieSecret);
+  if (usr) await setSignedCookie(c, "uid", usr.uid, cookieSecret);
   return ok(c);
 });
 
@@ -339,13 +349,13 @@ app.post("/invite", authed, async c => {
     name: Math.random().toString().slice(2),
     email: (await form(c)).email,
     password: null,
-    invited_by: c.get("usr_id")!,
+    invited_by: c.get("uid")!,
   };
-  if ((await sql`select count(*) as "count" from usr where invited_by = ${c.get("usr_id")!}`)?.[0]?.count >= 4)
+  if ((await sql`select count(*) as "count" from usr where invited_by = ${c.get("uid")!}`)?.[0]?.count >= 4)
     throw new HTTPException(400, { message: "No more invites remaining." });
   const [{ email = undefined, token = undefined } = {}] = await sql`
     with usr_ as (insert into usr ${sql(usr)} on conflict do nothing returning *)
-    select usr_id, email, email_token(now(), email) as token from usr_
+    select uid, email, email_token(now(), email) as token from usr_
   `;
   if (email && token) await sendVerificationEmail(email, token);
   return ok(c);
@@ -353,15 +363,15 @@ app.post("/invite", authed, async c => {
 
 app.get("/u", authed, async c => {
   const [usr] = await sql`
-    select usr_id, name, email, bio, invited_by, password is not null as password 
-    from usr u where usr_id = ${c.get("usr_id")!}
+    select uid, name, email, bio, invited_by, password is not null as password 
+    from usr u where uid = ${c.get("uid")!}
   `;
   if (!usr) return notFound();
   if (!usr.password) return c.redirect("/password");
   return c.html(
     <Layout title="your account">
       <section>
-        <a href={`/c?usr_id=${usr.usr_id}`}>my posts</a>
+        <a href={`/c?uid=${usr.uid}`}>my posts</a>
       </section>
       <section>
         <pre>{JSON.stringify(usr, null, 2)}</pre>
@@ -378,12 +388,12 @@ app.get("/u", authed, async c => {
 app.patch("/u", authed, async c => {
   const usr = Object.fromEntries(await c.req.formData());
   for (const i in usr) if (!usr[i]) delete usr[i];
-  await sql`update usr set ${sql(usr, "name", "bio")} where usr_id = ${c.get("usr_id")!}`;
+  await sql`update usr set ${sql(usr, "name", "bio")} where uid = ${c.get("uid")!}`;
   return ok(c);
 });
 
-app.get("/u/:usr_id", async c => {
-  const [usr] = await sql`select usr_id, name, bio, invited_by from usr where usr_id = ${c.req.param("usr_id")}`;
+app.get("/u/:uid", async c => {
+  const [usr] = await sql`select uid, name, bio, invited_by from usr where uid = ${c.req.param("uid")}`;
   if (!usr) return notFound();
   switch (host(c)) {
     case "api":
@@ -395,68 +405,73 @@ app.get("/u/:usr_id", async c => {
             <pre>{JSON.stringify(usr, null, 2)}</pre>
           </section>
           <section>
-            <a href={`/c?usr_id=${usr.usr_id}`}>posts</a>
+            <a href={`/c?uid=${usr.uid}`}>posts</a>
           </section>
         </Layout>
       );
   }
 });
 
-app.post("/c/:parent_comment_id?", authed, async c => {
-  const comment = {
-    parent_comment_id: c.req.param("parent_comment_id") ?? null,
-    usr_id: c.get("usr_id")!,
+app.post("/c/:parent_cid?", authed, async c => {
+  const com = {
+    parent_cid: c.req.param("parent_cid") ?? null,
+    uid: c.get("uid")!,
     body: (await form(c)).body,
+    tags: [(await form(c)).tag].filter(x => x),
   };
-  const [comment_] = await sql`insert into comment ${sql(comment)} returning comment_id`;
-  return c.redirect(`/c/${c.req.param("parent_comment_id") ?? comment_?.comment_id ?? ""}`);
+  if (!com.tags.length && !com.parent_cid) throw new HTTPException(400, { message: "Must include tags on post." });
+  if (com.tags.length && com.parent_cid) throw new HTTPException(400, { message: "Cannot include tags on child comment." });
+  const [comment] = await sql`insert into com ${sql(com)} returning cid`;
+  return c.redirect(`/c/${c.req.param("parent_cid") ?? comment?.cid ?? ""}`);
 });
 
-app.get("/c/:comment_id?", async c => {
+app.get("/c/:cid?", async c => {
   const p = parseInt(c.req.query("p") ?? "0");
-  const comment_id = c.req.param("comment_id");
+  const cid = c.req.param("cid");
   const comments = await sql`
     select 
-      usr_id, 
-      comment_id,
-      parent_comment_id, 
-      body,
+      c.uid, 
+      c.cid,
+      c.parent_cid, 
+      c.body,
+      c.tags,
       c.created_at,
-      (select count(*) from comment c_ where c_.parent_comment_id = c.comment_id) as comments,
+      (select count(*) from com c_ where c_.parent_cid = c.cid) as comments,
       u.name as username,
       array(
         select jsonb_build_object(
           'body', c_.body,
-          'usr_id', c_.usr_id,
-          'comment_id', c_.comment_id,
+          'uid', c_.uid,
+          'cid', c_.cid,
           'created_at', c_.created_at,
           'username', u_.name,
           'child_comments', array(
             select jsonb_build_object(
               'body', c__.body,
-              'usr_id', c__.usr_id,
-              'comment_id', c__.comment_id,
+              'uid', c__.uid,
+              'cid', c__.cid,
               'created_at', c__.created_at,
               'username', u_.name,
               'child_comments_ids', array(
-                select c___.comment_id 
-                from comment c___
-                where c___.parent_comment_id = c__.comment_id
+                select c___.cid 
+                from com c___
+                where c___.parent_cid = c__.cid
               )
             )
-            from comment c__ 
-            inner join usr u_ using (usr_id)
-            where c__.parent_comment_id = c_.comment_id
+            from com c__ 
+            inner join usr u_ using (uid)
+            where c__.parent_cid = c_.cid
           )
         )
-        from comment c_ 
-        inner join usr u_ using (usr_id)
-        where c_.parent_comment_id = c.comment_id
+        from com c_ 
+        inner join usr u_ using (uid)
+        where c_.parent_cid = c.cid
       ) as child_comments
-    from comment c
-    inner join usr u using (usr_id)
-    where ${comment_id ? sql`comment_id = ${comment_id ?? null}` : sql`parent_comment_id is null`}
-    and usr_id = ${c.req.query("usr_id") ?? sql`usr_id`}
+    from com c
+    inner join usr u using (uid)
+    where ${cid ? sql`cid = ${cid ?? null}` : sql`parent_cid is null`}
+    and uid = ${c.req.query("uid") ?? sql`uid`}
+    and tags @> ${[c.req.query("tag")].filter(x => x)}
     order by created_at desc
     offset ${p * 25}
     limit 25
@@ -467,7 +482,7 @@ app.get("/c/:comment_id?", async c => {
     case "rss":
       return TODO`RSS not yet implemented`;
     default: {
-      if (!comment_id) {
+      if (!cid) {
         return c.html(
           <Layout title={"TODO"}>
             <section>
@@ -477,11 +492,16 @@ app.get("/c/:comment_id?", async c => {
                     <tr>
                       <td>{new Date(comment.created_at).toLocaleDateString()}</td>
                       <td>
-                        <a href={`/c/${comment.comment_id}`}>{comment.comments} replies</a>
+                        <a href={`/c/${comment.cid}`}>{comment.comments} replies</a>
                       </td>
                       <td>{comment.body.replace(/\W/g, " ").slice(0, 60)}</td>
                       <td>
-                        <a href={`/u/${comment.usr_id}`}>{comment.username}</a>
+                        <a href={`/u/${comment.uid}`}>{comment.username}</a>
+                      </td>
+                      <td>
+                        {comment?.tags?.map(tag => (
+                          <a href={`/c?tag=${tag}`}>{tag}</a>
+                        ))}
                       </td>
                     </tr>
                   ))}
@@ -489,7 +509,7 @@ app.get("/c/:comment_id?", async c => {
               </table>
               <div>
                 {!p || <a href={`/c?p=${p - 1}`}>prev</a>}
-                <a href={`/c?p=${p + 1}`}>next</a>
+                {!comments.length || <a href={`/c?p=${p + 1}`}>next</a>}
               </div>
             </section>
           </Layout>
@@ -502,7 +522,7 @@ app.get("/c/:comment_id?", async c => {
               <pre>{JSON.stringify({ ...post, child_comments: undefined }, null, 2)}</pre>
             </section>
             <section>
-              <form method="post" action={`/c/${post?.comment_id ?? 0}`}>
+              <form method="post" action={`/c/${post?.cid ?? 0}`}>
                 <textarea name="body"></textarea>
                 <button>reply</button>
               </form>

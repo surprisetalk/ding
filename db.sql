@@ -19,28 +19,29 @@ create function email_token (ts timestamptz, email text) returns text
 
 create table
   usr (
-    usr_id serial primary key,
-    name text unique not null check (name <> ''),
-    email citext unique not null check (email ilike '%@%'),
-    password text,
-    bio text check (bio <> ''),
+    uid serial primary key,
+    name text unique not null check (name ~ '^[0-9a-zA-Z_]{4,32}$'),
+    email citext unique not null check (email ilike '%@%' and email ~ '^.{4,64}$'),
+    password text check (password <> ''),
+    bio text not null check (length(bio) between 1 and 1441),
     email_verified_at timestamp,
-    invited_by int not null references usr (usr_id),
+    invited_by int not null references usr (uid),
     created_at timestamptz not null default current_timestamp
   );
 
 create table
-  comment (
-    comment_id serial primary key,
-    parent_comment_id int references comment (comment_id),
-    usr_id int references usr (usr_id) not null,
-    body text not null check (body <> ''),
+  com (
+    cid serial primary key,
+    parent_cid int references com (cid),
+    uid int references usr (uid) not null,
+    tags text[] not null default '{}'::text[] check (1 = (tags <> '{}'::text[])::int + (parent_cid is not null)::int and tags::text ~ '^{[a-z,]{0,64}}$'),
+    body text not null check (length(body) between 1 and 1441),
     created_at timestamp default current_timestamp
   );
 
 insert into
   usr (
-    usr_id,
+    uid,
     name,
     email,
     password,
@@ -51,7 +52,7 @@ insert into
 values
   (
     101,
-    'john doe',
+    'john_doe',
     'john@example.com',
     crypt('password1!', gen_salt('bf', 8)),
     'sample bio',
@@ -60,7 +61,7 @@ values
   ),
   (
     102,
-    'jane smith',
+    'jane_smith',
     'jane@example.com',
     crypt('password2!', gen_salt('bf', 8)),
     'another sample bio',
@@ -69,13 +70,14 @@ values
   );
 
 insert into
-  comment (comment_id, parent_comment_id, usr_id, body)
+  com (cid, parent_cid, uid, body, tags)
 values
-  (201, null, 101, 'this is a sample comment'),
-  (202, null, 102, 'this is another sample comment'),
+  (201, null, 101, 'this is a sample comment', '{misc}'),
+  (202, null, 102, 'this is another sample comment', '{junk}'),
   (
     203,
     201,
     102,
-    'this is a reply to the first comment'
+    'this is a reply to the first comment',
+    '{}'
   );
