@@ -95,9 +95,9 @@ const form = async (c: Context): Promise<Record<string, string>> =>
 const host = (c: Context): string | undefined => {
   const h = c.req.header("host")?.match(/^\([a-z]+\)\./i)?.[1];
   if (h) return h;
-  if (c.req.header("accept")?.includes("application/xml")) return "rss";
   if (c.req.header("accept")?.includes("application/json")) return "api";
   if (c.req.header("accept")?.includes("text/html")) return;
+  if (c.req.header("accept")?.includes("application/xml")) return "rss";
   if (c.req.header("content-type")?.includes("application/json")) return "api";
   if (c.req.header("content-type")?.includes("multipart/form-data")) return;
 };
@@ -169,8 +169,54 @@ app.get("/sitemap.txt", c => {
   return TODO`sitemap`;
 });
 
-app.get("/", c => {
-  return c.html(<Layout desc="TODO">TODO</Layout>);
+app.get("/", async c => {
+  const p = parseInt(c.req.query("p") ?? "0");
+  const comments = await sql`
+    select 
+      c.comment_id,
+      c.usr_id,
+      c.body,
+      c.created_at,
+      (select count(*) from comment c_ where c_.parent_comment_id = c.comment_id) as comments,
+      u.name as username
+    from comment c
+    inner join usr u using (usr_id)
+    where parent_comment_id is null
+    -- TODO: rank adding log comments + log created_at
+    order by c.created_at desc
+    offset ${p * 25}
+    limit 25
+  `;
+  return c.html(
+    <Layout>
+      <div>
+        <table>
+          <tbody>
+            {comments.map(comment => (
+              <tr>
+                <td>{new Date(comment.created_at).toLocaleDateString()}</td>
+                <td>
+                  <a href={`/u/${comment.usr_id}`}>{comment.username}</a>
+                </td>
+                <td>
+                  <a href={`/c/${comment.comment_id}`}>{comment.comments} comments</a>
+                </td>
+                <td>{comment.body.replace(/\W/g, " ").slice(0, 60)}</td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
+        <div>
+          {!p || <a href={`/?p=${p - 1}`}>prev</a>}
+          <a href={`/?p=${p + 1}`}>next</a>
+        </div>
+      </div>
+      <form method="post" action="/c">
+        <textarea name="body"></textarea>
+      </form>
+      <button>create post</button>
+    </Layout>
+  );
 });
 
 app.post("/login", async c => {
@@ -340,7 +386,7 @@ app.get("/c/:comment_id?", async c => {
     select 
       usr_id, 
       parent_comment_id, 
-      body, 
+      body,
       array(select comment_id from comment c_ where c_.parent_comment_id = c.comment_id) as child_comment_ids
     from comment c
     where comment_id = ${c.req.param("comment_id") ?? null}
