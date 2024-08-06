@@ -26,7 +26,7 @@ const TODO = (x: TemplateStringsArray) => {
 
 //// POSTGRES //////////////////////////////////////////////////////////////////
 
-const sql = pg(Deno.env.get(`DATABASE_URL`)?.replace(/flycast/, "internal")!, { database: "ding" });
+export const sql = pg(Deno.env.get(`DATABASE_URL`)?.replace(/flycast/, "internal")!, { database: "ding" });
 
 //// SENDGRID //////////////////////////////////////////////////////////////////
 
@@ -89,7 +89,7 @@ const notFound = () => {
 };
 
 const form = async (c: Context): Promise<Record<string, string>> =>
-  Object.fromEntries((await c.req.formData()).entries().map(([k, v]) => [k, v.toString()]));
+  Object.fromEntries([...(await c.req.formData()).entries()].map(([k, v]) => [k, v.toString()]));
 
 const ok = (c: Context) => {
   switch (c.req.header("host")) {
@@ -134,10 +134,10 @@ app.use(prettyJSON());
 app.notFound(notFound);
 
 app.onError((err, c) => {
-  if (err) console.error(err);
   if (err instanceof HTTPException) {
     return err.getResponse();
   }
+  if (err) console.error(err);
   const message = "Sorry, this computer is мᎥｓβ𝕖𝓱𝐀𝓋𝓲𝓷g.";
   switch (c.req.header("host")) {
     case "api":
@@ -172,17 +172,7 @@ app.post("/login", async c => {
     select *, password = crypt(${password}, password) AS is_password_correct
     from usr where email = ${email}
   `;
-  if (!usr || !usr.is_password_correct)
-    return c.html(
-      <Layout title="try again">
-        <section>
-          <p>Your password was incorrect.</p>
-          <p>
-            Please <a href="/u">try again</a>.
-          </p>
-        </section>
-      </Layout>
-    );
+  if (!usr || !usr.is_password_correct) throw new HTTPException(401, { message: "Wrong credentials." });
   if (!usr.email_verified_at) await sendVerificationEmail(usr.email, usr.token);
   await setSignedCookie(c, "usr_id", usr.usr_id, cookieSecret);
   return c.redirect("/u");
@@ -360,10 +350,12 @@ app.get("/c/:comment_id?", async c => {
 
 app.use("/*", serveStatic({ root: "./public" }));
 
-Deno.serve(
+const server = Deno.serve(
   {
     hostname: Deno.env.get("HOST") ?? "0.0.0.0",
     port: parseInt(Deno.env.get("PORT") ?? "") || 8080,
   },
   app.fetch
 );
+
+export default app;
