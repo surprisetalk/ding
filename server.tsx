@@ -391,6 +391,9 @@ app.get("/u/:usr_id", async c => {
           <section>
             <pre>{JSON.stringify(usr, null, 2)}</pre>
           </section>
+          <section>
+            <a href={`/c?usr_id=${usr.usr_id}`}>posts</a>
+          </section>
         </Layout>
       );
   }
@@ -402,17 +405,20 @@ app.post("/c/:parent_comment_id?", authed, async c => {
     usr_id: c.get("usr_id")!,
     body: (await form(c)).body,
   };
-  await sql`insert into comment ${sql(comment)}`;
-  return ok(c);
+  const [comment_] = await sql`insert into comment ${sql(comment)} returning comment_id`;
+  return c.redirect(`/c/${c.req.param("parent_comment_id") ?? comment_?.comment_id ?? ""}`);
 });
 
 app.get("/c/:comment_id?", async c => {
   const p = parseInt(c.req.query("p") ?? "0");
+  const comment_id = c.req.param("comment_id");
   const comments = await sql`
     select 
       usr_id, 
+      comment_id,
       parent_comment_id, 
       body,
+      c.created_at,
       array(
         select jsonb_build_object(
           'body', c_.body,
@@ -443,7 +449,7 @@ app.get("/c/:comment_id?", async c => {
         where c_.parent_comment_id = c.comment_id
       ) as child_comments
     from comment c
-    where comment_id = ${c.req.param("comment_id") ?? null}
+    where ${comment_id ? sql`comment_id = ${comment_id ?? null}` : sql`parent_comment_id is null`}
     and usr_id = ${c.req.query("usr_id") ?? sql`usr_id`}
     order by created_at desc
     offset ${p * 25}
@@ -493,7 +499,7 @@ app.get("/c/:comment_id?", async c => {
         return c.html(
           <Layout title={post?.body?.slice(0, 16)}>
             <section>
-              <pre>{JSON.stringify(post, null, 2)}</pre>
+              <pre>{JSON.stringify({ ...post, child_comments: undefined }, null, 2)}</pre>
             </section>
             <section>
               <form method="post" action={`/c/${post?.comment_id ?? 0}`}>
