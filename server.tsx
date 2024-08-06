@@ -75,7 +75,10 @@ const Layout = (props: { title?: string; keywords?: string; desc?: string; child
       <link rel="stylesheet" href="/style.css" />
     </head>
     <body>
-      <header></header>
+      <header>
+        <a href="/">home</a>
+        <a href="/u">account</a>
+      </header>
       <main>${props.children}</main>
       <footer></footer>
     </body>
@@ -189,7 +192,7 @@ app.get("/", async c => {
   `;
   return c.html(
     <Layout>
-      <div>
+      <section>
         <table>
           <tbody>
             {comments.map(comment => (
@@ -210,12 +213,14 @@ app.get("/", async c => {
           {!p || <a href={`/?p=${p - 1}`}>prev</a>}
           <a href={`/?p=${p + 1}`}>next</a>
         </div>
-      </div>
-      <form method="post" action="/c">
-        {/* TODO: select tag */}
-        <textarea name="body"></textarea>
-      </form>
-      <button>create post</button>
+      </section>
+      <section>
+        <form method="post" action="/c">
+          {/* TODO: select tag */}
+          <textarea name="body"></textarea>
+          <button>create post</button>
+        </form>
+      </section>
     </Layout>
   );
 });
@@ -232,8 +237,8 @@ app.post("/login", async c => {
   return c.redirect("/u");
 });
 
-app.post("/logout", authed, c => {
-  deleteCookie(c, c.get("usr_id")!);
+app.post("/logout", c => {
+  deleteCookie(c, "usr_id");
   return ok(c);
 });
 
@@ -355,7 +360,14 @@ app.get("/u", authed, async c => {
   if (!usr.password) return c.redirect("/password");
   return c.html(
     <Layout title="your account">
-      <pre>{JSON.stringify(usr, null, 2)}</pre>
+      <section>
+        <pre>{JSON.stringify(usr, null, 2)}</pre>
+      </section>
+      <section>
+        <form method="post" action="/logout">
+          <button>logout</button>
+        </form>
+      </section>
     </Layout>
   );
 });
@@ -376,7 +388,9 @@ app.get("/u/:usr_id", async c => {
     default:
       return c.html(
         <Layout title={usr.name}>
-          <pre>{JSON.stringify(usr, null, 2)}</pre>
+          <section>
+            <pre>{JSON.stringify(usr, null, 2)}</pre>
+          </section>
         </Layout>
       );
   }
@@ -441,22 +455,57 @@ app.get("/c/:comment_id?", async c => {
     case "rss":
       return TODO`RSS not yet implemented`;
     default: {
-      if (comments.length <= 1) {
-        const post = comments?.[0];
+      if (!comments.length) {
         return c.html(
-          <Layout title={post?.body?.slice(0, 16)}>
-            <div>
-              <pre>{JSON.stringify(post, null, 2)}</pre>
-            </div>
-            <form method="post" action={`/c/${post?.comment_id ?? 0}`}>
-              <textarea name="body"></textarea>
-              <button>reply</button>
-            </form>
-            <pre>{JSON.stringify(post?.child_comments, null, 2)}</pre>
+          <Layout title={"TODO"}>
+            <section>no results found</section>
+          </Layout>
+        );
+      } else if (comments.length !== 1) {
+        return c.html(
+          <Layout title={"TODO"}>
+            <section>
+              <table>
+                <tbody>
+                  {comments.map(comment => (
+                    <tr>
+                      <td>{new Date(comment.created_at).toLocaleDateString()}</td>
+                      <td>
+                        <a href={`/c/${comment.comment_id}`}>{comment.comments} replies</a>
+                      </td>
+                      <td>{comment.body.replace(/\W/g, " ").slice(0, 60)}</td>
+                      <td>
+                        <a href={`/u/${comment.usr_id}`}>{comment.username}</a>
+                      </td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+              <div>
+                {!p || <a href={`/c?p=${p - 1}`}>prev</a>}
+                <a href={`/c?p=${p + 1}`}>next</a>
+              </div>
+            </section>
           </Layout>
         );
       } else {
-        <Layout title={"TODO"}>TODO</Layout>;
+        const post = comments?.[0];
+        return c.html(
+          <Layout title={post?.body?.slice(0, 16)}>
+            <section>
+              <pre>{JSON.stringify(post, null, 2)}</pre>
+            </section>
+            <section>
+              <form method="post" action={`/c/${post?.comment_id ?? 0}`}>
+                <textarea name="body"></textarea>
+                <button>reply</button>
+              </form>
+            </section>
+            <section>
+              <pre>{JSON.stringify(post?.child_comments, null, 2)}</pre>
+            </section>
+          </Layout>
+        );
       }
     }
   }
