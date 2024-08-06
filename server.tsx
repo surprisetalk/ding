@@ -115,7 +115,6 @@ const authed = some(
         from usr where email = ${email}
       `;
       if (!usr || !usr.is_password_correct) return false;
-      // if (!usr.email_verified_at) await sendVerificationEmail(usr.email, usr.token);
       await setSignedCookie(c, "usr_id", usr.usr_id, cookieSecret);
       c.set("usr_id", usr.usr_id);
       return true;
@@ -171,7 +170,7 @@ app.post("/login", async c => {
     from usr where email = ${email}
   `;
   if (!usr || !usr.is_password_correct) throw new HTTPException(401, { message: "Wrong credentials." });
-  if (!usr.email_verified_at) await sendVerificationEmail(usr.email, usr.token);
+  if (!usr.email_verified_at && !(await getSignedCookie(c, cookieSecret, "usr_id"))) await sendVerificationEmail(usr.email, usr.token);
   await setSignedCookie(c, "usr_id", usr.usr_id, cookieSecret);
   return c.redirect("/u");
 });
