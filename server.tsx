@@ -132,7 +132,7 @@ const form = async (c: Context): Promise<Record<string, string>> =>
   Object.fromEntries([...(await c.req.formData()).entries()].map(([k, v]) => [k, v.toString()]));
 
 const host = (c: Context): string | undefined => {
-  const h = c.req.header("host")?.match(/^\([a-z]+\)\./i)?.[1];
+  const h = c.req.header("host")?.match(/^(?:https?:\/\/)?(?:www\.)?([^\/]+)\.([^\/]+)\./)?.[1];
   if (h) return h;
   if (c.req.header("accept")?.includes("application/json")) return "api";
   if (c.req.header("accept")?.includes("text/html")) return;
@@ -174,8 +174,19 @@ const authed = some(
 // TODO: Add rate-limiting middleware everywhere.
 const app = new Hono<{ Variables: { uid?: string } }>();
 
+app.use("*", async (c, next) => {
+  console.log(c.req.method, c.req.url);
+  await next();
+});
+
 app.use(logger());
-app.use(prettyJSON());
+app.use(async function prettyJSON(c, next) {
+  await next();
+  if (c.res.headers.get("Content-Type")?.startsWith("application/json")) {
+    const obj = await c.res.json();
+    c.res = new Response(JSON.stringify(obj, null, 2), c.res);
+  }
+});
 
 app.notFound(notFound);
 
@@ -520,7 +531,7 @@ app.get("/c/:cid?", async c => {
                       <td>
                         <a href={`/c/${comment.cid}`}>{comment.comments} replies</a>
                       </td>
-                      <td>{comment.body.replace(/\W/g, " ").slice(0, 60)}</td>
+                      <td style="white-space: wrap;">{comment.body.replace(/\W/g, " ").slice(0, 60)}</td>
                       <td>
                         <a href={`/u/${comment.uid}`}>{comment.username}</a>
                       </td>

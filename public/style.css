@@ -28,6 +28,10 @@ section {
   margin: 0 auto;
 }
 
+table td {
+  white-space: nowrap;
+}
+
 form {
   padding: 1rem 0;
   margin: 0 auto 2rem;
