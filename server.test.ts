@@ -8,7 +8,7 @@ import { assertEquals } from "jsr:@std/assert@1";
 
 //// TESTS /////////////////////////////////////////////////////////////////////
 
-Deno.test("TODO", async t => {
+Deno.test("TODO", async (t) => {
   await t.step("GET /robots.txt", async () => {
     const res = await app.request("/robots.txt");
     assertEquals(res.status, 200);
@@ -56,17 +56,17 @@ Deno.test("TODO", async t => {
     assertEquals(res.status, 401);
   });
 
-  await t.step("GET /u/:usr_id valid usr_id", async () => {
+  await t.step("GET /u/:uid valid uid", async () => {
     const res = await app.request("/u/101");
     assertEquals(res.status, 200);
   });
 
-  await t.step("GET /u/:usr_id invalid usr_id", async () => {
+  await t.step("GET /u/:uid invalid uid", async () => {
     const res = await app.request("/u/0");
     assertEquals(res.status, 404);
   });
 
-  await t.step("GET /c/:comment_id valid comment_id", async () => {
+  await t.step("GET /c/:cid valid cid", async () => {
     const res = await app.request("/c/201");
     assertEquals(res.status, 200);
   });
@@ -82,12 +82,18 @@ Deno.test("TODO", async t => {
   });
 
   await t.step("GET /verify invalid token", async () => {
-    const res = await app.request("/verify?email=john@example.com&token=123:invalid_token");
+    const res = await app.request(
+      "/verify?email=john@example.com&token=123:invalid_token",
+    );
     assertEquals(res.status, 302);
   });
 
   await t.step("GET /u with valid credentials", async () => {
-    const res = await app.request("/u", { headers: { Authorization: "Basic " + btoa("john@example.com:password1!") } });
+    const res = await app.request("/u", {
+      headers: {
+        Authorization: "Basic " + btoa("john@example.com:password1!"),
+      },
+    });
     assertEquals(res.status, 200);
   });
 
@@ -105,10 +111,18 @@ Deno.test("TODO", async t => {
 
   await t.step("GET /u (api) with missing credentials", async () => {
     const res = await app.request("/u/101", {
-      headers: { Accept: "application/json", Authorization: "Basic " + btoa("john@example.com:password1!") },
+      headers: {
+        Accept: "application/json",
+        Authorization: "Basic " + btoa("john@example.com:password1!"),
+      },
     });
     assertEquals(res.status, 200);
-    assertEquals(await res.json(), { bio: "sample bio", name: "john doe", usr_id: 101 });
+    assertEquals(await res.json(), {
+      uid: 101,
+      invited_by: 101,
+      name: "john_doe",
+      bio: "sample bio",
+    });
   });
 
   await sql.end();

@@ -207,7 +207,7 @@ app.get("/", async c => {
                   <a href={`/u/${comment.uid}`}>{comment.username}</a>
                 </td>
                 <td>
-                  {comment?.tags?.map(tag => (
+                  {comment?.tags?.map((tag: string) => (
                     <a href={`/c?tag=${tag}`}>{tag}</a>
                   ))}
                 </td>
@@ -471,7 +471,7 @@ app.get("/c/:cid?", async c => {
     inner join usr u using (uid)
     where ${cid ? sql`cid = ${cid ?? null}` : sql`parent_cid is null`}
     and uid = ${c.req.query("uid") ?? sql`uid`}
-    and tags @> ${[c.req.query("tag")].filter(x => x)}
+    and tags @> ${[c.req.query("tag") ?? null].filter(x => x)}
     order by created_at desc
     offset ${p * 25}
     limit 25
@@ -499,7 +499,7 @@ app.get("/c/:cid?", async c => {
                         <a href={`/u/${comment.uid}`}>{comment.username}</a>
                       </td>
                       <td>
-                        {comment?.tags?.map(tag => (
+                        {comment?.tags?.map((tag: string) => (
                           <a href={`/c?tag=${tag}`}>{tag}</a>
                         ))}
                       </td>
