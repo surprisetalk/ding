@@ -249,11 +249,11 @@ app.get("/", async c => {
                 <td>
                   <a href={`/c/${comment.cid}`}>{comment.comments} replies</a>
                 </td>
-                <td>{comment.body.replace(/\W/g, " ").slice(0, 60)}</td>
+                <td style="white-space: wrap;">{comment.body.replace(/\W/g, " ").slice(0, 60)}</td>
                 <td>
                   <a href={`/u/${comment.uid}`}>{comment.username}</a>
                 </td>
-                <td>
+                <td style="white-space: wrap; display: inline-flex; gap: 0.5rem;">
                   {comment?.tags?.map((tag: string) => (
                     <a href={`/c?tag=${tag}`}>{tag}</a>
                   ))}
@@ -535,7 +535,7 @@ app.get("/c/:cid?", async c => {
                       <td>
                         <a href={`/u/${comment.uid}`}>{comment.username}</a>
                       </td>
-                      <td>
+                      <td style="white-space: wrap; display: inline-flex; gap: 0.5rem;">
                         {comment?.tags?.map((tag: string) => (
                           <a href={`/c?tag=${tag}`}>{tag}</a>
                         ))}

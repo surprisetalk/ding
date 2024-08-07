@@ -30,6 +30,7 @@ section {
 
 table td {
   white-space: nowrap;
+  vertical-align: top;
 }
 
 form {
