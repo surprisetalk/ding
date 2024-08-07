@@ -84,6 +84,34 @@ const Layout = (props: { title?: string; keywords?: string; desc?: string; child
     </body>
   </html>`;
 
+const User = u => (
+  <div>
+    {/* TODO */}
+    <pre>{JSON.stringify(u, null, 2)}</pre>
+  </div>
+);
+
+const Comment = c => (
+  <div class="comment">
+    <div>
+      {/* TODO: render body as markdown */}
+      <pre>{c.body}</pre>
+    </div>
+    <div>
+      {!c.parent_cid || <a href={`/c/${c.parent_cid}`}>parent</a>}
+      <a href={`/c/${c.cid}`}>self</a>
+      <a href={`/u/${c.uid}`}>{c.username ?? "unknown user"}</a>
+      {!c.created_at || <span>{new Date(c.created_at).toLocaleDateString()}</span>}
+    </div>
+    <div>
+      {c?.tags?.map((tag: string) => (
+        <span>{tag}</span>
+      ))}
+    </div>
+    <div>{c?.child_comments?.map(Comment)}</div>
+  </div>
+);
+
 //// HONO //////////////////////////////////////////////////////////////////////
 
 const cookieSecret = Deno.env.get("COOKIE_SECRET") ?? Math.random().toString();
@@ -373,9 +401,7 @@ app.get("/u", authed, async c => {
       <section>
         <a href={`/c?uid=${usr.uid}`}>my posts</a>
       </section>
-      <section>
-        <pre>{JSON.stringify(usr, null, 2)}</pre>
-      </section>
+      <section>{User(usr)}</section>
       <section>
         <form method="post" action="/logout">
           <button>logout</button>
@@ -401,9 +427,7 @@ app.get("/u/:uid", async c => {
     default:
       return c.html(
         <Layout title={usr.name}>
-          <section>
-            <pre>{JSON.stringify(usr, null, 2)}</pre>
-          </section>
+          <section>{User(usr)}</section>
           <section>
             <a href={`/c?uid=${usr.uid}`}>posts</a>
           </section>
@@ -484,7 +508,7 @@ app.get("/c/:cid?", async c => {
     default: {
       if (!cid) {
         return c.html(
-          <Layout title={"TODO"}>
+          <Layout>
             <section>
               <table>
                 <tbody>
@@ -518,19 +542,14 @@ app.get("/c/:cid?", async c => {
         const post = comments?.[0];
         return c.html(
           <Layout title={post?.body?.slice(0, 16)}>
-            <section>
-              {/* TODO: render body as markdown */}
-              <pre>{JSON.stringify({ ...post, child_comments: undefined }, null, 2)}</pre>
-            </section>
+            <section>{Comment({ ...post, child_comments: [] })}</section>
             <section>
               <form method="post" action={`/c/${post?.cid ?? 0}`}>
                 <textarea name="body"></textarea>
                 <button>reply</button>
               </form>
             </section>
-            <section>
-              <pre>{JSON.stringify(post?.child_comments, null, 2)}</pre>
-            </section>
+            <section>{post?.child_comments?.map(Comment)}</section>
           </Layout>
         );
       }
