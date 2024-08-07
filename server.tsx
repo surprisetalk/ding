@@ -60,6 +60,7 @@ const Layout = (props: { title?: string; keywords?: string; desc?: string; child
     <head>
       <title>${props.title ? `future of coding | ${props.title}` : "future of coding"}</title>
       <meta charset="UTF-8" />
+      <meta name="color-scheme" content="light dark" />
       <meta name="author" content="Taylor Troesh" />
       <meta name="viewport" content="width=device-width, initial-scale=1.0" />
       ${props.desc ? html`<meta name="description" content="${props.desc}" />` : ""}
@@ -76,8 +77,10 @@ const Layout = (props: { title?: string; keywords?: string; desc?: string; child
     </head>
     <body>
       <header>
-        <a href="/">home</a>
-        <a href="/u">account</a>
+        <section>
+          <a href="/">ding</a>
+          <a href="/u">account</a>
+        </section>
       </header>
       <main>${props.children}</main>
       <footer></footer>
@@ -85,30 +88,35 @@ const Layout = (props: { title?: string; keywords?: string; desc?: string; child
   </html>`;
 
 const User = u => (
-  <div>
-    {/* TODO */}
-    <pre>{JSON.stringify(u, null, 2)}</pre>
+  <div class="user">
+    <div>
+      <span>{u.name}</span>
+      {u.uid !== u.invited_by_uid || <a href={`/u/${u.invited_by_uid}`}>{u.invited_by_username}</a>}
+      <a href={`/c?uid=${u.uid}`}>posts</a>
+    </div>
+    <div>
+      {/* TODO: render body as markdown */}
+      <pre>{u.bio}</pre>
+    </div>
   </div>
 );
 
 const Comment = c => (
   <div class="comment">
     <div>
-      {/* TODO: render body as markdown */}
-      <pre>{c.body}</pre>
-    </div>
-    <div>
+      {!c.created_at || <span>{new Date(c.created_at).toLocaleDateString()}</span>}
       {!c.parent_cid || <a href={`/c/${c.parent_cid}`}>parent</a>}
       <a href={`/c/${c.cid}`}>self</a>
       <a href={`/u/${c.uid}`}>{c.username ?? "unknown user"}</a>
-      {!c.created_at || <span>{new Date(c.created_at).toLocaleDateString()}</span>}
-    </div>
-    <div>
       {c?.tags?.map((tag: string) => (
-        <span>{tag}</span>
+        <a href={`/c?tag=${tag}`}>{tag}</a>
       ))}
     </div>
-    <div>{c?.child_comments?.map(Comment)}</div>
+    <div>
+      {/* TODO: render body as markdown */}
+      <pre>{c.body}</pre>
+    </div>
+    <div style="padding-left: 1rem;">{c?.child_comments?.map(Comment)}</div>
   </div>
 );
 
@@ -391,16 +399,13 @@ app.post("/invite", authed, async c => {
 
 app.get("/u", authed, async c => {
   const [usr] = await sql`
-    select uid, name, email, bio, invited_by, password is not null as password 
-    from usr u where uid = ${c.get("uid")!}
+    select u.uid, u.name, u.email, u.bio, u.invited_by, u.password is not null as password, i.name as invited_by_username
+    from usr u left join usr i on i.uid = u.invited_by where u.uid = ${c.get("uid")!}
   `;
   if (!usr) return notFound();
   if (!usr.password) return c.redirect("/password");
   return c.html(
     <Layout title="your account">
-      <section>
-        <a href={`/c?uid=${usr.uid}`}>my posts</a>
-      </section>
       <section>{User(usr)}</section>
       <section>
         <form method="post" action="/logout">
@@ -428,9 +433,6 @@ app.get("/u/:uid", async c => {
       return c.html(
         <Layout title={usr.name}>
           <section>{User(usr)}</section>
-          <section>
-            <a href={`/c?uid=${usr.uid}`}>posts</a>
-          </section>
         </Layout>
       );
   }
