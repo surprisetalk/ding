@@ -17,6 +17,7 @@ body > * {
 body > header {
   background: black;
   padding: 0.5rem 1rem;
+  margin-bottom: 0.5rem;
 }
 body > header > section {
   display: flex;
@@ -72,6 +73,18 @@ button {
   padding: 0.25rem 0.5rem;
 }
 
+pre {
+  white-space: pre-wrap;
+  white-space: -moz-pre-wrap;
+  white-space: -pre-wrap;
+  white-space: -o-pre-wrap;
+  word-wrap: break-word;
+  line-height: 1.5;
+  font-size: 0.875rem;
+  max-height: 50rem;
+  overflow: hidden;
+}
+
 a:link {
   text-decoration: none;
 }
@@ -79,6 +92,8 @@ a:link {
 .comment > div {
   display: flex;
   gap: 0.75rem;
+  opacity: 0.8;
+  font-size: 0.875rem;
 }
 
 .user > div {

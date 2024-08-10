@@ -111,10 +111,7 @@ const Comment = c => (
         <a href={`/c?tag=${tag}`}>{tag}</a>
       ))}
     </div>
-    <div>
-      {/* TODO: render body as markdown */}
-      <pre>{c.body}</pre>
-    </div>
+    <pre>{c.body}</pre>
     <div style="padding-left: 1rem;">{c?.child_comments?.map(Comment)}</div>
   </div>
 );
@@ -258,7 +255,7 @@ app.get("/", async c => {
     <Layout>
       <section>
         <form method="post" action="/c">
-          <textarea requried name="body" rows={5} minlength={1} maxlength={1441}></textarea>
+          <textarea requried name="body" rows={12} minlength={1} maxlength={1441}></textarea>
           {/* TODO: Change to checkboxes */}
           <div style="display:flex;gap:0.5rem;justify-content:flex-end;align-items:center;">
             <select required name="tag" style="width:100%;">
@@ -549,7 +546,7 @@ app.get("/c/:cid?", async c => {
             <section>{Comment({ ...post, child_comments: [] })}</section>
             <section>
               <form method="post" action={`/c/${post?.cid ?? 0}`}>
-                <textarea requried name="body" minlength={1} maxlength={1441}></textarea>
+                <textarea requried name="body" rows={12} minlength={1} maxlength={1441}></textarea>
                 <button>reply</button>
               </form>
             </section>
