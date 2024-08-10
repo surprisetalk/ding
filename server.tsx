@@ -78,8 +78,8 @@ const Layout = (props: { title?: string; keywords?: string; desc?: string; child
     <body>
       <header>
         <section>
-          <a href="/">ding</a>
-          <a href="/u">account</a>
+          <a href="/" style="letter-spacing:10px;font-weight:700;">▢ding</a>
+          <a href="/u" style="letter-spacing:2px;font-size:0.875rem;opacity:0.8;">account</a>
         </section>
       </header>
       <main>${props.children}</main>
@@ -104,9 +104,8 @@ const User = u => (
 const Comment = c => (
   <div class="comment">
     <div>
-      {!c.created_at || <span>{new Date(c.created_at).toLocaleDateString()}</span>}
+      {!c.created_at || <a href={`/c/${c.cid}`}>{new Date(c.created_at).toLocaleDateString()}</a>}
       {!c.parent_cid || <a href={`/c/${c.parent_cid}`}>parent</a>}
-      <a href={`/c/${c.cid}`}>self</a>
       <a href={`/u/${c.uid}`}>{c.username ?? "unknown user"}</a>
       {c?.tags?.map((tag: string) => (
         <a href={`/c?tag=${tag}`}>{tag}</a>
@@ -117,6 +116,23 @@ const Comment = c => (
       <pre>{c.body}</pre>
     </div>
     <div style="padding-left: 1rem;">{c?.child_comments?.map(Comment)}</div>
+  </div>
+);
+
+const Post = comment => (
+  <div>
+    <p>
+      <a href={`/c/${comment.cid}`}>
+        {`${comment.body.replace(/\W/g, " ").slice(0, 60)}${comment.body.length > 60 ? "..." : ""}`.padEnd(40, " .")}
+      </a>
+    </p>
+    <div>
+      <a href={`/c/${comment.cid}`}>{new Date(comment.created_at).toLocaleDateString()}</a>
+      <a href={`/u/${comment.uid}`}>{comment.username}</a>
+      {comment?.tags?.map((tag: string) => (
+        <a href={`/c?tag=${tag}`}>{tag}</a>
+      ))}
+    </div>
   </div>
 );
 
@@ -241,42 +257,32 @@ app.get("/", async c => {
   return c.html(
     <Layout>
       <section>
-        <table>
-          <tbody>
-            {comments.map(comment => (
-              <tr>
-                <td>{new Date(comment.created_at).toLocaleDateString()}</td>
-                <td>
-                  <a href={`/c/${comment.cid}`}>{comment.comments} replies</a>
-                </td>
-                <td style="white-space: wrap;">{comment.body.replace(/\W/g, " ").slice(0, 60)}</td>
-                <td>
-                  <a href={`/u/${comment.uid}`}>{comment.username}</a>
-                </td>
-                <td style="white-space: wrap; display: inline-flex; gap: 0.5rem;">
-                  {comment?.tags?.map((tag: string) => (
-                    <a href={`/c?tag=${tag}`}>{tag}</a>
-                  ))}
-                </td>
-              </tr>
-            ))}
-          </tbody>
-        </table>
-        <div>
+        <form method="post" action="/c">
+          <textarea requried name="body" rows={5} minlength={1} maxlength={1441}></textarea>
+          {/* TODO: Change to checkboxes */}
+          <div style="display:flex;gap:0.5rem;justify-content:flex-end;align-items:center;">
+            <select required name="tag" style="width:100%;">
+              {["", "linking", "thinking"].map(x => (
+                <option value={x}>{x}</option>
+              ))}
+            </select>
+            <button>create post</button>
+          </div>
+        </form>
+      </section>
+      <section>
+        {!comments.length && (
+          <p>
+            no posts. <a href="/">go home.</a>
+          </p>
+        )}
+        <div class="posts">{comments.map(Post)}</div>
+      </section>
+      <section>
+        <div style="margin-top: 2rem;">
           {!p || <a href={`/?p=${p - 1}`}>prev</a>}
           {!comments.length || <a href={`/?p=${p + 1}`}>next</a>}
         </div>
-      </section>
-      <section>
-        <form method="post" action="/c">
-          <select required name="tag">
-            {["", "linking", "thinking"].map(x => (
-              <option value={x}>{x}</option>
-            ))}
-          </select>
-          <textarea requried name="body" minlength={1} maxlength={1441}></textarea>
-          <button>create post</button>
-        </form>
       </section>
     </Layout>
   );
@@ -418,11 +424,13 @@ app.get("/u", authed, async c => {
   return c.html(
     <Layout title="your account">
       <section>{User(usr)}</section>
+      {/*
       <section>
         <form method="post" action="/logout">
           <button>logout</button>
         </form>
       </section>
+      */}
     </Layout>
   );
 });
@@ -523,28 +531,11 @@ app.get("/c/:cid?", async c => {
         return c.html(
           <Layout>
             <section>
-              <table>
-                <tbody>
-                  {comments.map(comment => (
-                    <tr>
-                      <td>{new Date(comment.created_at).toLocaleDateString()}</td>
-                      <td>
-                        <a href={`/c/${comment.cid}`}>{comment.comments} replies</a>
-                      </td>
-                      <td style="white-space: wrap;">{comment.body.replace(/\W/g, " ").slice(0, 60)}</td>
-                      <td>
-                        <a href={`/u/${comment.uid}`}>{comment.username}</a>
-                      </td>
-                      <td style="white-space: wrap; display: inline-flex; gap: 0.5rem;">
-                        {comment?.tags?.map((tag: string) => (
-                          <a href={`/c?tag=${tag}`}>{tag}</a>
-                        ))}
-                      </td>
-                    </tr>
-                  ))}
-                </tbody>
-              </table>
-              <div>
+              <div class="posts">{comments.map(Post)}</div>
+            </section>
+            <section>
+              <div style="margin-top: 2rem;">
+                {/* TODO: This also needs to keep the other query params... */}
                 {!p || <a href={`/c?p=${p - 1}`}>prev</a>}
                 {!comments.length || <a href={`/c?p=${p + 1}`}>next</a>}
               </div>
@@ -558,7 +549,7 @@ app.get("/c/:cid?", async c => {
             <section>{Comment({ ...post, child_comments: [] })}</section>
             <section>
               <form method="post" action={`/c/${post?.cid ?? 0}`}>
-                <textarea name="body"></textarea>
+                <textarea requried name="body" minlength={1} maxlength={1441}></textarea>
                 <button>reply</button>
               </form>
             </section>
