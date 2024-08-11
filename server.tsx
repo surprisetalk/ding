@@ -180,7 +180,7 @@ const authed = some(
     verifyUser: async (email, password, c) => {
       const [usr] = await sql`
         select *, password = crypt(${password}, password) AS is_password_correct
-        from usr where email = ${email}
+        from usr where email = ${email} or name = ${email}
       `;
       if (!usr || !usr.is_password_correct) return false;
       await setSignedCookie(c, "uid", usr.uid, cookieSecret);
