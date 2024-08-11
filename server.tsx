@@ -357,7 +357,7 @@ app.post("/forgot", async c => {
           console.log(`/password?email=${email}&token=${usr.token}`);
           console.error(`Could not send password reset email to ${email}:`, err?.response?.body || err);
         }));
-  return ok(c);
+  return c.redirect("/");
 });
 
 app.get("/password", c => {
