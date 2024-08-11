@@ -261,7 +261,7 @@ app.get("/", async c => {
     <Layout>
       <section>
         <form method="post" action="/c">
-          <textarea requried name="body" rows={12} minlength={1} maxlength={1441}></textarea>
+          <textarea requried name="body" rows={18} minlength={1} maxlength={1441}></textarea>
           {/* TODO: Change to checkboxes */}
           <div style="display:flex;gap:0.5rem;justify-content:flex-end;align-items:center;">
             <select required name="tag" style="width:100%;">
@@ -602,7 +602,7 @@ app.get("/c/:cid?", async c => {
             <section>{Comment({ ...post, child_comments: [] })}</section>
             <section>
               <form method="post" action={`/c/${post?.cid ?? 0}`}>
-                <textarea requried name="body" rows={12} minlength={1} maxlength={1441}></textarea>
+                <textarea requried name="body" rows={18} minlength={1} maxlength={1441}></textarea>
                 <button>reply</button>
               </form>
             </section>
