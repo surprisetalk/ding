@@ -1,5 +1,3 @@
-create schema public;
-
 create extension if not exists pgcrypto;
 
 create extension if not exists citext;
@@ -26,6 +24,8 @@ create table
     created_at timestamptz not null default current_timestamp
   );
 
+create index usr_email_idx on usr (email);
+
 create table
   com (
     cid serial primary key,
@@ -36,7 +36,10 @@ create table
     created_at timestamp default current_timestamp
   );
 
--- TODO: add indexes
+create index com_body_idx on com using gin(to_tsvector('english', body));
+create index com_tags_idx on com using gin(tags);
+create index com_parent_cid_idx on com (parent_cid);
+create index com_uid_idx on com (uid);
 
 insert into
   usr (uid, name, email, password, bio, email_verified_at, invited_by)

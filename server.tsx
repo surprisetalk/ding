@@ -514,6 +514,7 @@ app.get("/c/:cid?", async c => {
     where ${cid ? sql`cid = ${cid ?? null}` : sql`parent_cid is null`}
     and uid = ${c.req.query("uid") ?? sql`uid`}
     and tags @> ${[c.req.query("tag") ?? null].filter(x => x)}
+    ${c.req.query("q") ? sql`and to_tsvector('english', body) @@ plainto_tsquery('english', ${c.req.query("q") ?? ""}::text)` : sql``}
     order by created_at desc
     offset ${p * 25}
     limit 25
@@ -527,6 +528,12 @@ app.get("/c/:cid?", async c => {
       if (!cid) {
         return c.html(
           <Layout>
+            <section>
+              <form method="get" action="/c" style="display:flex;flex-direction:row;gap:0.5rem;">
+                <input name="q" value={c.req.query("q") ?? ""} style="width:100%;" />
+                <button>search</button>
+              </form>
+            </section>
             <section>
               <div class="posts">{comments.map(Post)}</div>
             </section>
