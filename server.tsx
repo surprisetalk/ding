@@ -368,7 +368,7 @@ app.get("/password", c => {
       <section>
         <form method="post" action="/password">
           <input required name="email" value={email} disabled />
-          <input required name="token" value={token} style="visibility:hidden;" />
+          <input required name="token" value={token} style="visibility:hidden;height:0;" />
           <input required name="password" type="password" placeholder="password1!" />
           <p>
             <button type="submit">set password</button>
