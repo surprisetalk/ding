@@ -394,7 +394,7 @@ app.post("/password", async c => {
   const { email, token, password } = await form(c);
   const [usr] = await sql`
     update usr
-    set password = crypt(${password}, gen_salt('bf', 8))
+    set password = crypt(${password}, gen_salt('bf', 8)), email_verified_at = coalesce(email_verified_at, now())
     where true
       and to_timestamp(split_part(${token},':',1)::bigint) > now() - interval '2 days'
       and ${email} = email
