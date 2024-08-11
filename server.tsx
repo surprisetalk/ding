@@ -44,7 +44,7 @@ const sendVerificationEmail = async (email: string, token: string) =>
         `Welcome to ᵗ𝕙𝔢 𝐟𝐔𝓉𝓾гє 𝔬𝔣 ᑕⓞ𝓓ƗŇg.` +
         `\n\n` +
         `Please verify your email: ` +
-        `https://futureofcod.ing/verify` +
+        `https://futureofcod.ing/password` +
         `?email=${encodeURIComponent(email)}` +
         `&token=${encodeURIComponent(token)}`,
     })
