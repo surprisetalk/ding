@@ -37,7 +37,7 @@ const sendVerificationEmail = async (email: string, token: string) =>
   (await sg
     .send({
       to: email,
-      from: "hello@futureofcod.ing",
+      from: "taylor@troe.sh",
       subject: "Verify your email",
       text:
         `` +
@@ -49,7 +49,7 @@ const sendVerificationEmail = async (email: string, token: string) =>
         `&token=${encodeURIComponent(token)}`,
     })
     .catch(err => {
-      console.log(`/verify?email=${email}&token=${token}`);
+      console.log(`/password?email=${email}&token=${token}`);
       console.error(`Could not send verification email to ${email}:`, err?.response?.body || err);
     }));
 
@@ -302,20 +302,20 @@ app.post("/logout", c => {
   return ok(c);
 });
 
-app.get("/verify", async c => {
-  const email = c.req.query("email") ?? "";
-  const token = c.req.query("token") ?? "";
-  await sql`
-    update usr
-    set email_verified_at = now()
-    where email_verified_at is null
-      and to_timestamp(split_part(${token},':',1)::bigint) > now() - interval '2 days'
-      and ${email} = email
-      and ${token} = email_token(to_timestamp(split_part(${token},':',1)::bigint), email)
-    returning uid
-  `;
-  return ok(c);
-});
+// app.get("/verify", async c => {
+//   const email = c.req.query("email") ?? "";
+//   const token = c.req.query("token") ?? "";
+//   await sql`
+//     update usr
+//     set email_verified_at = now()
+//     where email_verified_at is null
+//       and to_timestamp(split_part(${token},':',1)::bigint) > now() - interval '2 days'
+//       and ${email} = email
+//       and ${token} = email_token(to_timestamp(split_part(${token},':',1)::bigint), email)
+//     returning uid
+//   `;
+//   return ok(c);
+// });
 
 app.get("/forgot", c => {
   return c.html(
@@ -342,7 +342,7 @@ app.post("/forgot", async c => {
       (await sg
         .send({
           to: email,
-          from: "hello@futureofcod.ing",
+          from: "taylor@troe.sh",
           subject: "Reset your password",
           text:
             `` +
@@ -398,6 +398,7 @@ app.post("/invite", authed, async c => {
   const usr = {
     name: Math.random().toString().slice(2),
     email: (await form(c)).email,
+    bio: "coming soon",
     password: null,
     invited_by: c.get("uid")!,
   };
@@ -409,6 +410,38 @@ app.post("/invite", authed, async c => {
   `;
   if (email && token) await sendVerificationEmail(email, token);
   return ok(c);
+});
+
+// TODO: Remove this when we want to disallow self-signups.
+app.get("/signup", async c => {
+  return c.html(
+    <Layout title="your account">
+      <section>
+        <form method="post" action="/signup" style="display:flex;flex-direction:row;">
+          <input type="text" name="name" placeholder="ivan_grease" />
+          <input type="email" name="email" placeholder="hello@example.com" />
+          <button>verify email</button>
+        </form>
+      </section>
+    </Layout>
+  );
+});
+
+// TODO: Remove this when we want to disallow self-signups.
+app.post("/signup", async c => {
+  const usr = {
+    name: (await form(c)).name,
+    email: (await form(c)).email,
+    bio: "coming soon",
+    password: null,
+    invited_by: -1,
+  };
+  const [{ email = undefined, token = undefined } = {}] = await sql`
+    with usr_ as (insert into usr ${sql(usr)} on conflict do nothing returning *)
+    select uid, email, email_token(now(), email) as token from usr_
+  `;
+  if (email && token) await sendVerificationEmail(email, token);
+  return c.redirect("/");
 });
 
 app.get("/u", authed, async c => {
