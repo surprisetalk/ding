@@ -367,8 +367,8 @@ app.get("/password", c => {
     <Layout title="welcome">
       <section>
         <form method="post" action="/password">
-          <input required name="email" value={email} class="hidden" />
-          <input required name="token" value={token} class="hidden" />
+          <input required name="email" value={email} disabled />
+          <input required name="token" value={token} style="visibility:hidden;" />
           <input required name="password" type="password" placeholder="password1!" />
           <p>
             <button type="submit">set password</button>
