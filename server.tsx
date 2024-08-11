@@ -463,6 +463,8 @@ app.post("/c/:parent_cid?", authed, async c => {
   };
   if (!com.tags.length && !com.parent_cid) throw new HTTPException(400, { message: "Must include tags on post." });
   if (com.tags.length && com.parent_cid) throw new HTTPException(400, { message: "Cannot include tags on child comment." });
+  // if ((await sql`select true from com where uid = ${c.get("uid")!} and created_at between now() and interval '1 day' having count(*) > 19`).length)
+  //   throw new HTTPException(400, { message: "You've reached your allotted limit of 19 comments per 24 hours." });
   const [comment] = await sql`insert into com ${sql(com)} returning cid`;
   return c.redirect(`/c/${c.req.param("parent_cid") ?? comment?.cid ?? ""}`);
 });
