@@ -266,7 +266,7 @@ app.get("/", async c => {
           <div style="display:flex;gap:0.5rem;justify-content:flex-end;align-items:center;">
             <select required name="tag" style="width:100%;">
               {["", "linking", "thinking"].map(x => (
-                <option value={x}>{x}</option>
+                <option value={x}>{x || "<select a tag>"}</option>
               ))}
             </select>
             <button>create post</button>
