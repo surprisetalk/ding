@@ -95,7 +95,6 @@ const User = u => (
       <a href={`/c?uid=${u.uid}`}>posts</a>
     </div>
     <div>
-      {/* TODO: render body as markdown */}
       <pre>{u.bio}</pre>
     </div>
   </div>
@@ -120,7 +119,10 @@ const Post = comment => (
   <div>
     <p>
       <a href={`/c/${comment.cid}`}>
-        {`${comment.body.replace(/\W/g, " ").slice(0, 60)}${comment.body.length > 60 ? "..." : ""}`.padEnd(40, " .")}
+        {`${comment.body
+          .trim()
+          .replace(/[\r\n\t].+$/, "")
+          .slice(0, 60)}${comment.body.length > 60 ? "…" : ""}`.padEnd(40, " .")}
       </a>
     </p>
     <div>
