@@ -297,6 +297,11 @@ app.post("/login", async c => {
   return c.redirect("/u");
 });
 
+app.get("/logout", c => {
+  deleteCookie(c, "uid");
+  return c.redirect("/");
+});
+
 app.post("/logout", c => {
   deleteCookie(c, "uid");
   return ok(c);
