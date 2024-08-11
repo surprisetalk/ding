@@ -84,6 +84,9 @@ const Layout = (props: { title?: string; keywords?: string; desc?: string; child
       </header>
       <main>${props.children}</main>
       <footer></footer>
+      <script>
+        for (const x of document.querySelectorAll("pre")) x.innerHTML = x.innerHTML.replace(/(https?:\\/\\/\\S+)/g, '<a href="$1">$1</a>');
+      </script>
     </body>
   </html>`;
 
