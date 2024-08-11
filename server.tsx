@@ -78,8 +78,9 @@ const Layout = (props: { title?: string; keywords?: string; desc?: string; child
     <body>
       <header>
         <section>
-          <a href="/" style="letter-spacing:10px;font-weight:700;">▢ding</a>
+          <a href="/" style="letter-spacing:10px;font-weight:700;width:100%;">▢ding</a>
           <a href="/u" style="letter-spacing:2px;font-size:0.875rem;opacity:0.8;">account</a>
+          <a href="https://github.com/surprisetalk/ding" style="letter-spacing:2px;font-size:0.875rem;opacity:0.8;">source</a>
         </section>
       </header>
       <main>${props.children}</main>
