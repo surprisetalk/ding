@@ -543,16 +543,19 @@ app.get("/c/:cid?", async c => {
                 select c___.cid 
                 from com c___
                 where c___.parent_cid = c__.cid
+                order by c___.created_at desc
               )
             )
             from com c__ 
             inner join usr u_ using (uid)
             where c__.parent_cid = c_.cid
+            order by c__.created_at desc
           )
         )
         from com c_ 
         inner join usr u_ using (uid)
         where c_.parent_cid = c.cid
+        order by c_.created_at desc
       ) as child_comments
     from com c
     inner join usr u using (uid)
