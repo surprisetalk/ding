@@ -44,7 +44,7 @@ const sendVerificationEmail = async (email: string, token: string) =>
         `Welcome to ᵗ𝕙𝔢 𝐟𝐔𝓉𝓾гє 𝔬𝔣 ᑕⓞ𝓓ƗŇg.` +
         `\n\n` +
         `Please verify your email: ` +
-        `https://futureofcod.ing/password` +
+        `https://ding.bar/password` +
         `?email=${encodeURIComponent(email)}` +
         `&token=${encodeURIComponent(token)}`,
     })
@@ -55,41 +55,43 @@ const sendVerificationEmail = async (email: string, token: string) =>
 
 //// COMPONENTS ////////////////////////////////////////////////////////////////
 
-const Layout = (props: { title?: string; keywords?: string; desc?: string; children?: any }) => html`<!DOCTYPE html>
-  <html>
-    <head>
-      <title>${props.title ? `future of coding | ${props.title}` : "future of coding"}</title>
-      <meta charset="UTF-8" />
-      <meta name="color-scheme" content="light dark" />
-      <meta name="author" content="Taylor Troesh" />
-      <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-      ${props.desc ? html`<meta name="description" content="${props.desc}" />` : ""}
-      ${props.keywords ? html`<meta name="keywords" content="${props.keywords}" />` : ""}
-      <link rel="icon" sizes="16x16" href="/favicon-16x16.png" />
-      <link rel="icon" sizes="32x32" href="/favicon-32x32.png" />
-      <link rel="icon" sizes="192x192" href="/android-chrome-192x192.png" />
-      <link rel="icon" sizes="512x512" href="/android-chrome-512x512.png" />
-      <link rel="icon" href="/favicon.ico" type="image/x-icon" />
-      <link rel="shortcut icon" href="/favicon.ico" type="image/x-icon" />
-      <link rel="apple-touch-icon" sizes="180x180" href="/apple-touch-icon.png" />
-      <link rel="manifest" href="/manifest.json" />
-      <link rel="stylesheet" href="/style.css" />
-    </head>
-    <body>
-      <header>
-        <section>
-          <a href="/" style="letter-spacing:10px;font-weight:700;width:100%;">▢ding</a>
-          <a href="/u" style="letter-spacing:2px;font-size:0.875rem;opacity:0.8;">account</a>
-          <a href="https://github.com/surprisetalk/ding" style="letter-spacing:2px;font-size:0.875rem;opacity:0.8;">source</a>
-        </section>
-      </header>
-      <main>${props.children}</main>
-      <footer></footer>
-      <script>
-        for (const x of document.querySelectorAll("pre")) x.innerHTML = x.innerHTML.replace(/(https?:\\/\\/\\S+)/g, '<a href="$1">$1</a>');
-      </script>
-    </body>
-  </html>`;
+const Layout = (props: { title?: string; keywords?: string; desc?: string; children?: any }) =>
+  html`<!doctype html>
+    <html>
+      <head>
+        <title>${props.title ? `ding | ${props.title}` : "ding"}</title>
+        <meta charset="UTF-8" />
+        <meta name="color-scheme" content="light dark" />
+        <meta name="author" content="Taylor Troesh" />
+        <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+        ${props.desc ? html`<meta name="description" content="${props.desc}" />` : ""}
+        ${props.keywords ? html`<meta name="keywords" content="${props.keywords}" />` : ""}
+        <link rel="icon" sizes="16x16" href="/favicon-16x16.png" />
+        <link rel="icon" sizes="32x32" href="/favicon-32x32.png" />
+        <link rel="icon" sizes="192x192" href="/android-chrome-192x192.png" />
+        <link rel="icon" sizes="512x512" href="/android-chrome-512x512.png" />
+        <link rel="icon" href="/favicon.ico" type="image/x-icon" />
+        <link rel="shortcut icon" href="/favicon.ico" type="image/x-icon" />
+        <link rel="apple-touch-icon" sizes="180x180" href="/apple-touch-icon.png" />
+        <link rel="manifest" href="/manifest.json" />
+        <link rel="stylesheet" href="/style.css" />
+      </head>
+      <body>
+        <header>
+          <section>
+            <a href="/" style="letter-spacing:10px;font-weight:700;width:100%;">▢ding</a>
+            <a href="/u" style="letter-spacing:2px;font-size:0.875rem;opacity:0.8;">account</a>
+            <a href="https://github.com/surprisetalk/ding" style="letter-spacing:2px;font-size:0.875rem;opacity:0.8;">source</a>
+          </section>
+        </header>
+        <main>${props.children}</main>
+        <footer></footer>
+        <script>
+          for (const x of document.querySelectorAll("pre"))
+            x.innerHTML = x.innerHTML.replace(/(https?:\\/\\/\\S+)/g, '<a href="$1">$1</a>');
+        </script>
+      </body>
+    </html>`;
 
 const User = u => (
   <div class="user">
@@ -110,9 +112,7 @@ const Comment = c => (
       {!c.created_at || <a href={`/c/${c.cid}`}>{new Date(c.created_at).toLocaleDateString()}</a>}
       {!c.parent_cid || <a href={`/c/${c.parent_cid}`}>parent</a>}
       <a href={`/u/${c.uid}`}>{c.username ?? "unknown user"}</a>
-      {c?.tags?.map((tag: string) => (
-        <a href={`/c?tag=${tag}`}>{tag}</a>
-      ))}
+      {c?.tags?.map((tag: string) => <a href={`/c?tag=${tag}`}>{tag}</a>)}
     </div>
     <pre>{c.body}</pre>
     <div style="padding-left: 1rem;">{c?.child_comments?.map(Comment)}</div>
@@ -132,9 +132,7 @@ const Post = comment => (
     <div>
       <a href={`/c/${comment.cid}`}>{new Date(comment.created_at).toLocaleDateString()}</a>
       <a href={`/u/${comment.uid}`}>{comment.username}</a>
-      {comment?.tags?.map((tag: string) => (
-        <a href={`/c?tag=${tag}`}>{tag}</a>
-      ))}
+      {comment?.tags?.map((tag: string) => <a href={`/c?tag=${tag}`}>{tag}</a>)}
     </div>
   </div>
 );
@@ -187,7 +185,7 @@ const authed = some(
       c.set("uid", usr.uid);
       return true;
     },
-  })
+  }),
 );
 
 // TODO: Add rate-limiting middleware everywhere.
@@ -227,7 +225,7 @@ app.onError((err, c) => {
             <p>{message}</p>
           </section>
         </Layout>,
-        500
+        500,
       );
   }
 });
@@ -287,7 +285,7 @@ app.get("/", async c => {
           {!comments.length || <a href={`/?p=${p + 1}`}>next</a>}
         </div>
       </section>
-    </Layout>
+    </Layout>,
   );
 });
 
@@ -339,7 +337,7 @@ app.get("/forgot", c => {
           </p>
         </form>
       </section>
-    </Layout>
+    </Layout>,
   );
 });
 
@@ -358,7 +356,7 @@ app.post("/forgot", async c => {
           text:
             `` +
             `Click here to reset your password: ` +
-            `https://futureofcod.ing/password` +
+            `https://ding.bar/password` +
             `?email=${encodeURIComponent(email)}` +
             `&token=${encodeURIComponent(usr.token)}` +
             `\n\n` +
@@ -386,7 +384,7 @@ app.get("/password", c => {
           </p>
         </form>
       </section>
-    </Layout>
+    </Layout>,
   );
 });
 
@@ -434,7 +432,7 @@ app.get("/signup", async c => {
           <button>verify email</button>
         </form>
       </section>
-    </Layout>
+    </Layout>,
   );
 });
 
@@ -472,7 +470,7 @@ app.get("/u", authed, async c => {
         </form>
       </section>
       */}
-    </Layout>
+    </Layout>,
   );
 });
 
@@ -493,7 +491,7 @@ app.get("/u/:uid", async c => {
       return c.html(
         <Layout title={usr.name}>
           <section>{User(usr)}</section>
-        </Layout>
+        </Layout>,
       );
   }
 });
@@ -593,7 +591,7 @@ app.get("/c/:cid?", async c => {
                 {!comments.length || <a href={`/c?p=${p + 1}`}>next</a>}
               </div>
             </section>
-          </Layout>
+          </Layout>,
         );
       } else {
         const post = comments?.[0];
@@ -607,7 +605,7 @@ app.get("/c/:cid?", async c => {
               </form>
             </section>
             <section>{post?.child_comments?.map(Comment)}</section>
-          </Layout>
+          </Layout>,
         );
       }
     }
@@ -621,7 +619,7 @@ Deno.serve(
     hostname: Deno.env.get("HOST") ?? "0.0.0.0",
     port: parseInt(Deno.env.get("PORT") ?? "") || 8080,
   },
-  app.fetch
+  app.fetch,
 );
 
 export default app;
