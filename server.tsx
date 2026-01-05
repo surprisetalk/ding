@@ -1,6 +1,3 @@
-/** @jsx jsx */
-/** @jsxImportSource jsr:@hono/hono/jsx */
-
 //// IMPORTS ///////////////////////////////////////////////////////////////////
 
 import { HTTPException } from "jsr:@hono/hono/http-exception";
@@ -93,7 +90,7 @@ const Layout = (props: { title?: string; keywords?: string; desc?: string; child
       </body>
     </html>`;
 
-const User = u => (
+const User = (u: Record<string, any>) => (
   <div class="user">
     <div>
       <span>{u.name}</span>
@@ -106,7 +103,7 @@ const User = u => (
   </div>
 );
 
-const Comment = c => (
+const Comment = (c: Record<string, any>) => (
   <div class="comment">
     <div>
       {!c.created_at || <a href={`/c/${c.cid}`}>{new Date(c.created_at).toLocaleDateString()}</a>}
@@ -119,7 +116,7 @@ const Comment = c => (
   </div>
 );
 
-const Post = comment => (
+const Post = (comment: Record<string, any>) => (
   <div>
     <p>
       <a href={`/c/${comment.cid}`}>
