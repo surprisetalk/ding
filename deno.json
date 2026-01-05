@@ -1,4 +1,12 @@
 {
+  "unstable": [
+    "raw-imports"
+  ],
+  "fmt": {
+    "lineWidth": 120,
+    "useBraces": "preferNone",
+    "singleBodyPosition": "maintain"
+  },
   "compilerOptions": {
     "jsx": "precompile",
     "jsxImportSource": "jsr:@hono/hono/jsx"

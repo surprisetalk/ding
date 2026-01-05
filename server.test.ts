@@ -6,6 +6,7 @@ import pg from "https://deno.land/x/postgresjs@v3.4.3/mod.js";
 import { PGlite } from "@electric-sql/pglite";
 import { citext } from "@electric-sql/pglite/contrib/citext";
 import { PostgresConnection } from "pg-gateway";
+import dbSql from "./db.sql" with { type: "text" };
 
 //// PGLITE WRAPPER ////////////////////////////////////////////////////////////
 
@@ -41,8 +42,7 @@ const pglite = (f: (sql: pg.Sql) => (t: Deno.TestContext) => Promise<void>) => a
   `);
 
   // Load schema (skip pgcrypto extension since we mocked it)
-  const schema = (await Deno.readTextFile("./db.sql"))
-    .replace(/create extension if not exists pgcrypto;/i, "");
+  const schema = dbSql.replace(/create extension if not exists pgcrypto;/i, "");
   await db.exec(schema);
 
   // Insert test user
