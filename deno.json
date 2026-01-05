@@ -2,5 +2,9 @@
   "compilerOptions": {
     "jsx": "precompile",
     "jsxImportSource": "jsr:@hono/hono/jsx"
+  },
+  "imports": {
+    "@electric-sql/pglite": "npm:@electric-sql/pglite",
+    "pg-gateway": "npm:pg-gateway"
   }
 }

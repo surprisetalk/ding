@@ -5,8 +5,10 @@
     "jsr:@std/assert@*": "1.0.2",
     "jsr:@std/assert@1": "1.0.2",
     "jsr:@std/internal@^1.0.1": "1.0.1",
+    "npm:@electric-sql/pglite@*": "0.3.14",
     "npm:@sendgrid/mail@*": "8.1.0",
-    "npm:@types/node@*": "18.16.19"
+    "npm:@types/node@*": "18.16.19",
+    "npm:pg-gateway@*": "0.3.0-beta.4"
   },
   "jsr": {
     "@hono/hono@4.5.3": {
@@ -23,6 +25,9 @@
     }
   },
   "npm": {
+    "@electric-sql/pglite@0.3.14": {
+      "integrity": "sha512-3DB258dhqdsArOI1fIt7cb9RpUOgcDg5hXWVgVHAeqVQ/qxtFy605QKs4gx6mFq3jWsSPqDN8TgSEsqC3OfV9Q=="
+    },
     "@sendgrid/client@8.1.0": {
       "integrity": "sha512-Kp2kKLr307v/HnR3uGuySt0AbCkeG7naDVOzfPOtWvKHVZIEHmKidQjJjzytVZNYWtoRdYgNfBw6GyUznGqa6w==",
       "dependencies": [
@@ -88,6 +93,9 @@
       "dependencies": [
         "mime-db"
       ]
+    },
+    "pg-gateway@0.3.0-beta.4": {
+      "integrity": "sha512-CTjsM7Z+0Nx2/dyZ6r8zRsc3f9FScoD5UAOlfUx1Fdv/JOIWvRbF7gou6l6vP+uypXQVoYPgw8xZDXgMGvBa4Q=="
     },
     "proxy-from-env@1.1.0": {
       "integrity": "sha512-D+zkORCbA9f1tdWRK0RaCR3GPv50cMxcrz4X8k5LTSUD1Dkw47mKJEZQNunItRTkWwgtaUSo1RVFRIG9ZXiFYg=="
@@ -634,7 +642,9 @@
   },
   "workspace": {
     "dependencies": [
-      "jsr:@hono/hono@*"
+      "jsr:@hono/hono@*",
+      "npm:@electric-sql/pglite@*",
+      "npm:pg-gateway@*"
     ]
   }
 }

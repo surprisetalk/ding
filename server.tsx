@@ -23,7 +23,8 @@ const TODO = (x: TemplateStringsArray) => {
 
 //// POSTGRES //////////////////////////////////////////////////////////////////
 
-export const sql = pg(Deno.env.get(`DATABASE_URL`)?.replace(/flycast/, "internal")!, { database: "ding" });
+export let sql = pg(Deno.env.get(`DATABASE_URL`)?.replace(/flycast/, "internal")!, { database: "ding" });
+export const setSql = (s: typeof sql) => (sql = s);
 
 //// SENDGRID //////////////////////////////////////////////////////////////////
 
