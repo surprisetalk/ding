@@ -1,14 +1,14 @@
 //// IMPORTS ///////////////////////////////////////////////////////////////////
 
 import { HTTPException } from "jsr:@hono/hono/http-exception";
-import { Hono, Context } from "jsr:@hono/hono";
-import { some, every, except } from "jsr:@hono/hono/combine";
+import { Context, Hono } from "jsr:@hono/hono";
+import { every, except, some } from "jsr:@hono/hono/combine";
 import { createMiddleware } from "jsr:@hono/hono/factory";
 import { logger } from "jsr:@hono/hono/logger";
 import { prettyJSON } from "jsr:@hono/hono/pretty-json";
 import { basicAuth } from "jsr:@hono/hono/basic-auth";
 import { html } from "jsr:@hono/hono/html";
-import { getSignedCookie, setSignedCookie, deleteCookie } from "jsr:@hono/hono/cookie";
+import { deleteCookie, getSignedCookie, setSignedCookie } from "jsr:@hono/hono/cookie";
 import { serveStatic } from "jsr:@hono/hono/deno";
 
 import pg from "https://deno.land/x/postgresjs@v3.4.3/mod.js";
@@ -37,8 +37,7 @@ const sendVerificationEmail = async (email: string, token: string) =>
       to: email,
       from: "taylor@troe.sh",
       subject: "Verify your email",
-      text:
-        `` +
+      text: `` +
         `Welcome to ᵗ𝕙𝔢 𝐟𝐔𝓉𝓾гє 𝔬𝔣 ᑕⓞ𝓓ƗŇg.` +
         `\n\n` +
         `Please verify your email: ` +
@@ -46,7 +45,7 @@ const sendVerificationEmail = async (email: string, token: string) =>
         `?email=${encodeURIComponent(email)}` +
         `&token=${encodeURIComponent(token)}`,
     })
-    .catch(err => {
+    .catch((err) => {
       console.log(`/password?email=${email}&token=${token}`);
       console.error(`Could not send verification email to ${email}:`, err?.response?.body || err);
     }));
@@ -54,7 +53,8 @@ const sendVerificationEmail = async (email: string, token: string) =>
 //// COMPONENTS ////////////////////////////////////////////////////////////////
 
 const Layout = (props: { title?: string; keywords?: string; desc?: string; children?: any }) =>
-  html`<!doctype html>
+  html`
+    <!DOCTYPE html>
     <html>
       <head>
         <title>${props.title ? `ding | ${props.title}` : "ding"}</title>
@@ -62,8 +62,15 @@ const Layout = (props: { title?: string; keywords?: string; desc?: string; child
         <meta name="color-scheme" content="light dark" />
         <meta name="author" content="Taylor Troesh" />
         <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-        ${props.desc ? html`<meta name="description" content="${props.desc}" />` : ""}
-        ${props.keywords ? html`<meta name="keywords" content="${props.keywords}" />` : ""}
+        ${props.desc
+          ? html`
+            <meta name="description" content="${props.desc}" />
+          `
+          : ""} ${props.keywords
+          ? html`
+            <meta name="keywords" content="${props.keywords}" />
+          `
+          : ""}
         <link rel="icon" sizes="16x16" href="/favicon-16x16.png" />
         <link rel="icon" sizes="32x32" href="/favicon-32x32.png" />
         <link rel="icon" sizes="192x192" href="/android-chrome-192x192.png" />
@@ -79,17 +86,19 @@ const Layout = (props: { title?: string; keywords?: string; desc?: string; child
           <section>
             <a href="/" style="letter-spacing:10px;font-weight:700;width:100%;">▢ding</a>
             <a href="/u" style="letter-spacing:2px;font-size:0.875rem;opacity:0.8;">account</a>
-            <a href="https://github.com/surprisetalk/ding" style="letter-spacing:2px;font-size:0.875rem;opacity:0.8;">source</a>
+            <a href="https://github.com/surprisetalk/ding" style="letter-spacing:2px;font-size:0.875rem;opacity:0.8;"
+            >source</a>
           </section>
         </header>
         <main>${props.children}</main>
         <footer></footer>
         <script>
-          for (const x of document.querySelectorAll("pre"))
-            x.innerHTML = x.innerHTML.replace(/(https?:\\/\\/\\S+)/g, '<a href="$1">$1</a>');
+        for (const x of document.querySelectorAll("pre"))
+        x.innerHTML = x.innerHTML.replace(/(https?:\\/\\/\\S+)/g, '<a href="$1">$1</a>');
         </script>
       </body>
-    </html>`;
+    </html>
+  `;
 
 const User = (u: Record<string, any>) => (
   <div class="user">
@@ -121,10 +130,12 @@ const Post = (comment: Record<string, any>) => (
   <div>
     <p>
       <a href={`/c/${comment.cid}`}>
-        {`${comment.body
-          .trim()
-          .replace(/[\r\n\t].+$/, "")
-          .slice(0, 60)}${comment.body.length > 60 ? "…" : ""}`.padEnd(40, " .")}
+        {`${
+          comment.body
+            .trim()
+            .replace(/[\r\n\t].+$/, "")
+            .slice(0, 60)
+        }${comment.body.length > 60 ? "…" : ""}`.padEnd(40, " .")}
       </a>
     </p>
     <div>
@@ -206,9 +217,8 @@ app.use(async function prettyJSON(c, next) {
 app.notFound(notFound);
 
 app.onError((err, c) => {
-  if (err instanceof HTTPException) {
+  if (err instanceof HTTPException)
     return err.getResponse();
-  }
   if (err) console.error(err);
   const message = "Sorry, this computer is мᎥｓβ𝕖𝓱𝐀𝓋𝓲𝓷g.";
   switch (host(c)) {
@@ -228,13 +238,13 @@ app.onError((err, c) => {
   }
 });
 
-app.get("/robots.txt", c => c.text(`User-agent: *\nDisallow:`));
+app.get("/robots.txt", (c) => c.text(`User-agent: *\nDisallow:`));
 
-app.get("/sitemap.txt", c => {
+app.get("/sitemap.txt", (c) => {
   return TODO`sitemap`;
 });
 
-app.get("/", async c => {
+app.get("/", async (c) => {
   const p = parseInt(c.req.query("p") ?? "0");
   const comments = await sql`
     select 
@@ -261,9 +271,7 @@ app.get("/", async c => {
           {/* TODO: Change to checkboxes */}
           <div style="display:flex;gap:0.5rem;justify-content:flex-end;align-items:center;">
             <select required name="tag" style="width:100%;">
-              {["", "linking", "thinking"].map(x => (
-                <option value={x}>{x || "<select a tag>"}</option>
-              ))}
+              {["", "linking", "thinking"].map((x) => <option value={x}>{x || "<select a tag>"}</option>)}
             </select>
             <button>create post</button>
           </div>
@@ -287,24 +295,25 @@ app.get("/", async c => {
   );
 });
 
-app.post("/login", async c => {
+app.post("/login", async (c) => {
   const { email, password } = await form(c);
   const [usr] = await sql`
     select *, password = crypt(${password}, password) AS is_password_correct
     from usr where email = ${email}
   `;
   if (!usr || !usr.is_password_correct) throw new HTTPException(401, { message: "Wrong credentials." });
-  if (!usr.email_verified_at && !(await getSignedCookie(c, cookieSecret, "uid"))) await sendVerificationEmail(usr.email, usr.token);
+  if (!usr.email_verified_at && !(await getSignedCookie(c, cookieSecret, "uid")))
+    await sendVerificationEmail(usr.email, usr.token);
   await setSignedCookie(c, "uid", usr.uid, cookieSecret);
   return c.redirect("/u");
 });
 
-app.get("/logout", c => {
+app.get("/logout", (c) => {
   deleteCookie(c, "uid");
   return c.redirect("/");
 });
 
-app.post("/logout", c => {
+app.post("/logout", (c) => {
   deleteCookie(c, "uid");
   return ok(c);
 });
@@ -324,7 +333,7 @@ app.post("/logout", c => {
 //   return ok(c);
 // });
 
-app.get("/forgot", c => {
+app.get("/forgot", (c) => {
   return c.html(
     <Layout title="welcome">
       <section>
@@ -339,20 +348,19 @@ app.get("/forgot", c => {
   );
 });
 
-app.post("/forgot", async c => {
+app.post("/forgot", async (c) => {
   const { email } = await form(c);
   const [usr] = await sql`
     select email_token(now(), email) as token from usr where email = ${email}
   `;
-  if (usr)
+  if (usr) {
     Deno.env.get(`SENDGRID_API_KEY`) &&
       (await sg
         .send({
           to: email,
           from: "taylor@troe.sh",
           subject: "Reset your password",
-          text:
-            `` +
+          text: `` +
             `Click here to reset your password: ` +
             `https://ding.bar/password` +
             `?email=${encodeURIComponent(email)}` +
@@ -360,14 +368,15 @@ app.post("/forgot", async c => {
             `\n\n` +
             `If you didn't request a password reset, please ignore this message.`,
         })
-        .catch(err => {
+        .catch((err) => {
           console.log(`/password?email=${email}&token=${usr.token}`);
           console.error(`Could not send password reset email to ${email}:`, err?.response?.body || err);
         }));
+  }
   return c.redirect("/");
 });
 
-app.get("/password", c => {
+app.get("/password", (c) => {
   const email = c.req.query("email") ?? "";
   const token = c.req.query("token") ?? "";
   return c.html(
@@ -386,7 +395,7 @@ app.get("/password", c => {
   );
 });
 
-app.post("/password", async c => {
+app.post("/password", async (c) => {
   const { email, token, password } = await form(c);
   const [usr] = await sql`
     update usr
@@ -401,7 +410,7 @@ app.post("/password", async c => {
   return ok(c);
 });
 
-app.post("/invite", authed, async c => {
+app.post("/invite", authed, async (c) => {
   const usr = {
     name: Math.random().toString().slice(2),
     email: (await form(c)).email,
@@ -420,7 +429,7 @@ app.post("/invite", authed, async c => {
 });
 
 // TODO: Remove this when we want to disallow self-signups.
-app.get("/signup", async c => {
+app.get("/signup", async (c) => {
   return c.html(
     <Layout title="your account">
       <section>
@@ -435,7 +444,7 @@ app.get("/signup", async c => {
 });
 
 // TODO: Remove this when we want to disallow self-signups.
-app.post("/signup", async c => {
+app.post("/signup", async (c) => {
   const usr = {
     name: (await form(c)).name,
     email: (await form(c)).email,
@@ -451,7 +460,7 @@ app.post("/signup", async c => {
   return c.redirect("/");
 });
 
-app.get("/u", authed, async c => {
+app.get("/u", authed, async (c) => {
   const [usr] = await sql`
     select u.uid, u.name, u.email, u.bio, u.invited_by, u.password is not null as password, i.name as invited_by_username
     from usr u left join usr i on i.uid = u.invited_by where u.uid = ${c.get("uid")!}
@@ -461,25 +470,27 @@ app.get("/u", authed, async c => {
   return c.html(
     <Layout title="your account">
       <section>{User(usr)}</section>
-      {/*
+      {
+        /*
       <section>
         <form method="post" action="/logout">
           <button>logout</button>
         </form>
       </section>
-      */}
+      */
+      }
     </Layout>,
   );
 });
 
-app.patch("/u", authed, async c => {
+app.patch("/u", authed, async (c) => {
   const usr = Object.fromEntries(await c.req.formData());
   for (const i in usr) if (!usr[i]) delete usr[i];
   await sql`update usr set ${sql(usr, "name", "bio")} where uid = ${c.get("uid")!}`;
   return ok(c);
 });
 
-app.get("/u/:uid", async c => {
+app.get("/u/:uid", async (c) => {
   const [usr] = await sql`select uid, name, bio, invited_by from usr where uid = ${c.req.param("uid")}`;
   if (!usr) return notFound();
   switch (host(c)) {
@@ -494,22 +505,23 @@ app.get("/u/:uid", async c => {
   }
 });
 
-app.post("/c/:parent_cid?", authed, async c => {
+app.post("/c/:parent_cid?", authed, async (c) => {
   const com = {
     parent_cid: c.req.param("parent_cid") ?? null,
     uid: c.get("uid")!,
     body: (await form(c)).body,
-    tags: [(await form(c)).tag].filter(x => x),
+    tags: [(await form(c)).tag].filter((x) => x),
   };
   if (!com.tags.length && !com.parent_cid) throw new HTTPException(400, { message: "Must include tags on post." });
-  if (com.tags.length && com.parent_cid) throw new HTTPException(400, { message: "Cannot include tags on child comment." });
+  if (com.tags.length && com.parent_cid)
+    throw new HTTPException(400, { message: "Cannot include tags on child comment." });
   // if ((await sql`select true from com where uid = ${c.get("uid")!} and created_at between now() and interval '1 day' having count(*) > 19`).length)
   //   throw new HTTPException(400, { message: "You've reached your allotted limit of 19 comments per 24 hours." });
   const [comment] = await sql`insert into com ${sql(com)} returning cid`;
   return c.redirect(`/c/${c.req.param("parent_cid") ?? comment?.cid ?? ""}`);
 });
 
-app.get("/c/:cid?", async c => {
+app.get("/c/:cid?", async (c) => {
   const p = parseInt(c.req.query("p") ?? "0");
   const cid = c.req.param("cid");
   const comments = await sql`
@@ -558,8 +570,12 @@ app.get("/c/:cid?", async c => {
     inner join usr u using (uid)
     where ${cid ? sql`cid = ${cid ?? null}` : sql`parent_cid is null`}
     and uid = ${c.req.query("uid") ?? sql`uid`}
-    and tags @> ${[c.req.query("tag") ?? null].filter(x => x)}
-    ${c.req.query("q") ? sql`and to_tsvector('english', body) @@ plainto_tsquery('english', ${c.req.query("q") ?? ""}::text)` : sql``}
+    and tags @> ${[c.req.query("tag") ?? null].filter((x) => x)}
+    ${
+    c.req.query("q")
+      ? sql`and to_tsvector('english', body) @@ plainto_tsquery('english', ${c.req.query("q") ?? ""}::text)`
+      : sql``
+  }
     order by created_at desc
     offset ${p * 25}
     limit 25
@@ -614,7 +630,7 @@ app.use("/*", serveStatic({ root: "./public" }));
 
 Deno.serve(
   {
-    hostname: Deno.env.get("HOST") ?? "0.0.0.0",
+    hostname: Deno.env.get("HOST") ?? "127.0.0.1",
     port: parseInt(Deno.env.get("PORT") ?? "") || 8080,
   },
   app.fetch,
