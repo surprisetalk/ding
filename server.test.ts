@@ -12,7 +12,7 @@ import dbSql from "./db.sql" with { type: "text" };
 
 const pglite = (f: (sql: pg.Sql) => (t: Deno.TestContext) => Promise<void>) => async (t: Deno.TestContext) => {
   const port = 2000 + Math.floor(Math.random() * 8000);
-  const listener = Deno.listen({ port });
+  const listener = Deno.listen({ hostname: "127.0.0.1", port });
   const db = new PGlite({ extensions: { citext } });
   const testSql = pg(`postgresql://postgres@127.0.0.1:${port}/postgres`, { fetch_types: true });
 
