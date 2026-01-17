@@ -1,2 +1,5 @@
 - [ ] launch
+- [ ] single-emoji comments should get collapsed into counters like slack. add some sitewide emoji defaults
+- [ ] add a bunch of cool bots
+- [ ] bare links should open external site in new tab
 - [ ] find discord/slack/reddit/zulip/discourse communities (esp. mods) that want to try ding out
