@@ -104,7 +104,7 @@ Deno.test(
       body.append("token", "123:expired_token");
       body.append("password", "newpassword1!");
       const res = await app.request("/password", { method: "post", body });
-      assertEquals(res.status, 302);
+      assertEquals(res.status, 400); // Invalid or expired token
     });
 
     await t.step("GET /u with invalid session", async () => {
@@ -141,7 +141,7 @@ Deno.test(
       const res = await app.request(
         "/verify?email=john@example.com&token=123:invalid_token",
       );
-      assertEquals(res.status, 404); // Route is currently commented out
+      assertEquals(res.status, 400); // Invalid or expired token
     });
 
     await t.step("GET /u with valid credentials", async () => {

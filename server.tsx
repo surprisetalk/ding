@@ -21,6 +21,50 @@ const TODO = (x: TemplateStringsArray) => {
   throw new Error(`TODO: ${x.raw.join("")}`);
 };
 
+const escapeXml = (s: string): string =>
+  s.replace(/&/g, "&amp;")
+    .replace(/</g, "&lt;")
+    .replace(/>/g, "&gt;")
+    .replace(/"/g, "&quot;")
+    .replace(/'/g, "&apos;");
+
+//// EMAIL TOKEN ///////////////////////////////////////////////////////////////
+
+const EMAIL_TOKEN_SECRET = Deno.env.get("EMAIL_TOKEN_SECRET") ?? "dev-secret-change-in-production";
+
+async function emailToken(ts: Date, email: string): Promise<string> {
+  const epoch = Math.floor(ts.getTime() / 1000);
+  const encoder = new TextEncoder();
+  const key = await crypto.subtle.importKey(
+    "raw",
+    encoder.encode(EMAIL_TOKEN_SECRET),
+    { name: "HMAC", hash: "SHA-256" },
+    false,
+    ["sign"],
+  );
+  const signature = await crypto.subtle.sign("HMAC", key, encoder.encode(`${epoch}:${email}`));
+  const hash = Array.from(new Uint8Array(signature))
+    .map((b) => b.toString(16).padStart(2, "0"))
+    .join("")
+    .slice(0, 32); // Match md5 length for compatibility
+  return `${epoch}:${hash}`;
+}
+
+function parseTokenTimestamp(token: string): Date | null {
+  const epochStr = token.split(":")[0];
+  const epoch = parseInt(epochStr, 10);
+  if (isNaN(epoch)) return null;
+  return new Date(epoch * 1000);
+}
+
+async function validateEmailToken(token: string, email: string, maxAgeMs: number = 2 * 24 * 60 * 60 * 1000): Promise<boolean> {
+  const ts = parseTokenTimestamp(token);
+  if (!ts) return false;
+  if (Date.now() - ts.getTime() > maxAgeMs) return false;
+  const expected = await emailToken(ts, email);
+  return token === expected;
+}
+
 //// POSTGRES //////////////////////////////////////////////////////////////////
 
 export let sql = pg(Deno.env.get(`DATABASE_URL`)?.replace(/flycast/, "internal")!, { database: "ding" });
@@ -240,9 +284,7 @@ app.onError((err, c) => {
 
 app.get("/robots.txt", (c) => c.text(`User-agent: *\nDisallow:`));
 
-app.get("/sitemap.txt", (c) => {
-  return TODO`sitemap`;
-});
+app.get("/sitemap.txt", (c) => c.text("https://ding.bar/"));
 
 app.get("/", async (c) => {
   const p = parseInt(c.req.query("p") ?? "0");
@@ -268,11 +310,15 @@ app.get("/", async (c) => {
       <section>
         <form method="post" action="/c">
           <textarea requried name="body" rows={18} minlength={1} maxlength={1441}></textarea>
-          {/* TODO: Change to checkboxes */}
           <div style="display:flex;gap:0.5rem;justify-content:flex-end;align-items:center;">
-            <select required name="tag" style="width:100%;">
-              {["", "linking", "thinking"].map((x) => <option value={x}>{x || "<select a tag>"}</option>)}
-            </select>
+            <fieldset style="display:flex;gap:1rem;border:none;padding:0;margin:0;">
+              {["linking", "thinking"].map((t) => (
+                <label style="display:flex;align-items:center;gap:0.25rem;">
+                  <input type="checkbox" name="tag" value={t} />
+                  {t}
+                </label>
+              ))}
+            </fieldset>
             <button>create post</button>
           </div>
         </form>
@@ -318,20 +364,20 @@ app.post("/logout", (c) => {
   return ok(c);
 });
 
-// app.get("/verify", async c => {
-//   const email = c.req.query("email") ?? "";
-//   const token = c.req.query("token") ?? "";
-//   await sql`
-//     update usr
-//     set email_verified_at = now()
-//     where email_verified_at is null
-//       and to_timestamp(split_part(${token},':',1)::bigint) > now() - interval '2 days'
-//       and ${email} = email
-//       and ${token} = email_token(to_timestamp(split_part(${token},':',1)::bigint), email)
-//     returning uid
-//   `;
-//   return ok(c);
-// });
+app.get("/verify", async (c) => {
+  const email = c.req.query("email") ?? "";
+  const token = c.req.query("token") ?? "";
+  if (!(await validateEmailToken(token, email))) {
+    throw new HTTPException(400, { message: "Invalid or expired token." });
+  }
+  await sql`
+    update usr
+    set email_verified_at = now()
+    where email_verified_at is null
+      and email = ${email}
+  `;
+  return ok(c);
+});
 
 app.get("/forgot", (c) => {
   return c.html(
@@ -350,10 +396,9 @@ app.get("/forgot", (c) => {
 
 app.post("/forgot", async (c) => {
   const { email } = await form(c);
-  const [usr] = await sql`
-    select email_token(now(), email) as token from usr where email = ${email}
-  `;
+  const [usr] = await sql`select email from usr where email = ${email}`;
   if (usr) {
+    const token = await emailToken(new Date(), usr.email);
     Deno.env.get(`SENDGRID_API_KEY`) &&
       (await sg
         .send({
@@ -364,12 +409,12 @@ app.post("/forgot", async (c) => {
             `Click here to reset your password: ` +
             `https://ding.bar/password` +
             `?email=${encodeURIComponent(email)}` +
-            `&token=${encodeURIComponent(usr.token)}` +
+            `&token=${encodeURIComponent(token)}` +
             `\n\n` +
             `If you didn't request a password reset, please ignore this message.`,
         })
         .catch((err) => {
-          console.log(`/password?email=${email}&token=${usr.token}`);
+          console.log(`/password?email=${email}&token=${token}`);
           console.error(`Could not send password reset email to ${email}:`, err?.response?.body || err);
         }));
   }
@@ -397,13 +442,13 @@ app.get("/password", (c) => {
 
 app.post("/password", async (c) => {
   const { email, token, password } = await form(c);
+  if (!(await validateEmailToken(token, email))) {
+    throw new HTTPException(400, { message: "Invalid or expired token." });
+  }
   const [usr] = await sql`
     update usr
     set password = crypt(${password}, gen_salt('bf', 8)), email_verified_at = coalesce(email_verified_at, now())
-    where true
-      and to_timestamp(split_part(${token},':',1)::bigint) > now() - interval '2 days'
-      and ${email} = email
-      and ${token} = email_token(to_timestamp(split_part(${token},':',1)::bigint), email)
+    where email = ${email}
     returning uid
   `;
   if (usr) await setSignedCookie(c, "uid", usr.uid, cookieSecret);
@@ -420,11 +465,14 @@ app.post("/invite", authed, async (c) => {
   };
   if ((await sql`select count(*) as "count" from usr where invited_by = ${c.get("uid")!}`)?.[0]?.count >= 4)
     throw new HTTPException(400, { message: "No more invites remaining." });
-  const [{ email = undefined, token = undefined } = {}] = await sql`
+  const [newUsr] = await sql`
     with usr_ as (insert into usr ${sql(usr)} on conflict do nothing returning *)
-    select uid, email, email_token(now(), email) as token from usr_
+    select uid, email from usr_
   `;
-  if (email && token) await sendVerificationEmail(email, token);
+  if (newUsr?.email) {
+    const token = await emailToken(new Date(), newUsr.email);
+    await sendVerificationEmail(newUsr.email, token);
+  }
   return ok(c);
 });
 
@@ -445,18 +493,22 @@ app.get("/signup", async (c) => {
 
 // TODO: Remove this when we want to disallow self-signups.
 app.post("/signup", async (c) => {
+  const formData = await form(c);
   const usr = {
-    name: (await form(c)).name,
-    email: (await form(c)).email,
+    name: formData.name,
+    email: formData.email,
     bio: "coming soon",
     password: null,
     invited_by: -1,
   };
-  const [{ email = undefined, token = undefined } = {}] = await sql`
+  const [newUsr] = await sql`
     with usr_ as (insert into usr ${sql(usr)} on conflict do nothing returning *)
-    select uid, email, email_token(now(), email) as token from usr_
+    select uid, email from usr_
   `;
-  if (email && token) await sendVerificationEmail(email, token);
+  if (newUsr?.email) {
+    const token = await emailToken(new Date(), newUsr.email);
+    await sendVerificationEmail(newUsr.email, token);
+  }
   return c.redirect("/");
 });
 
@@ -506,17 +558,18 @@ app.get("/u/:uid", async (c) => {
 });
 
 app.post("/c/:parent_cid?", authed, async (c) => {
+  const formData = await c.req.formData();
   const com = {
     parent_cid: c.req.param("parent_cid") ?? null,
     uid: c.get("uid")!,
-    body: (await form(c)).body,
-    tags: [(await form(c)).tag].filter((x) => x),
+    body: formData.get("body")?.toString() ?? "",
+    tags: formData.getAll("tag").map((t) => t.toString()),
   };
   if (!com.tags.length && !com.parent_cid) throw new HTTPException(400, { message: "Must include tags on post." });
   if (com.tags.length && com.parent_cid)
     throw new HTTPException(400, { message: "Cannot include tags on child comment." });
-  // if ((await sql`select true from com where uid = ${c.get("uid")!} and created_at between now() and interval '1 day' having count(*) > 19`).length)
-  //   throw new HTTPException(400, { message: "You've reached your allotted limit of 19 comments per 24 hours." });
+  if ((await sql`select true from com where uid = ${c.get("uid")!} and created_at > now() - interval '1 day' having count(*) > 19`).length)
+    throw new HTTPException(400, { message: "You've reached your allotted limit of 19 comments per 24 hours." });
   const [comment] = await sql`insert into com ${sql(com)} returning cid`;
   return c.redirect(`/c/${c.req.param("parent_cid") ?? comment?.cid ?? ""}`);
 });
@@ -584,9 +637,33 @@ app.get("/c/:cid?", async (c) => {
     case "api":
       return c.json(comments, 200);
     case "rss":
-      return TODO`RSS not yet implemented`;
+      return c.text(
+        `<?xml version="1.0" encoding="UTF-8"?>
+<rss version="2.0">
+  <channel>
+    <title>ding</title>
+    <link>https://ding.bar/</link>
+    <description>Simple social commenting</description>
+${comments.map((cm: Record<string, any>) => `    <item>
+      <title>${escapeXml(cm.body.trim().replace(/[\r\n\t].+$/, "").slice(0, 60))}</title>
+      <link>https://ding.bar/c/${cm.cid}</link>
+      <pubDate>${new Date(cm.created_at).toUTCString()}</pubDate>
+    </item>`).join("\n")}
+  </channel>
+</rss>`,
+        200,
+        { "Content-Type": "application/rss+xml" },
+      );
     default: {
       if (!cid) {
+        const paginationParams = (page: number) => {
+          const params = new URLSearchParams();
+          if (c.req.query("q")) params.set("q", c.req.query("q")!);
+          if (c.req.query("uid")) params.set("uid", c.req.query("uid")!);
+          if (c.req.query("tag")) params.set("tag", c.req.query("tag")!);
+          params.set("p", String(page));
+          return params.toString();
+        };
         return c.html(
           <Layout>
             <section>
@@ -600,9 +677,8 @@ app.get("/c/:cid?", async (c) => {
             </section>
             <section>
               <div style="margin-top: 2rem;">
-                {/* TODO: This also needs to keep the other query params... */}
-                {!p || <a href={`/c?p=${p - 1}`}>prev</a>}
-                {!comments.length || <a href={`/c?p=${p + 1}`}>next</a>}
+                {!p || <a href={`/c?${paginationParams(p - 1)}`}>prev</a>}
+                {!comments.length || <a href={`/c?${paginationParams(p + 1)}`}>next</a>}
               </div>
             </section>
           </Layout>,

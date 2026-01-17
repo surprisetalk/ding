@@ -1,1 +1,2 @@
 - [ ] launch
+- [ ] find discord/slack/reddit/zulip/discourse communities (esp. mods) that want to try ding out
