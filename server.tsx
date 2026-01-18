@@ -161,46 +161,42 @@ const User = (u: Record<string, any>) => (
   </div>
 );
 
-const Comment = (c: Record<string, any>, currentUid?: string) => {
-  const isDeleted = c.body === "";
-  const canDelete = currentUid && String(c.uid) === String(currentUid) && !isDeleted;
-  return (
-    <div class="comment">
-      <div>
-        {!c.created_at || <a href={`/c/${c.cid}`}>{new Date(c.created_at).toLocaleDateString()}</a>}
-        {!c.parent_cid || <a href={`/c/${c.parent_cid}`}>parent</a>}
-        <a href={`/u/${c.uid}`}>@{c.username ?? "unknown"}</a>
-        {c?.tags?.map((tag: string) => <a href={`/c?tag=${tag}`}>#{tag}</a>)}
-        {canDelete && <a href={`/c/${c.cid}/delete`}>delete</a>}
-      </div>
-      <pre>{isDeleted ? "[deleted by author]" : c.body}</pre>
-      <div style="padding-left: 1rem;">
-        {c?.child_comments?.map((child: Record<string, any>) => Comment(child, currentUid))}
-      </div>
-    </div>
-  );
-};
-
-const Post = (comment: Record<string, any>, currentUid?: string) => {
-  const isDeleted = comment.body === "";
-  const canDelete = currentUid && String(comment.uid) === String(currentUid) && !isDeleted;
-  const displayBody = isDeleted
-    ? "[deleted by author]"
-    : `${comment.body.trim().replace(/[\r\n\t].+$/, "").slice(0, 60)}${comment.body.length > 60 ? "…" : ""}`.padEnd(40, " .");
-  return (
+const Comment = (c: Record<string, any>, uid?: string) => (
+  <div class="comment">
     <div>
-      <p>
-        <a href={`/c/${comment.cid}`}>{displayBody}</a>
-      </p>
-      <div>
-        <a href={`/c/${comment.cid}`}>{new Date(comment.created_at).toLocaleDateString()}</a>
-        <a href={`/u/${comment.uid}`}>@{comment.username}</a>
-        {comment?.tags?.map((tag: string) => <a href={`/c?tag=${tag}`}>#{tag}</a>)}
-        {canDelete && <a href={`/c/${comment.cid}/delete`}>delete</a>}
-      </div>
+      {!c.created_at || <a href={`/c/${c.cid}`}>{new Date(c.created_at).toLocaleDateString()}</a>}
+      {!c.parent_cid || <a href={`/c/${c.parent_cid}`}>parent</a>}
+      <a href={`/u/${c.uid}`}>@{c.username ?? "unknown"}</a>
+      {c.body !== "" && uid && c.uid == uid && <a href={`/c/${c.cid}/delete`}>!delete</a>}
+      {c?.tags?.map((tag: string) => <a href={`/c?tag=${tag}`}>#{tag}</a>)}
     </div>
-  );
-};
+    <pre>{c.body === "" ? "[deleted by author]" : c.body}</pre>
+    <div style="padding-left: 1rem;">
+      {c?.child_comments?.map((child: Record<string, any>) => Comment(child, uid))}
+    </div>
+  </div>
+);
+
+const Post = (c: Record<string, any>, uid?: string) => (
+  <div>
+    <p>
+      <a href={`/c/${c.cid}`}>
+        {c.body === ""
+          ? "[deleted by author]"
+          : `${c.body.trim().replace(/[\r\n\t].+$/, "").slice(0, 60)}${c.body.length > 60 ? "…" : ""}`.padEnd(
+            40,
+            " .",
+          )}
+      </a>
+    </p>
+    <div>
+      <a href={`/c/${c.cid}`}>{new Date(c.created_at).toLocaleDateString()}</a>
+      <a href={`/u/${c.uid}`}>@{c.username}</a>
+      {c.body !== "" && uid && c.uid == uid && <a href={`/c/${c.cid}/delete`}>!delete</a>}
+      {c?.tags?.map((tag: string) => <a href={`/c?tag=${tag}`}>#{tag}</a>)}
+    </div>
+  </div>
+);
 
 //// HONO //////////////////////////////////////////////////////////////////////
 
