@@ -100,7 +100,7 @@ const sendVerificationEmail = async (email: string, token: string) =>
 
 //// COMPONENTS ////////////////////////////////////////////////////////////////
 
-const Layout = (props: { title?: string; keywords?: string; desc?: string; children?: any }) =>
+const Layout = (props: { title?: string; keywords?: string; desc?: string; username?: string; children?: any }) =>
   html`
     <!DOCTYPE html>
     <html>
@@ -133,7 +133,7 @@ const Layout = (props: { title?: string; keywords?: string; desc?: string; child
         <header>
           <section>
             <a href="/" style="letter-spacing:10px;font-weight:700;width:100%;">▢ding</a>
-            <a href="/u" style="letter-spacing:2px;font-size:0.875rem;opacity:0.8;">account</a>
+            <a href="/u" style="letter-spacing:2px;font-size:0.875rem;opacity:0.8;">${props.username ? `@${props.username}` : "account"}</a>
             <a href="https://github.com/surprisetalk/ding" style="letter-spacing:2px;font-size:0.875rem;opacity:0.8;"
             >source</a>
           </section>
@@ -163,15 +163,19 @@ const User = (u: Record<string, any>) => (
 
 const isReaction = (body: string): boolean => !!body && [...body].length === 1; // Single grapheme (handles emoji)
 
-const Reactions = (c: Record<string, any>) => {
-  const reactions: { [k: string]: number } = { "▲": 0, "▼": 0 };
+const Reactions = (c: Record<string, any>, uid?: string) => {
+  const reactions: { [k: string]: { count: number; userReacted: boolean } } = {
+    "▲": { count: 0, userReacted: false },
+    "▼": { count: 0, userReacted: false },
+  };
   for (const child of (c.child_comments ?? [])) {
     if (!isReaction(child.body)) continue;
-    reactions[child.body] = reactions[child.body] ?? 0;
-    reactions[child.body]++;
+    reactions[child.body] = reactions[child.body] ?? { count: 0, userReacted: false };
+    reactions[child.body].count++;
+    if (uid && child.uid == uid) reactions[child.body].userReacted = true;
   }
-  return Object.entries(reactions).map(([char, count]) => (
-    <form method="post" action={`/c/${c.cid}`} class="reaction">
+  return Object.entries(reactions).map(([char, { count, userReacted }]) => (
+    <form method="post" action={`/c/${c.cid}`} class={`reaction${userReacted ? " reacted" : ""}`}>
       <input type="hidden" name="body" value={char} />
       <button type="submit">{char} {count}</button>
     </form>
@@ -180,7 +184,7 @@ const Reactions = (c: Record<string, any>) => {
 
 const Comment = (c: Record<string, any>, uid?: string) => {
   return (
-    <div class="comment">
+    <div class="comment" id={c.cid}>
       <div>
         {!c.created_at || <a href={`/c/${c.cid}`}>{new Date(c.created_at).toLocaleDateString()}</a>}
         {!c.parent_cid || <a href={`/c/${c.parent_cid}`}>parent</a>}
@@ -188,7 +192,7 @@ const Comment = (c: Record<string, any>, uid?: string) => {
         {c.body !== "" && uid && c.uid == uid && <a href={`/c/${c.cid}/delete`}>delete</a>}
         <a href={`/c/${c.cid}`}>reply</a>
         {c?.tags?.map((tag: string) => <a href={`/c?tag=${tag}`}>#{tag}</a>)}
-        {Reactions(c)}
+        {Reactions(c, uid)}
       </div>
       <pre>{c.body === "" ? "[deleted by author]" : c.body}</pre>
       <div style="padding-left: 1rem;">
@@ -218,7 +222,7 @@ const Post = (c: Record<string, any>, uid?: string) => (
       {c.body !== "" && uid && c.uid == uid && <a href={`/c/${c.cid}/delete`}>delete</a>}
       <a href={`/c/${c.cid}`}>reply</a>
       {c?.tags?.map((tag: string) => <a href={`/c?tag=${tag}`}>#{tag}</a>)}
-      {Reactions(c)}
+      {Reactions(c, uid)}
     </div>
   </div>
 );
@@ -275,7 +279,7 @@ const authed = some(
 );
 
 // TODO: Add rate-limiting middleware everywhere.
-const app = new Hono<{ Variables: { uid?: string } }>();
+const app = new Hono<{ Variables: { uid?: string; username?: string } }>();
 
 app.use("*", async (c, next) => {
   console.log(c.req.method, c.req.url);
@@ -305,7 +309,7 @@ app.onError((err, c) => {
       return c.text(message, 500);
     default:
       return c.html(
-        <Layout title="error">
+        <Layout title="error" username={c.get("username")}>
           <section>
             <p>{message}</p>
           </section>
@@ -321,7 +325,11 @@ app.get("/sitemap.txt", (c) => c.text("https://ding.bar/"));
 
 app.use("*", async (c, next) => {
   const uid = await getSignedCookie(c, cookieSecret, "uid");
-  if (uid) c.set("uid", uid);
+  if (uid) {
+    c.set("uid", uid);
+    const [usr] = await sql`select name from usr where uid = ${uid}`;
+    if (usr) c.set("username", usr.name);
+  }
   await next();
 });
 
@@ -358,7 +366,7 @@ app.get("/", async (c) => {
     limit 25
   `;
   return c.html(
-    <Layout>
+    <Layout username={c.get("username")}>
       <section>
         <form method="post" action="/c">
           <textarea requried name="body" rows={18} minlength={1} maxlength={1441}></textarea>
@@ -432,7 +440,7 @@ app.get("/verify", async (c) => {
 
 app.get("/forgot", (c) => {
   return c.html(
-    <Layout title="welcome">
+    <Layout title="welcome" username={c.get("username")}>
       <section>
         <form method="post" action="/forgot">
           <input required name="email" type="email" placeholder="hello@example.com" />
@@ -476,7 +484,7 @@ app.get("/password", (c) => {
   const email = c.req.query("email") ?? "";
   const token = c.req.query("token") ?? "";
   return c.html(
-    <Layout title="welcome">
+    <Layout title="welcome" username={c.get("username")}>
       <section>
         <form method="post" action="/password">
           <input required name="token" value={token} type="hidden" readonly />
@@ -529,7 +537,7 @@ app.post("/invite", authed, async (c) => {
 // TODO: Remove this when we want to disallow self-signups.
 app.get("/signup", async (c) => {
   return c.html(
-    <Layout title="your account">
+    <Layout title="your account" username={c.get("username")}>
       <section>
         <form method="post" action="/signup" style="display:flex;flex-direction:row;">
           <input type="text" name="name" placeholder="ivan_grease" />
@@ -570,7 +578,7 @@ app.get("/u", authed, async (c) => {
   if (!usr) return notFound();
   if (!usr.password) return c.redirect("/password");
   return c.html(
-    <Layout title="your account">
+    <Layout title="your account" username={c.get("username")}>
       <section>{User(usr)}</section>
       {
         /*
@@ -600,7 +608,7 @@ app.get("/u/:uid", async (c) => {
       return c.json(usr, 200);
     default:
       return c.html(
-        <Layout title={usr.name}>
+        <Layout title={usr.name} username={c.get("username")}>
           <section>{User(usr)}</section>
         </Layout>,
       );
@@ -618,7 +626,7 @@ app.get("/c/:cid/delete", authed, async (c) => {
   if (!comment) throw new HTTPException(404, { message: "Comment not found or not yours." });
   if (comment.body === "") throw new HTTPException(400, { message: "Already deleted." });
   return c.html(
-    <Layout title="delete">
+    <Layout title="delete" username={c.get("username")}>
       <section>
         <h2>Delete this post?</h2>
         <pre style="margin: 1rem 0; padding: 1rem; background: var(--bg-secondary, #f5f5f5);">
@@ -667,7 +675,11 @@ app.post("/c/:parent_cid?", authed, async (c) => {
     throw new HTTPException(400, { message: "You've reached your allotted limit of 19 comments per 24 hours." });
   }
   const [comment] = await sql`insert into com ${sql(com)} returning cid`;
-  return c.redirect(`/c/${c.req.param("parent_cid") ?? comment?.cid ?? ""}`);
+  const parent_cid = c.req.param("parent_cid");
+  if (!parent_cid) return c.redirect(`/c/${comment.cid}`);
+  const [parent] = await sql`select parent_cid from com where cid = ${parent_cid}`;
+  // Show parent comment in grandparent context, or just the parent if it's top-level
+  return c.redirect(parent?.parent_cid ? `/c/${parent.parent_cid}#${parent_cid}` : `/c/${parent_cid}#${comment.cid}`);
 });
 
 app.get("/c/:cid?", async (c) => {
@@ -765,7 +777,7 @@ ${
           return params.toString();
         };
         return c.html(
-          <Layout>
+          <Layout username={c.get("username")}>
             <section>
               <form method="get" action="/c" style="display:flex;flex-direction:row;gap:0.5rem;">
                 <input name="q" value={c.req.query("q") ?? ""} style="width:100%;" />
@@ -786,7 +798,7 @@ ${
       } else {
         const post = comments?.[0];
         return c.html(
-          <Layout title={post?.body?.slice(0, 16)}>
+          <Layout title={post?.body?.slice(0, 16)} username={c.get("username")}>
             <section>
               {Comment(
                 { ...post, child_comments: post.child_comments.filter((c: { body: string }) => isReaction(c.body)) },

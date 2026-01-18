@@ -1,6 +1,7 @@
-- [-] single-emoji comments should get collapsed into counters like slack. add some sitewide emoji defaults
 - [ ] make the reactions A LOT more efficient by calculating the counts in sql rather than js
-- [ ] style the reaction buttons as simple links
+- [ ] private/paid tags. tag table. not allowed to include private tags in search queries unless you are part of tag.
+      private coms only show up in search and feeds if you're part of the tag. we might need to add #tag vs *key
+- [ ] switch hono to use framework renderer
 - [ ] add a bunch of cool bots
 - [ ] launch
 - [ ] bare links should open external site in new tab
