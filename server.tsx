@@ -57,7 +57,11 @@ function parseTokenTimestamp(token: string): Date | null {
   return new Date(epoch * 1000);
 }
 
-async function validateEmailToken(token: string, email: string, maxAgeMs: number = 2 * 24 * 60 * 60 * 1000): Promise<boolean> {
+async function validateEmailToken(
+  token: string,
+  email: string,
+  maxAgeMs: number = 2 * 24 * 60 * 60 * 1000,
+): Promise<boolean> {
   const ts = parseTokenTimestamp(token);
   if (!ts) return false;
   if (Date.now() - ts.getTime() > maxAgeMs) return false;
@@ -148,7 +152,7 @@ const User = (u: Record<string, any>) => (
   <div class="user">
     <div>
       <span>{u.name}</span>
-      {u.uid !== u.invited_by_uid || <a href={`/u/${u.invited_by_uid}`}>{u.invited_by_username}</a>}
+      {u.uid !== u.invited_by_uid || <a href={`/u/${u.invited_by_uid}`}>@{u.invited_by_username}</a>}
       <a href={`/c?uid=${u.uid}`}>posts</a>
     </div>
     <div>
@@ -157,38 +161,46 @@ const User = (u: Record<string, any>) => (
   </div>
 );
 
-const Comment = (c: Record<string, any>) => (
-  <div class="comment">
-    <div>
-      {!c.created_at || <a href={`/c/${c.cid}`}>{new Date(c.created_at).toLocaleDateString()}</a>}
-      {!c.parent_cid || <a href={`/c/${c.parent_cid}`}>parent</a>}
-      <a href={`/u/${c.uid}`}>{c.username ?? "unknown user"}</a>
-      {c?.tags?.map((tag: string) => <a href={`/c?tag=${tag}`}>{tag}</a>)}
+const Comment = (c: Record<string, any>, currentUid?: string) => {
+  const isDeleted = c.body === "";
+  const canDelete = currentUid && String(c.uid) === String(currentUid) && !isDeleted;
+  return (
+    <div class="comment">
+      <div>
+        {!c.created_at || <a href={`/c/${c.cid}`}>{new Date(c.created_at).toLocaleDateString()}</a>}
+        {!c.parent_cid || <a href={`/c/${c.parent_cid}`}>parent</a>}
+        <a href={`/u/${c.uid}`}>@{c.username ?? "unknown"}</a>
+        {c?.tags?.map((tag: string) => <a href={`/c?tag=${tag}`}>#{tag}</a>)}
+        {canDelete && <a href={`/c/${c.cid}/delete`}>delete</a>}
+      </div>
+      <pre>{isDeleted ? "[deleted by author]" : c.body}</pre>
+      <div style="padding-left: 1rem;">
+        {c?.child_comments?.map((child: Record<string, any>) => Comment(child, currentUid))}
+      </div>
     </div>
-    <pre>{c.body}</pre>
-    <div style="padding-left: 1rem;">{c?.child_comments?.map(Comment)}</div>
-  </div>
-);
+  );
+};
 
-const Post = (comment: Record<string, any>) => (
-  <div>
-    <p>
-      <a href={`/c/${comment.cid}`}>
-        {`${
-          comment.body
-            .trim()
-            .replace(/[\r\n\t].+$/, "")
-            .slice(0, 60)
-        }${comment.body.length > 60 ? "…" : ""}`.padEnd(40, " .")}
-      </a>
-    </p>
+const Post = (comment: Record<string, any>, currentUid?: string) => {
+  const isDeleted = comment.body === "";
+  const canDelete = currentUid && String(comment.uid) === String(currentUid) && !isDeleted;
+  const displayBody = isDeleted
+    ? "[deleted by author]"
+    : `${comment.body.trim().replace(/[\r\n\t].+$/, "").slice(0, 60)}${comment.body.length > 60 ? "…" : ""}`.padEnd(40, " .");
+  return (
     <div>
-      <a href={`/c/${comment.cid}`}>{new Date(comment.created_at).toLocaleDateString()}</a>
-      <a href={`/u/${comment.uid}`}>{comment.username}</a>
-      {comment?.tags?.map((tag: string) => <a href={`/c?tag=${tag}`}>{tag}</a>)}
+      <p>
+        <a href={`/c/${comment.cid}`}>{displayBody}</a>
+      </p>
+      <div>
+        <a href={`/c/${comment.cid}`}>{new Date(comment.created_at).toLocaleDateString()}</a>
+        <a href={`/u/${comment.uid}`}>@{comment.username}</a>
+        {comment?.tags?.map((tag: string) => <a href={`/c?tag=${tag}`}>#{tag}</a>)}
+        {canDelete && <a href={`/c/${comment.cid}/delete`}>delete</a>}
+      </div>
     </div>
-  </div>
-);
+  );
+};
 
 //// HONO //////////////////////////////////////////////////////////////////////
 
@@ -288,8 +300,9 @@ app.get("/sitemap.txt", (c) => c.text("https://ding.bar/"));
 
 app.get("/", async (c) => {
   const p = parseInt(c.req.query("p") ?? "0");
+  const currentUid = (await getSignedCookie(c, cookieSecret, "uid")) || undefined;
   const comments = await sql`
-    select 
+    select
       c.cid,
       c.uid,
       c.body,
@@ -329,7 +342,7 @@ app.get("/", async (c) => {
             no posts. <a href="/">go home.</a>
           </p>
         )}
-        <div class="posts">{comments.map(Post)}</div>
+        <div class="posts">{comments.map((cm) => Post(cm, currentUid))}</div>
       </section>
       <section>
         <div style="margin-top: 2rem;">
@@ -367,9 +380,8 @@ app.post("/logout", (c) => {
 app.get("/verify", async (c) => {
   const email = c.req.query("email") ?? "";
   const token = c.req.query("token") ?? "";
-  if (!(await validateEmailToken(token, email))) {
+  if (!(await validateEmailToken(token, email)))
     throw new HTTPException(400, { message: "Invalid or expired token." });
-  }
   await sql`
     update usr
     set email_verified_at = now()
@@ -442,9 +454,8 @@ app.get("/password", (c) => {
 
 app.post("/password", async (c) => {
   const { email, token, password } = await form(c);
-  if (!(await validateEmailToken(token, email))) {
+  if (!(await validateEmailToken(token, email)))
     throw new HTTPException(400, { message: "Invalid or expired token." });
-  }
   const [usr] = await sql`
     update usr
     set password = crypt(${password}, gen_salt('bf', 8)), email_verified_at = coalesce(email_verified_at, now())
@@ -557,6 +568,47 @@ app.get("/u/:uid", async (c) => {
   }
 });
 
+app.get("/c/:cid/delete", authed, async (c) => {
+  const cid = c.req.param("cid");
+  const [comment] = await sql`
+    select c.cid, c.body, c.parent_cid, u.name as username
+    from com c
+    inner join usr u using (uid)
+    where c.cid = ${cid} and c.uid = ${c.get("uid")!}
+  `;
+  if (!comment) throw new HTTPException(404, { message: "Comment not found or not yours." });
+  if (comment.body === "") throw new HTTPException(400, { message: "Already deleted." });
+  return c.html(
+    <Layout title="delete">
+      <section>
+        <h2>Delete this post?</h2>
+        <pre style="margin: 1rem 0; padding: 1rem; background: var(--bg-secondary, #f5f5f5);">
+          {comment.body.length > 200 ? comment.body.slice(0, 200) + "…" : comment.body}
+        </pre>
+        <p style="opacity: 0.8;">This will show "[deleted by author]" but preserve any replies.</p>
+        <form method="post" action={`/c/${cid}/delete`}>
+          <div style="display: flex; gap: 1rem;">
+            <button type="submit">confirm delete</button>
+            <a href={`/c/${cid}`}>cancel</a>
+          </div>
+        </form>
+      </section>
+    </Layout>,
+  );
+});
+
+app.post("/c/:cid/delete", authed, async (c) => {
+  const cid = c.req.param("cid");
+  const [comment] = await sql`
+    update com
+    set body = ''
+    where cid = ${cid} and uid = ${c.get("uid")!} and body <> ''
+    returning parent_cid
+  `;
+  if (!comment) throw new HTTPException(404, { message: "Comment not found, not yours, or already deleted." });
+  return c.redirect(comment.parent_cid ? `/c/${comment.parent_cid}` : "/");
+});
+
 app.post("/c/:parent_cid?", authed, async (c) => {
   const formData = await c.req.formData();
   const com = {
@@ -568,8 +620,13 @@ app.post("/c/:parent_cid?", authed, async (c) => {
   if (!com.tags.length && !com.parent_cid) throw new HTTPException(400, { message: "Must include tags on post." });
   if (com.tags.length && com.parent_cid)
     throw new HTTPException(400, { message: "Cannot include tags on child comment." });
-  if ((await sql`select true from com where uid = ${c.get("uid")!} and created_at > now() - interval '1 day' having count(*) > 19`).length)
+  if (
+    (await sql`select true from com where uid = ${c.get(
+      "uid",
+    )!} and created_at > now() - interval '1 day' having count(*) > 19`).length
+  ) {
     throw new HTTPException(400, { message: "You've reached your allotted limit of 19 comments per 24 hours." });
+  }
   const [comment] = await sql`insert into com ${sql(com)} returning cid`;
   return c.redirect(`/c/${c.req.param("parent_cid") ?? comment?.cid ?? ""}`);
 });
@@ -577,6 +634,7 @@ app.post("/c/:parent_cid?", authed, async (c) => {
 app.get("/c/:cid?", async (c) => {
   const p = parseInt(c.req.query("p") ?? "0");
   const cid = c.req.param("cid");
+  const currentUid = (await getSignedCookie(c, cookieSecret, "uid")) || undefined;
   const comments = await sql`
     select 
       c.uid, 
@@ -644,11 +702,15 @@ app.get("/c/:cid?", async (c) => {
     <title>ding</title>
     <link>https://ding.bar/</link>
     <description>Simple social commenting</description>
-${comments.map((cm: Record<string, any>) => `    <item>
+${
+          comments.map((cm: Record<string, any>) =>
+            `    <item>
       <title>${escapeXml(cm.body.trim().replace(/[\r\n\t].+$/, "").slice(0, 60))}</title>
       <link>https://ding.bar/c/${cm.cid}</link>
       <pubDate>${new Date(cm.created_at).toUTCString()}</pubDate>
-    </item>`).join("\n")}
+    </item>`
+          ).join("\n")
+        }
   </channel>
 </rss>`,
         200,
@@ -673,7 +735,7 @@ ${comments.map((cm: Record<string, any>) => `    <item>
               </form>
             </section>
             <section>
-              <div class="posts">{comments.map(Post)}</div>
+              <div class="posts">{comments.map((cm) => Post(cm, currentUid))}</div>
             </section>
             <section>
               <div style="margin-top: 2rem;">
@@ -687,14 +749,14 @@ ${comments.map((cm: Record<string, any>) => `    <item>
         const post = comments?.[0];
         return c.html(
           <Layout title={post?.body?.slice(0, 16)}>
-            <section>{Comment({ ...post, child_comments: [] })}</section>
+            <section>{Comment({ ...post, child_comments: [] }, currentUid)}</section>
             <section>
               <form method="post" action={`/c/${post?.cid ?? 0}`}>
                 <textarea requried name="body" rows={18} minlength={1} maxlength={1441}></textarea>
                 <button>reply</button>
               </form>
             </section>
-            <section>{post?.child_comments?.map(Comment)}</section>
+            <section>{post?.child_comments?.map((cm: Record<string, any>) => Comment(cm, currentUid))}</section>
           </Layout>,
         );
       }

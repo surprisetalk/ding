@@ -32,7 +32,7 @@ create table
     parent_cid int references com (cid),
     uid int references usr (uid) not null,
     tags text[] not null default '{}'::text[] check (1 = (tags <> '{}'::text[])::int + (parent_cid is not null)::int and tags::text ~ '^{[a-z,]{0,64}}$'),
-    body text not null check (length(body) between 1 and 1441),
+    body text not null check (length(body) between 0 and 1441),
     created_at timestamp default current_timestamp
   );
 
