@@ -20,3 +20,5 @@
 - [ ] bare links should open external site in new tab
 - [ ] find specific discord/slack/reddit/zulip/discourse communities (esp. mods) that want to try ding out
 - [ ] publish guides on how to move community archives over and/or livesync from discord/slack/etc
+- [ ] add shortcuts for post/reply types: start huddle/room/livestream, upload file, record audio/video, draw picture,
+      remix
