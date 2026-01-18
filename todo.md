@@ -16,7 +16,7 @@
 - [ ] switch hono to use framework renderer instead of Layout
 - [ ] add mod/flagging mechanism by commenting "spam" or "abuse"
 - [ ] add a bunch of cool bots
-- [ ] bubbletea tui
+- [ ] bubbletea cli/tui
 - [ ] launch
 - [ ] bare links should open external site in new tab
 - [ ] find specific discord/slack/reddit/zulip/discourse communities (esp. mods) that want to try ding out
