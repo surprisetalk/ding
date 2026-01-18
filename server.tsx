@@ -30,7 +30,7 @@ const escapeXml = (s: string): string =>
 
 //// EMAIL TOKEN ///////////////////////////////////////////////////////////////
 
-const EMAIL_TOKEN_SECRET = Deno.env.get("EMAIL_TOKEN_SECRET") ?? "dev-secret-change-in-production";
+const EMAIL_TOKEN_SECRET = Deno.env.get("EMAIL_TOKEN_SECRET") ?? Math.random().toString();
 
 async function emailToken(ts: Date, email: string): Promise<string> {
   const epoch = Math.floor(ts.getTime() / 1000);
@@ -161,21 +161,44 @@ const User = (u: Record<string, any>) => (
   </div>
 );
 
-const Comment = (c: Record<string, any>, uid?: string) => (
-  <div class="comment">
-    <div>
-      {!c.created_at || <a href={`/c/${c.cid}`}>{new Date(c.created_at).toLocaleDateString()}</a>}
-      {!c.parent_cid || <a href={`/c/${c.parent_cid}`}>parent</a>}
-      <a href={`/u/${c.uid}`}>@{c.username ?? "unknown"}</a>
-      {c.body !== "" && uid && c.uid == uid && <a href={`/c/${c.cid}/delete`}>-delete</a>}
-      {c?.tags?.map((tag: string) => <a href={`/c?tag=${tag}`}>#{tag}</a>)}
+const isReaction = (body: string): boolean => !!body && [...body].length === 1; // Single grapheme (handles emoji)
+
+const Reactions = (c: Record<string, any>) => {
+  const reactions: { [k: string]: number } = { "▲": 0, "▼": 0 };
+  for (const child of (c.child_comments ?? [])) {
+    if (!isReaction(child.body)) continue;
+    reactions[child.body] = reactions[child.body] ?? 0;
+    reactions[child.body]++;
+  }
+  return Object.entries(reactions).map(([char, count]) => (
+    <form method="post" action={`/c/${c.cid}`} class="reaction">
+      <input type="hidden" name="body" value={char} />
+      <button type="submit">{char} {count}</button>
+    </form>
+  ));
+};
+
+const Comment = (c: Record<string, any>, uid?: string) => {
+  return (
+    <div class="comment">
+      <div>
+        {!c.created_at || <a href={`/c/${c.cid}`}>{new Date(c.created_at).toLocaleDateString()}</a>}
+        {!c.parent_cid || <a href={`/c/${c.parent_cid}`}>parent</a>}
+        <a href={`/u/${c.uid}`}>@{c.username ?? "unknown"}</a>
+        {c.body !== "" && uid && c.uid == uid && <a href={`/c/${c.cid}/delete`}>delete</a>}
+        <a href={`/c/${c.cid}`}>reply</a>
+        {c?.tags?.map((tag: string) => <a href={`/c?tag=${tag}`}>#{tag}</a>)}
+        {Reactions(c)}
+      </div>
+      <pre>{c.body === "" ? "[deleted by author]" : c.body}</pre>
+      <div style="padding-left: 1rem;">
+        {c?.child_comments?.filter((c: Record<string, any>) => !isReaction(c.body)).map((child: Record<string, any>) =>
+          Comment(child, uid)
+        )}
+      </div>
     </div>
-    <pre>{c.body === "" ? "[deleted by author]" : c.body}</pre>
-    <div style="padding-left: 1rem;">
-      {c?.child_comments?.map((child: Record<string, any>) => Comment(child, uid))}
-    </div>
-  </div>
-);
+  );
+};
 
 const Post = (c: Record<string, any>, uid?: string) => (
   <div>
@@ -192,8 +215,10 @@ const Post = (c: Record<string, any>, uid?: string) => (
     <div>
       <a href={`/c/${c.cid}`}>{new Date(c.created_at).toLocaleDateString()}</a>
       <a href={`/u/${c.uid}`}>@{c.username}</a>
-      {c.body !== "" && uid && c.uid == uid && <a href={`/c/${c.cid}/delete`}>-delete</a>}
+      {c.body !== "" && uid && c.uid == uid && <a href={`/c/${c.cid}/delete`}>delete</a>}
+      <a href={`/c/${c.cid}`}>reply</a>
       {c?.tags?.map((tag: string) => <a href={`/c?tag=${tag}`}>#{tag}</a>)}
+      {Reactions(c)}
     </div>
   </div>
 );
@@ -310,6 +335,19 @@ app.get("/", async (c) => {
       c.tags,
       c.created_at,
       (select count(*) from com c_ where c_.parent_cid = c.cid) as comments,
+      array(
+        select jsonb_build_object(
+          'body', c_.body,
+          'uid', c_.uid,
+          'cid', c_.cid,
+          'created_at', c_.created_at,
+          'username', u_.name
+        )
+        from com c_ 
+        inner join usr u_ using (uid)
+        where c_.parent_cid = c.cid
+        order by c_.created_at desc
+      ) as child_comments,
       u.name as username
     from com c
     inner join usr u using (uid)
@@ -749,14 +787,23 @@ ${
         const post = comments?.[0];
         return c.html(
           <Layout title={post?.body?.slice(0, 16)}>
-            <section>{Comment({ ...post, child_comments: [] }, c.get("uid"))}</section>
+            <section>
+              {Comment(
+                { ...post, child_comments: post.child_comments.filter((c: { body: string }) => isReaction(c.body)) },
+                c.get("uid"),
+              )}
+            </section>
             <section>
               <form method="post" action={`/c/${post?.cid ?? 0}`}>
                 <textarea requried name="body" rows={18} minlength={1} maxlength={1441}></textarea>
                 <button>reply</button>
               </form>
             </section>
-            <section>{post?.child_comments?.map((cm: Record<string, any>) => Comment(cm, c.get("uid")))}</section>
+            <section>
+              {post?.child_comments?.filter((c: Record<string, any>) => !isReaction(c.body))?.map((
+                cm: Record<string, any>,
+              ) => Comment(cm, c.get("uid")))}
+            </section>
           </Layout>,
         );
       }
