@@ -167,7 +167,7 @@ const Comment = (c: Record<string, any>, uid?: string) => (
       {!c.created_at || <a href={`/c/${c.cid}`}>{new Date(c.created_at).toLocaleDateString()}</a>}
       {!c.parent_cid || <a href={`/c/${c.parent_cid}`}>parent</a>}
       <a href={`/u/${c.uid}`}>@{c.username ?? "unknown"}</a>
-      {c.body !== "" && uid && c.uid === uid && <a href={`/c/${c.cid}/delete`}>!delete</a>}
+      {c.body !== "" && uid && String(c.uid) === uid && <a href={`/c/${c.cid}/delete`}>delete</a>}
       {c?.tags?.map((tag: string) => <a href={`/c?tag=${tag}`}>#{tag}</a>)}
     </div>
     <pre>{c.body === "" ? "[deleted by author]" : c.body}</pre>
@@ -192,7 +192,7 @@ const Post = (c: Record<string, any>, uid?: string) => (
     <div>
       <a href={`/c/${c.cid}`}>{new Date(c.created_at).toLocaleDateString()}</a>
       <a href={`/u/${c.uid}`}>@{c.username}</a>
-      {c.body !== "" && uid && c.uid === uid && <a href={`/c/${c.cid}/delete`}>!delete</a>}
+      {c.body !== "" && uid && String(c.uid) === uid && <a href={`/c/${c.cid}/delete`}>delete</a>}
       {c?.tags?.map((tag: string) => <a href={`/c?tag=${tag}`}>#{tag}</a>)}
     </div>
   </div>
@@ -296,6 +296,7 @@ app.get("/sitemap.txt", (c) => c.text("https://ding.bar/"));
 
 app.get("/", async (c) => {
   const p = parseInt(c.req.query("p") ?? "0");
+  const uid = (await getSignedCookie(c, cookieSecret, "uid"))?.toString();
   const comments = await sql`
     select
       c.cid,
@@ -337,7 +338,7 @@ app.get("/", async (c) => {
             no posts. <a href="/">go home.</a>
           </p>
         )}
-        <div class="posts">{comments.map((cm) => Post(cm, c.get("uid")))}</div>
+        <div class="posts">{comments.map((cm) => Post(cm, uid))}</div>
       </section>
       <section>
         <div style="margin-top: 2rem;">
@@ -629,6 +630,7 @@ app.post("/c/:parent_cid?", authed, async (c) => {
 app.get("/c/:cid?", async (c) => {
   const p = parseInt(c.req.query("p") ?? "0");
   const cid = c.req.param("cid");
+  const uid = (await getSignedCookie(c, cookieSecret, "uid"))?.toString();
   const comments = await sql`
     select 
       c.uid, 
@@ -729,7 +731,7 @@ ${
               </form>
             </section>
             <section>
-              <div class="posts">{comments.map((cm) => Post(cm, c.get("uid")))}</div>
+              <div class="posts">{comments.map((cm) => Post(cm, uid))}</div>
             </section>
             <section>
               <div style="margin-top: 2rem;">
@@ -743,14 +745,14 @@ ${
         const post = comments?.[0];
         return c.html(
           <Layout title={post?.body?.slice(0, 16)}>
-            <section>{Comment({ ...post, child_comments: [] }, c.get("uid"))}</section>
+            <section>{Comment({ ...post, child_comments: [] }, uid)}</section>
             <section>
               <form method="post" action={`/c/${post?.cid ?? 0}`}>
                 <textarea requried name="body" rows={18} minlength={1} maxlength={1441}></textarea>
                 <button>reply</button>
               </form>
             </section>
-            <section>{post?.child_comments?.map((cm: Record<string, any>) => Comment(cm, c.get("uid")))}</section>
+            <section>{post?.child_comments?.map((cm: Record<string, any>) => Comment(cm, uid))}</section>
           </Layout>,
         );
       }
