@@ -766,12 +766,4 @@ ${
 
 app.use("/*", serveStatic({ root: "./public" }));
 
-Deno.serve(
-  {
-    hostname: Deno.env.get("HOST") ?? "127.0.0.1",
-    port: parseInt(Deno.env.get("PORT") ?? "") || 8080,
-  },
-  app.fetch,
-);
-
 export default app;
