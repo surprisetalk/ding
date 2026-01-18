@@ -11,7 +11,7 @@ import { html } from "jsr:@hono/hono/html";
 import { deleteCookie, getSignedCookie, setSignedCookie } from "jsr:@hono/hono/cookie";
 import { serveStatic } from "jsr:@hono/hono/deno";
 
-import pg from "https://deno.land/x/postgresjs@v3.4.3/mod.js";
+import pg from "https://deno.land/x/postgresjs@v3.4.8/mod.js";
 
 import sg from "npm:@sendgrid/mail";
 

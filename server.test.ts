@@ -2,7 +2,7 @@
 
 import app, { setSql } from "./server.tsx";
 import { assertEquals } from "jsr:@std/assert@1";
-import pg from "https://deno.land/x/postgresjs@v3.4.3/mod.js";
+import pg from "https://deno.land/x/postgresjs@v3.4.8/mod.js";
 import { PGlite } from "@electric-sql/pglite";
 import { citext } from "@electric-sql/pglite/contrib/citext";
 import { PostgresConnection } from "pg-gateway";
