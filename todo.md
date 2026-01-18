@@ -7,6 +7,7 @@
 - [ ] edit default homepage tags on profile page
 - [ ] show better titles for search pages, e.g. "#foo" if just searching the foo tag. add actions like "add to
       homepage". "*foo" should also show special info
+- [ ] add @user as a tag name for dms and group chats
 - [ ] the searchbar should always show the full query, including "baz +#foo -#bar"
 - [ ] create a "bestof" bot that collects and summarizes stuff from around the site. they're just normal posts like any
       other. don't define any special rec engines or discovery in the database.
