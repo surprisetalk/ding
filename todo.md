@@ -2,6 +2,7 @@
 - [ ] private/paid tags. tag table. not allowed to include private tags in search queries unless you are part of tag.
       private coms only show up in search and feeds if you're part of the tag. we might need to use #tag vs *key
 - [ ] sort comments by new or top
+- [ ] change from /c to /p?
 - [ ] if you hit "reply" and you're not logged in it should prompt to create new account
 - [ ] header: /, ... /about, /c? (search/explore), /u (settings/login)
 - [ ] /t for creating private tag? /t for editing/moderating the tag and adding users?
