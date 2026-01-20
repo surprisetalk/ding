@@ -19,6 +19,7 @@ create table usr (
   bio text not null check (length(bio) between 1 and 1441),
   email_verified_at timestamp,
   invited_by int not null references usr (uid),
+  tags text [] not null default '{}'::text [] check (tags::text ~ '^{([#*][a-z0-9_]{3,64},?)+}$'), -- e.g. #pub, *priv
   created_at timestamptz not null default current_timestamp
 );
 
@@ -28,7 +29,7 @@ create table com (
   cid serial primary key,
   parent_cid int references com (cid),
   uid int references usr (uid) not null,
-  tags text [] not null default '{}'::text [] check (1 = (tags <> '{}'::text [])::int + (parent_cid is not null)::int and tags::text ~ '^{[a-z,]{0,64}}$'),
+  tags text [] not null default '{}'::text [] check (1 = (tags <> '{}'::text [])::int + (parent_cid is not null)::int and tags::text ~ '^{[a-z,]{0,64}}$'), -- e.g. #pub, *priv, @usr
   body text not null check (length(body) between 0 and 1441),
   created_at timestamp default current_timestamp
 );
@@ -37,6 +38,14 @@ create index com_body_idx on com using gin (to_tsvector('english', body));
 create index com_tags_idx on com using gin (tags);
 create index com_parent_cid_idx on com (parent_cid);
 create index com_uid_idx on com (uid);
+
+create table tag (
+  tid text not null primary key check (tid ~ '^*[a-z0-9_]{3,64}$'), -- e.g. *priv
+  uids int [] not null check (uids <> '{}'::text []),
+  created_at timestamp default current_timestamp
+);
+
+-- TODO: tag indexes
 
 insert into
 usr (uid, name, email, password, bio, email_verified_at, invited_by)
