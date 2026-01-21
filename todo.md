@@ -1,4 +1,5 @@
 - [ ] make the reactions A LOT more efficient by calculating the counts in sql rather than js
+- [ ] hook up a bunch of fun bots and rss feed reposters
 - [ ] private/paid tags. tag table. not allowed to include private tags in search queries unless you are part of tag.
       private coms only show up in search and feeds if you're part of the tag. we might need to use #tag vs *key
 - [ ] sort comments by new or top
