@@ -1,7 +1,5 @@
-- [-] switch hono to use framework renderer instead of Layout
-- [ ] private/paid tags. tag table. not allowed to include private tags in search queries unless you are part of tag.
-      private coms only show up in search and feeds if you're part of the tag. we might need to use #tag vs *key
 - [ ] make the reactions A LOT more efficient by calculating the counts in sql rather than js
+- [ ] add quick buttons to add tags to your post, e.g. #linking and @greg buttons that add those tags to the post
 - [ ] hook up a bunch of fun bots and rss feed reposters
 - [ ] sort comments by new or top
 - [ ] change from /c to /p?

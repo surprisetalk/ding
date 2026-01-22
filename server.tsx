@@ -34,6 +34,23 @@ const escapeXml = (s: string): string =>
     .replace(/"/g, "&quot;")
     .replace(/'/g, "&apos;");
 
+//// TAG PARSING ///////////////////////////////////////////////////////////////
+
+const parseTags = (input: string) => {
+  const tags = input.split(/\s+/).filter(Boolean);
+  return {
+    pub: tags.filter((t) => t.startsWith("#")).map((t) => t.slice(1).toLowerCase()),
+    prv: tags.filter((t) => t.startsWith("*")).map((t) => t.slice(1).toLowerCase()),
+    usr: tags.filter((t) => t.startsWith("@")).map((t) => t.slice(1)),
+  };
+};
+
+const formatTags = (c: Record<string, any>): string[] => [
+  ...(c.tags_pub ?? []).map((t: string) => `#${t}`),
+  ...(c.tags_prv ?? []).map((t: string) => `*${t}`),
+  ...(c.tags_usr ?? []).map((t: string) => `@${t}`),
+];
+
 //// EMAIL TOKEN ///////////////////////////////////////////////////////////////
 
 const EMAIL_TOKEN_SECRET = Deno.env.get("EMAIL_TOKEN_SECRET") ?? Math.random().toString();
@@ -149,7 +166,7 @@ const Comment = (c: Record<string, any>, uid?: string) => {
         <a href={`/u/${c.uid}`}>@{c.username ?? "unknown"}</a>
         {c.body !== "" && uid && c.uid == uid && <a href={`/c/${c.cid}/delete`}>delete</a>}
         <a href={`/c/${c.cid}`}>reply</a>
-        {c?.tags?.map((tag: string) => <a href={`/c?tag=${tag}`}>#{tag}</a>)}
+        {formatTags(c).map((tag: string) => <a href={`/c?tag=${tag.slice(1)}`}>{tag}</a>)}
         {Reactions(c, uid)}
       </div>
       <pre>{c.body === "" ? "[deleted by author]" : c.body}</pre>
@@ -179,7 +196,7 @@ const Post = (c: Record<string, any>, uid?: string) => (
       <a href={`/u/${c.uid}`}>@{c.username}</a>
       {c.body !== "" && uid && c.uid == uid && <a href={`/c/${c.cid}/delete`}>delete</a>}
       <a href={`/c/${c.cid}`}>reply</a>
-      {c?.tags?.map((tag: string) => <a href={`/c?tag=${tag}`}>#{tag}</a>)}
+      {formatTags(c).map((tag: string) => <a href={`/c?tag=${tag.slice(1)}`}>{tag}</a>)}
       {Reactions(c, uid)}
     </div>
   </div>
@@ -336,12 +353,19 @@ app.onError((err, c) => {
 
 app.get("/", async (c) => {
   const p = parseInt(c.req.query("p") ?? "0");
+  const uid = c.get("uid");
+  const username = c.get("username") ?? "";
+  // Get user's private tag permissions (empty if not logged in)
+  const [viewer] = uid ? await sql`select tags_prv_r from usr where uid = ${uid}` : [{ tags_prv_r: [] }];
+  const userTagsR = viewer?.tags_prv_r ?? [];
   const comments = await sql`
     select
       c.cid,
       c.uid,
       c.body,
-      c.tags,
+      c.tags_pub,
+      c.tags_prv,
+      c.tags_usr,
       c.created_at,
       (select count(*) from com c_ where c_.parent_cid = c.cid) as comments,
       array(
@@ -352,7 +376,7 @@ app.get("/", async (c) => {
           'created_at', c_.created_at,
           'username', u_.name
         )
-        from com c_ 
+        from com c_
         inner join usr u_ using (uid)
         where c_.parent_cid = c.cid
         order by c_.created_at desc
@@ -361,6 +385,8 @@ app.get("/", async (c) => {
     from com c
     inner join usr u using (uid)
     where parent_cid is null
+      and c.tags_prv <@ ${userTagsR}::text[]
+      and (c.tags_usr = '{}' or ${username}::text = any(c.tags_usr))
     -- TODO: rank adding log comments + log created_at
     order by c.created_at desc
     offset ${p * 25}
@@ -372,14 +398,7 @@ app.get("/", async (c) => {
         <form method="post" action="/c">
           <textarea requried name="body" rows={18} minlength={1} maxlength={1441}></textarea>
           <div style="display:flex;gap:0.5rem;justify-content:flex-end;align-items:center;">
-            <fieldset style="display:flex;gap:1rem;border:none;padding:0;margin:0;">
-              {["linking", "thinking"].map((t) => (
-                <label style="display:flex;align-items:center;gap:0.25rem;">
-                  <input type="checkbox" name="tag" value={t} />
-                  {t}
-                </label>
-              ))}
-            </fieldset>
+            <input type="text" name="tags" placeholder="#linking #thinking *private @user" style="flex:1;" />
             <button>create post</button>
           </div>
         </form>
@@ -652,24 +671,61 @@ app.post("/c/:cid/delete", authed, async (c) => {
 
 app.post("/c/:parent_cid?", authed, async (c) => {
   const formData = await c.req.formData();
-  const com = {
-    parent_cid: c.req.param("parent_cid") ?? null,
-    uid: c.get("uid")!,
-    body: formData.get("body")?.toString() ?? "",
-    tags: formData.getAll("tag").map((t) => t.toString()),
-  };
-  if (!com.tags.length && !com.parent_cid) throw new HTTPException(400, { message: "Must include tags on post." });
-  if (com.tags.length && com.parent_cid)
-    throw new HTTPException(400, { message: "Cannot include tags on child comment." });
+  const parent_cid = c.req.param("parent_cid") ?? null;
+  const uid = c.get("uid")!;
+
+  // Get user's write permissions
+  const [user] = await sql`select tags_prv_w from usr where uid = ${uid}`;
+  const userTagsW = user?.tags_prv_w ?? [];
+
+  let tags_pub: string[], tags_prv: string[], tags_usr: string[];
+
+  if (parent_cid) {
+    // Child comment: inherit all tags from parent
+    const [parent] = await sql`select tags_pub, tags_prv, tags_usr from com where cid = ${parent_cid}`;
+    if (!parent) throw new HTTPException(404, { message: "Parent comment not found." });
+    tags_pub = parent.tags_pub;
+    tags_prv = parent.tags_prv;
+    tags_usr = parent.tags_usr;
+
+    // Check user can read (and thus reply to) posts with these private tags
+    const [viewer] = await sql`select tags_prv_r from usr where uid = ${uid}`;
+    const userTagsR = viewer?.tags_prv_r ?? [];
+    const canRead = tags_prv.every((t: string) => userTagsR.includes(t));
+    const canSeeUsr = tags_usr.length === 0 || tags_usr.includes(c.get("username") ?? "");
+    if (!canRead || !canSeeUsr) throw new HTTPException(403, { message: "Cannot reply to this post." });
+  } else {
+    // Root post: parse tags from input
+    const tagsInput = formData.get("tags")?.toString() ?? "";
+    const parsed = parseTags(tagsInput);
+    tags_pub = parsed.pub;
+    tags_prv = parsed.prv;
+    tags_usr = parsed.usr;
+
+    if (!tags_pub.length) throw new HTTPException(400, { message: "Must include at least one #public tag." });
+
+    // Check user can write all specified private tags
+    const canWrite = tags_prv.every((t) => userTagsW.includes(t));
+    if (!canWrite) throw new HTTPException(403, { message: "You don't have permission to use those private tags." });
+  }
+
   if (
-    (await sql`select true from com where uid = ${c.get(
-      "uid",
-    )!} and created_at > now() - interval '1 day' having count(*) > 19`).length
+    (await sql`select true from com where uid = ${uid} and created_at > now() - interval '1 day' having count(*) > 19`)
+      .length
   ) {
     throw new HTTPException(400, { message: "You've reached your allotted limit of 19 comments per 24 hours." });
   }
+
+  const com = {
+    parent_cid,
+    uid,
+    body: formData.get("body")?.toString() ?? "",
+    tags_pub,
+    tags_prv,
+    tags_usr,
+  };
+
   const [comment] = await sql`insert into com ${sql(com)} returning cid`;
-  const parent_cid = c.req.param("parent_cid");
   if (!parent_cid) return c.redirect(`/c/${comment.cid}`);
   const [parent] = await sql`select parent_cid from com where cid = ${parent_cid}`;
   // Show parent comment in grandparent context, or just the parent if it's top-level
@@ -679,13 +735,21 @@ app.post("/c/:parent_cid?", authed, async (c) => {
 app.get("/c/:cid?", async (c) => {
   const p = parseInt(c.req.query("p") ?? "0");
   const cid = c.req.param("cid");
+  const uid = c.get("uid");
+  const username = c.get("username") ?? "";
+  // Get user's private tag permissions (empty if not logged in)
+  const [viewer] = uid ? await sql`select tags_prv_r from usr where uid = ${uid}` : [{ tags_prv_r: [] }];
+  const userTagsR = viewer?.tags_prv_r ?? [];
+  const tagFilter: string[] = c.req.query("tag") ? [c.req.query("tag")!] : [];
   const comments = await sql`
-    select 
-      c.uid, 
+    select
+      c.uid,
       c.cid,
-      c.parent_cid, 
+      c.parent_cid,
       c.body,
-      c.tags,
+      c.tags_pub,
+      c.tags_prv,
+      c.tags_usr,
       c.created_at,
       (select count(*) from com c_ where c_.parent_cid = c.cid) as comments,
       u.name as username,
@@ -696,6 +760,9 @@ app.get("/c/:cid?", async (c) => {
           'cid', c_.cid,
           'created_at', c_.created_at,
           'username', u_.name,
+          'tags_pub', c_.tags_pub,
+          'tags_prv', c_.tags_prv,
+          'tags_usr', c_.tags_usr,
           'child_comments', array(
             select jsonb_build_object(
               'body', c__.body,
@@ -703,20 +770,23 @@ app.get("/c/:cid?", async (c) => {
               'cid', c__.cid,
               'created_at', c__.created_at,
               'username', u_.name,
+              'tags_pub', c__.tags_pub,
+              'tags_prv', c__.tags_prv,
+              'tags_usr', c__.tags_usr,
               'child_comments_ids', array(
-                select c___.cid 
+                select c___.cid
                 from com c___
                 where c___.parent_cid = c__.cid
                 order by c___.created_at desc
               )
             )
-            from com c__ 
+            from com c__
             inner join usr u_ using (uid)
             where c__.parent_cid = c_.cid
             order by c__.created_at desc
           )
         )
-        from com c_ 
+        from com c_
         inner join usr u_ using (uid)
         where c_.parent_cid = c.cid
         order by c_.created_at desc
@@ -724,8 +794,10 @@ app.get("/c/:cid?", async (c) => {
     from com c
     inner join usr u using (uid)
     where ${cid ? sql`cid = ${cid ?? null}` : sql`parent_cid is null`}
-    and uid = ${c.req.query("uid") ?? sql`uid`}
-    and tags @> ${[c.req.query("tag") ?? null].filter((x) => x)}
+      and uid = ${c.req.query("uid") ?? sql`uid`}
+      and c.tags_pub @> ${tagFilter}::text[]
+      and c.tags_prv <@ ${userTagsR}::text[]
+      and (c.tags_usr = '{}' or ${username}::text = any(c.tags_usr))
     ${
     c.req.query("q")
       ? sql`and to_tsvector('english', body) @@ plainto_tsquery('english', ${c.req.query("q") ?? ""}::text)`

@@ -45,10 +45,10 @@ const pglite = (f: (sql: pg.Sql) => (t: Deno.TestContext) => Promise<void>) => a
   const schema = dbSql.replace(/create extension if not exists pgcrypto;/i, "");
   await db.exec(schema);
 
-  // Insert test user
+  // Insert test user with default tag permissions
   await db.exec(`
-    insert into usr (uid, name, email, password, bio, email_verified_at, invited_by)
-    values (101, 'john_doe', 'john@example.com', 'hashed:password1!', 'sample bio', now(), 101)
+    insert into usr (uid, name, email, password, bio, email_verified_at, invited_by, tags_prv_r, tags_prv_w)
+    values (101, 'john_doe', 'john@example.com', 'hashed:password1!', 'sample bio', now(), 101, '{secret}', '{secret}')
     on conflict do nothing;
   `);
 
