@@ -1,7 +1,8 @@
-- [ ] make the reactions A LOT more efficient by calculating the counts in sql rather than js
-- [ ] hook up a bunch of fun bots and rss feed reposters
+- [ ] switch hono to use framework renderer instead of Layout
 - [ ] private/paid tags. tag table. not allowed to include private tags in search queries unless you are part of tag.
       private coms only show up in search and feeds if you're part of the tag. we might need to use #tag vs *key
+- [ ] make the reactions A LOT more efficient by calculating the counts in sql rather than js
+- [ ] hook up a bunch of fun bots and rss feed reposters
 - [ ] sort comments by new or top
 - [ ] change from /c to /p?
 - [ ] if you hit "reply" and you're not logged in it should prompt to create new account
@@ -16,9 +17,7 @@
       other. don't define any special rec engines or discovery in the database.
 - [ ] preview link/image on hover
 - [ ] add related tags and posts to footer (backlinks)
-- [ ] switch hono to use framework renderer instead of Layout
 - [ ] add mod/flagging mechanism by commenting "spam" or "abuse"
-- [ ] add a bunch of cool bots
 - [ ] bubbletea cli/tui
 - [ ] launch
 - [ ] bare links should open external site in new tab
