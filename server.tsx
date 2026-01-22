@@ -15,6 +15,12 @@ import pg from "https://deno.land/x/postgresjs@v3.4.8/mod.js";
 
 import sg from "npm:@sendgrid/mail";
 
+declare module "jsr:@hono/hono" {
+  interface ContextRenderer {
+    (content: string | Promise<string>, props?: { title?: string }): Response | Promise<Response>;
+  }
+}
+
 //// HELPERS ///////////////////////////////////////////////////////////////////
 
 const TODO = (x: TemplateStringsArray) => {
@@ -99,54 +105,6 @@ const sendVerificationEmail = async (email: string, token: string) =>
     }));
 
 //// COMPONENTS ////////////////////////////////////////////////////////////////
-
-const Layout = (props: { title?: string; keywords?: string; desc?: string; username?: string; children?: any }) =>
-  html`
-    <!DOCTYPE html>
-    <html>
-      <head>
-        <title>${props.title ? `ding | ${props.title}` : "ding"}</title>
-        <meta charset="UTF-8" />
-        <meta name="color-scheme" content="light dark" />
-        <meta name="author" content="Taylor Troesh" />
-        <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-        ${props.desc
-          ? html`
-            <meta name="description" content="${props.desc}" />
-          `
-          : ""} ${props.keywords
-          ? html`
-            <meta name="keywords" content="${props.keywords}" />
-          `
-          : ""}
-        <link rel="icon" sizes="16x16" href="/favicon-16x16.png" />
-        <link rel="icon" sizes="32x32" href="/favicon-32x32.png" />
-        <link rel="icon" sizes="192x192" href="/android-chrome-192x192.png" />
-        <link rel="icon" sizes="512x512" href="/android-chrome-512x512.png" />
-        <link rel="icon" href="/favicon.ico" type="image/x-icon" />
-        <link rel="shortcut icon" href="/favicon.ico" type="image/x-icon" />
-        <link rel="apple-touch-icon" sizes="180x180" href="/apple-touch-icon.png" />
-        <link rel="manifest" href="/manifest.json" />
-        <link rel="stylesheet" href="/style.css" />
-      </head>
-      <body>
-        <header>
-          <section>
-            <a href="/" style="letter-spacing:10px;font-weight:700;width:100%;">▢ding</a>
-            <a href="/u" style="letter-spacing:2px;font-size:0.875rem;opacity:0.8;">${props.username ? `@${props.username}` : "account"}</a>
-            <a href="https://github.com/surprisetalk/ding" style="letter-spacing:2px;font-size:0.875rem;opacity:0.8;"
-            >source</a>
-          </section>
-        </header>
-        <main>${props.children}</main>
-        <footer></footer>
-        <script>
-        for (const x of document.querySelectorAll("pre"))
-        x.innerHTML = x.innerHTML.replace(/(https?:\\/\\/\\S+)/g, '<a href="$1">$1</a>');
-        </script>
-      </body>
-    </html>
-  `;
 
 const User = (u: Record<string, any>) => (
   <div class="user">
@@ -297,28 +255,6 @@ app.use(async function prettyJSON(c, next) {
 
 app.notFound(notFound);
 
-app.onError((err, c) => {
-  if (err instanceof HTTPException)
-    return err.getResponse();
-  if (err) console.error(err);
-  const message = "Sorry, this computer is мᎥｓβ𝕖𝓱𝐀𝓋𝓲𝓷g.";
-  switch (host(c)) {
-    case "api":
-      return c.json({ error: message }, 500);
-    case "rss":
-      return c.text(message, 500);
-    default:
-      return c.html(
-        <Layout title="error" username={c.get("username")}>
-          <section>
-            <p>{message}</p>
-          </section>
-        </Layout>,
-        500,
-      );
-  }
-});
-
 app.get("/robots.txt", (c) => c.text(`User-agent: *\nDisallow:`));
 
 app.get("/sitemap.txt", (c) => c.text("https://ding.bar/"));
@@ -330,7 +266,72 @@ app.use("*", async (c, next) => {
     const [usr] = await sql`select name from usr where uid = ${uid}`;
     if (usr) c.set("username", usr.name);
   }
+  c.setRenderer((content, props) => {
+    return c.html(
+      html`
+        <!DOCTYPE html>
+        <html>
+          <head>
+            <title>${props?.title ? `ding | ${props?.title}` : "ding"}</title>
+            <meta charset="UTF-8" />
+            <meta name="color-scheme" content="light dark" />
+            <meta name="author" content="Taylor Troesh" />
+            <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+            <link rel="icon" sizes="16x16" href="/favicon-16x16.png" />
+            <link rel="icon" sizes="32x32" href="/favicon-32x32.png" />
+            <link rel="icon" sizes="192x192" href="/android-chrome-192x192.png" />
+            <link rel="icon" sizes="512x512" href="/android-chrome-512x512.png" />
+            <link rel="icon" href="/favicon.ico" type="image/x-icon" />
+            <link rel="shortcut icon" href="/favicon.ico" type="image/x-icon" />
+            <link rel="apple-touch-icon" sizes="180x180" href="/apple-touch-icon.png" />
+            <link rel="manifest" href="/manifest.json" />
+            <link rel="stylesheet" href="/style.css" />
+          </head>
+          <body>
+            <header>
+              <section>
+                <a href="/" style="letter-spacing:10px;font-weight:700;width:100%;">▢ding</a>
+                <a href="/u" style="letter-spacing:2px;font-size:0.875rem;opacity:0.8;">
+                  ${c.get("username") ? `@${c.get("username")}` : "account"}
+                </a>
+                <a href="https://github.com/surprisetalk/ding" style="letter-spacing:2px;font-size:0.875rem;opacity:0.8;">
+                  source
+                </a>
+              </section>
+            </header>
+            <main>${content}</main>
+            <footer></footer>
+            <script>
+            for (const x of document.querySelectorAll("pre")) x.innerHTML = x.innerHTML.replace(/(https?:\\/\\/\\S+)/g,
+            '<a href="$1">$1</a>');
+            </script>
+          </body>
+        </html>
+      `,
+    );
+  });
   await next();
+});
+
+app.onError((err, c) => {
+  if (err instanceof HTTPException)
+    return err.getResponse();
+  if (err) console.error(err);
+  const message = "Sorry, this computer is мᎥｓβ𝕖𝓱𝐀𝓋𝓲𝓷g.";
+  switch (host(c)) {
+    case "api":
+      return c.json({ error: message }, 500);
+    case "rss":
+      return c.text(message, 500);
+    default:
+      c.status(500);
+      return c.render(
+        <section>
+          <p>{message}</p>
+        </section>,
+        { title: "error" },
+      );
+  }
 });
 
 app.get("/", async (c) => {
@@ -365,8 +366,8 @@ app.get("/", async (c) => {
     offset ${p * 25}
     limit 25
   `;
-  return c.html(
-    <Layout username={c.get("username")}>
+  return c.render(
+    <>
       <section>
         <form method="post" action="/c">
           <textarea requried name="body" rows={18} minlength={1} maxlength={1441}></textarea>
@@ -397,7 +398,7 @@ app.get("/", async (c) => {
           {!comments.length || <a href={`/?p=${p + 1}`}>next</a>}
         </div>
       </section>
-    </Layout>,
+    </>,
   );
 });
 
@@ -439,17 +440,16 @@ app.get("/verify", async (c) => {
 });
 
 app.get("/forgot", (c) => {
-  return c.html(
-    <Layout title="welcome" username={c.get("username")}>
-      <section>
-        <form method="post" action="/forgot">
-          <input required name="email" type="email" placeholder="hello@example.com" />
-          <p>
-            <button type="submit">send email</button>
-          </p>
-        </form>
-      </section>
-    </Layout>,
+  return c.render(
+    <section>
+      <form method="post" action="/forgot">
+        <input required name="email" type="email" placeholder="hello@example.com" />
+        <p>
+          <button type="submit">send email</button>
+        </p>
+      </form>
+    </section>,
+    { title: "welcome" },
   );
 });
 
@@ -483,19 +483,18 @@ app.post("/forgot", async (c) => {
 app.get("/password", (c) => {
   const email = c.req.query("email") ?? "";
   const token = c.req.query("token") ?? "";
-  return c.html(
-    <Layout title="welcome" username={c.get("username")}>
-      <section>
-        <form method="post" action="/password">
-          <input required name="token" value={token} type="hidden" readonly />
-          <input required name="email" value={email} readonly />
-          <input required name="password" type="password" placeholder="password1!" />
-          <p>
-            <button type="submit">set password</button>
-          </p>
-        </form>
-      </section>
-    </Layout>,
+  return c.render(
+    <section>
+      <form method="post" action="/password">
+        <input required name="token" value={token} type="hidden" readonly />
+        <input required name="email" value={email} readonly />
+        <input required name="password" type="password" placeholder="password1!" />
+        <p>
+          <button type="submit">set password</button>
+        </p>
+      </form>
+    </section>,
+    { title: "welcome" },
   );
 });
 
@@ -536,16 +535,15 @@ app.post("/invite", authed, async (c) => {
 
 // TODO: Remove this when we want to disallow self-signups.
 app.get("/signup", async (c) => {
-  return c.html(
-    <Layout title="your account" username={c.get("username")}>
-      <section>
-        <form method="post" action="/signup" style="display:flex;flex-direction:row;">
-          <input type="text" name="name" placeholder="ivan_grease" />
-          <input type="email" name="email" placeholder="hello@example.com" />
-          <button>verify email</button>
-        </form>
-      </section>
-    </Layout>,
+  return c.render(
+    <section>
+      <form method="post" action="/signup" style="display:flex;flex-direction:row;">
+        <input type="text" name="name" placeholder="ivan_grease" />
+        <input type="email" name="email" placeholder="hello@example.com" />
+        <button>verify email</button>
+      </form>
+    </section>,
+    { title: "your account" },
   );
 });
 
@@ -577,8 +575,8 @@ app.get("/u", authed, async (c) => {
   `;
   if (!usr) return notFound();
   if (!usr.password) return c.redirect("/password");
-  return c.html(
-    <Layout title="your account" username={c.get("username")}>
+  return c.render(
+    <>
       <section>{User(usr)}</section>
       {
         /*
@@ -589,7 +587,8 @@ app.get("/u", authed, async (c) => {
       </section>
       */
       }
-    </Layout>,
+    </>,
+    { title: "your account" },
   );
 });
 
@@ -607,11 +606,7 @@ app.get("/u/:uid", async (c) => {
     case "api":
       return c.json(usr, 200);
     default:
-      return c.html(
-        <Layout title={usr.name} username={c.get("username")}>
-          <section>{User(usr)}</section>
-        </Layout>,
-      );
+      return c.render(<section>{User(usr)}</section>, { title: usr.name });
   }
 });
 
@@ -625,22 +620,21 @@ app.get("/c/:cid/delete", authed, async (c) => {
   `;
   if (!comment) throw new HTTPException(404, { message: "Comment not found or not yours." });
   if (comment.body === "") throw new HTTPException(400, { message: "Already deleted." });
-  return c.html(
-    <Layout title="delete" username={c.get("username")}>
-      <section>
-        <h2>Delete this post?</h2>
-        <pre style="margin: 1rem 0; padding: 1rem; background: var(--bg-secondary, #f5f5f5);">
-          {comment.body.length > 200 ? comment.body.slice(0, 200) + "…" : comment.body}
-        </pre>
-        <p style="opacity: 0.8;">This will show "[deleted by author]" but preserve any replies.</p>
-        <form method="post" action={`/c/${cid}/delete`}>
-          <div style="display: flex; gap: 1rem;">
-            <button type="submit">confirm delete</button>
-            <a href={`/c/${cid}`}>cancel</a>
-          </div>
-        </form>
-      </section>
-    </Layout>,
+  return c.render(
+    <section>
+      <h2>Delete this post?</h2>
+      <pre style="margin: 1rem 0; padding: 1rem; background: var(--bg-secondary, #f5f5f5);">
+        {comment.body.length > 200 ? comment.body.slice(0, 200) + "…" : comment.body}
+      </pre>
+      <p style="opacity: 0.8;">This will show "[deleted by author]" but preserve any replies.</p>
+      <form method="post" action={`/c/${cid}/delete`}>
+        <div style="display: flex; gap: 1rem;">
+          <button type="submit">confirm delete</button>
+          <a href={`/c/${cid}`}>cancel</a>
+        </div>
+      </form>
+    </section>,
+    { title: "delete" },
   );
 });
 
@@ -776,8 +770,8 @@ ${
           params.set("p", String(page));
           return params.toString();
         };
-        return c.html(
-          <Layout username={c.get("username")}>
+        return c.render(
+          <>
             <section>
               <form method="get" action="/c" style="display:flex;flex-direction:row;gap:0.5rem;">
                 <input name="q" value={c.req.query("q") ?? ""} style="width:100%;" />
@@ -793,12 +787,12 @@ ${
                 {!comments.length || <a href={`/c?${paginationParams(p + 1)}`}>next</a>}
               </div>
             </section>
-          </Layout>,
+          </>,
         );
       } else {
         const post = comments?.[0];
-        return c.html(
-          <Layout title={post?.body?.slice(0, 16)} username={c.get("username")}>
+        return c.render(
+          <>
             <section>
               {Comment(
                 { ...post, child_comments: post.child_comments.filter((c: { body: string }) => isReaction(c.body)) },
@@ -816,7 +810,8 @@ ${
                 cm: Record<string, any>,
               ) => Comment(cm, c.get("uid")))}
             </section>
-          </Layout>,
+          </>,
+          { title: post?.body?.slice(0, 16) },
         );
       }
     }

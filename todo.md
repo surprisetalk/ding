@@ -1,4 +1,4 @@
-- [ ] switch hono to use framework renderer instead of Layout
+- [-] switch hono to use framework renderer instead of Layout
 - [ ] private/paid tags. tag table. not allowed to include private tags in search queries unless you are part of tag.
       private coms only show up in search and feeds if you're part of the tag. we might need to use #tag vs *key
 - [ ] make the reactions A LOT more efficient by calculating the counts in sql rather than js
