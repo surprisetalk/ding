@@ -2,11 +2,11 @@
 - [ ] maybe we need an /about page or main directory that links you to all the bots with curated feeds, like best_of,
       tag rankings, user rankings, etc? no obvious way to see which communities are available. maybe just link to a
       "start here" post?
+- [ ] in the header, link to an official @ding post with places to start, etc
 - [ ] hook up a bunch of fun bots and rss feed reposters
 - [ ] sort comments by new or top
 - [ ] if you hit "reply" and you're not logged in it should prompt to create new account
 - [ ] /t for creating private tag? /t for editing/moderating the tag and adding users?
-- [ ] edit default homepage tags on profile page
 - [ ] show better titles for search pages, e.g. "#foo" if just searching the foo tag. add actions like "add to
       homepage". "*foo" should also show special info
 - [ ] add @user as a tag name for dms and group chats
