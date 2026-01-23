@@ -1,0 +1,30 @@
+name: Refresh Bots
+
+on:
+  schedule:
+    - cron: "*/5 * * * *"
+  workflow_dispatch:
+
+jobs:
+  bots:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: denoland/setup-deno@v2
+        with:
+          deno-version: v2.x
+
+      - name: Run HN bot
+        env:
+          DING_API_URL: ${{ secrets.DING_API_URL }}
+          BOT_EMAIL: ${{ secrets.BOT_HN_EMAIL }}
+          BOT_PASSWORD: ${{ secrets.BOT_HN_PASSWORD }}
+        run: deno run -A bots/hn.ts
+
+      - name: Run Lobsters bot
+        env:
+          DING_API_URL: ${{ secrets.DING_API_URL }}
+          BOT_EMAIL: ${{ secrets.BOT_LOBSTERS_EMAIL }}
+          BOT_PASSWORD: ${{ secrets.BOT_LOBSTERS_PASSWORD }}
+        run: deno run -A bots/lobsters.ts
