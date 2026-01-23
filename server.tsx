@@ -321,6 +321,20 @@ app.use("*", async (c, next) => {
             <script>
             for (const x of document.querySelectorAll("pre")) x.innerHTML = x.innerHTML.replace(/(https?:\\/\\/\\S+)/g,
             '<a href="$1">$1</a>');
+            const presets = document.querySelector('.tag-presets');
+            if (presets) {
+              presets.style.display = 'flex';
+              for (const btn of presets.querySelectorAll('.tag-preset')) {
+                btn.onclick = () => {
+                  const input = document.querySelector('input[name="tags"]');
+                  const tag = btn.dataset.tag;
+                  if (!input.value.split(/\\s+/).includes(tag)) {
+                    input.value = input.value.trim() ? input.value.trim() + ' ' + tag : tag;
+                  }
+                  input.focus();
+                };
+              }
+            }
             </script>
           </body>
         </html>
@@ -356,8 +370,24 @@ app.get("/", async (c) => {
   const uid = c.get("uid");
   const username = c.get("username") ?? "";
   // Get user's private tag permissions (empty if not logged in)
-  const [viewer] = uid ? await sql`select tags_prv_r from usr where uid = ${uid}` : [{ tags_prv_r: [] }];
+  const [viewer] = uid
+    ? await sql`select tags_prv_r, tags_prv_w from usr where uid = ${uid}`
+    : [{ tags_prv_r: [], tags_prv_w: [] }];
   const userTagsR = viewer?.tags_prv_r ?? [];
+  // Get preset tags: user's writable private tags, then tags from their posts, then popular platform tags
+  const presetTags = await sql`
+    select distinct on (tag) tag from (
+      select '*' || unnest(${viewer?.tags_prv_w ?? []}::text[]) as tag, 1 as pri
+      union all
+      select '#' || unnest(tags_pub), 2 from com where uid = ${uid ?? 0} and parent_cid is null
+      union all
+      select '*' || unnest(tags_prv), 2 from com where uid = ${uid ?? 0} and parent_cid is null
+      union all
+      select '@' || unnest(tags_usr), 2 from com where uid = ${uid ?? 0} and parent_cid is null
+      union all
+      select '#' || unnest(tags_pub), 3 from com where parent_cid is null
+    ) t order by tag, pri limit 20
+  `;
   const comments = await sql`
     select
       c.cid,
@@ -401,6 +431,13 @@ app.get("/", async (c) => {
             <input type="text" name="tags" placeholder="#linking #thinking *private @user" style="flex:1;" />
             <button>create post</button>
           </div>
+          {presetTags.length > 0 && (
+            <div class="tag-presets">
+              {presetTags.map((t) => (
+                <button type="button" class="tag-preset" data-tag={t.tag}>{t.tag}</button>
+              ))}
+            </div>
+          )}
         </form>
       </section>
       <section>

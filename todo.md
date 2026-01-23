@@ -1,5 +1,9 @@
 - [ ] make the reactions A LOT more efficient by calculating the counts in sql rather than js
-- [ ] add quick buttons to add tags to your post, e.g. #linking and @greg buttons that add those tags to the post
+- [ ] maybe we need an /about page or main directory that links you to all the bots with curated feeds, like best_of,
+      tag rankings, user rankings, etc? no obvious way to see which communities are available. maybe just link to a
+      "start here" post?
+- [ ] users should be able to define favorite tags or favorite searches, which show up on home page, or are home page?
+      or maybe just convention to add favorite tags and search links to personal profile? also disliked tags?
 - [ ] hook up a bunch of fun bots and rss feed reposters
 - [ ] sort comments by new or top
 - [ ] change from /c to /p?
