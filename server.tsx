@@ -161,6 +161,31 @@ const User = (u: Record<string, any>, viewerUid?: string, recentTags?: Record<st
 
 const isReaction = (body: string): boolean => !!body && [...body].length === 1; // Single grapheme (handles emoji)
 
+const SortToggle = ({ sort, baseHref, title }: { sort: string; baseHref: string; title: string }) => {
+  const base = new URL(baseHref, "http://x");
+  const newParams = new URLSearchParams(base.search);
+  newParams.delete("sort");
+  newParams.delete("p");
+  const topParams = new URLSearchParams(base.search);
+  topParams.set("sort", "top");
+  topParams.delete("p");
+  return (
+    <nav style="margin-bottom:0.5rem;display:flex;gap:0.5rem;align-items:baseline;justify-content:space-between;text-wrap:nowrap;">
+      <span>
+        {title}
+      </span>
+      <span style="text-overflow:hidden;overflow:hidden;opacity:0.5;">
+        {". ".repeat(100)}
+      </span>
+      <span style="font-size:0.85rem;">
+        {sort === "new" ? "new" : <a href={`${base.pathname}?${newParams}`}>new</a>}
+        {" • "}
+        {sort === "top" ? "top" : <a href={`${base.pathname}?${topParams}`}>top</a>}
+      </span>
+    </nav>
+  );
+};
+
 const Reactions = (c: Record<string, any>, uid?: string) => {
   const reactions: { [k: string]: { count: number; userReacted: boolean } } = {
     "▲": { count: 0, userReacted: false },
@@ -391,6 +416,7 @@ app.onError((err, c) => {
 
 app.get("/", async (c) => {
   const p = parseInt(c.req.query("p") ?? "0");
+  const sort = c.req.query("sort") === "top" ? "top" : "new";
   const uid = c.get("uid");
   const username = c.get("username") ?? "";
   // Get user's private tag permissions (empty if not logged in)
@@ -422,6 +448,7 @@ app.get("/", async (c) => {
       c.tags_usr,
       c.created_at,
       (select count(*) from com c_ where c_.parent_cid = c.cid) as comments,
+      (select count(*) from com r where r.parent_cid = c.cid and char_length(r.body) = 1) as reaction_count,
       array(
         select jsonb_build_object(
           'body', c_.body,
@@ -441,8 +468,7 @@ app.get("/", async (c) => {
     where parent_cid is null
       and c.tags_prv <@ ${userTagsR}::text[]
       and (c.tags_usr = '{}' or ${username}::text = any(c.tags_usr))
-    -- TODO: rank adding log comments + log created_at
-    order by c.created_at desc
+    ${sort === "top" ? sql`order by reaction_count desc, c.created_at desc` : sql`order by c.created_at desc`}
     offset ${p * 25}
     limit 25
   `;
@@ -457,9 +483,7 @@ app.get("/", async (c) => {
           </div>
           {presetTags.length > 0 && (
             <div class="tag-presets">
-              {presetTags.map((t) => (
-                <button type="button" class="tag-preset" data-tag={t.tag}>{t.tag}</button>
-              ))}
+              {presetTags.map((t) => <button type="button" class="tag-preset" data-tag={t.tag}>{t.tag}</button>)}
             </div>
           )}
         </form>
@@ -474,8 +498,8 @@ app.get("/", async (c) => {
       </section>
       <section>
         <div style="margin-top: 2rem;">
-          {!p || <a href={`/?p=${p - 1}`}>prev</a>}
-          {!comments.length || <a href={`/?p=${p + 1}`}>next</a>}
+          {!p || <a href={`/?${sort === "top" ? "sort=top&" : ""}p=${p - 1}`}>prev</a>}
+          {!comments.length || <a href={`/?${sort === "top" ? "sort=top&" : ""}p=${p + 1}`}>next</a>}
         </div>
       </section>
     </>,
@@ -833,6 +857,7 @@ app.post("/c/:parent_cid?", authed, async (c) => {
 
 app.get("/c/:cid?", async (c) => {
   const p = parseInt(c.req.query("p") ?? "0");
+  const sort = c.req.query("sort") === "top" ? "top" : "new";
   const cid = c.req.param("cid");
   const uid = c.get("uid");
   const username = c.get("username") ?? "";
@@ -855,6 +880,7 @@ app.get("/c/:cid?", async (c) => {
       c.tags_usr,
       c.created_at,
       (select count(*) from com c_ where c_.parent_cid = c.cid) as comments,
+      (select count(*) from com r where r.parent_cid = c.cid and char_length(r.body) = 1) as reaction_count,
       u.name as username,
       array(
         select jsonb_build_object(
@@ -896,13 +922,23 @@ app.get("/c/:cid?", async (c) => {
       ) as child_comments
     from com c
     inner join usr u using (uid)
-    where ${cid ? sql`cid = ${cid ?? null}` : (reactionsFilter || repliesToFilter || commentsFilter) ? sql`c.parent_cid is not null` : sql`c.parent_cid is null`}
+    where ${
+    cid
+      ? sql`cid = ${cid ?? null}`
+      : (reactionsFilter || repliesToFilter || commentsFilter)
+      ? sql`c.parent_cid is not null`
+      : sql`c.parent_cid is null`
+  }
       and uid = ${c.req.query("uid") ?? sql`uid`}
       and c.tags_pub @> ${tagFilter}::text[]
       and c.tags_prv <@ ${userTagsR}::text[]
       and (c.tags_usr = '{}' or ${username}::text = any(c.tags_usr))
     ${dmFilter ? sql`and ${dmFilter}::text = any(c.tags_usr)` : sql``}
-    ${repliesToFilter ? sql`and c.parent_cid in (select cid from com where uid = ${repliesToFilter}) and char_length(c.body) > 1` : sql``}
+    ${
+    repliesToFilter
+      ? sql`and c.parent_cid in (select cid from com where uid = ${repliesToFilter}) and char_length(c.body) > 1`
+      : sql``
+  }
     ${reactionsFilter ? sql`and char_length(c.body) = 1` : sql``}
     ${commentsFilter ? sql`and char_length(c.body) > 1` : sql``}
     ${
@@ -910,7 +946,7 @@ app.get("/c/:cid?", async (c) => {
       ? sql`and to_tsvector('english', body) @@ plainto_tsquery('english', ${c.req.query("q") ?? ""}::text)`
       : sql``
   }
-    order by created_at desc
+    ${sort === "top" ? sql`order by reaction_count desc, c.created_at desc` : sql`order by c.created_at desc`}
     offset ${p * 25}
     limit 25
   `;
@@ -950,6 +986,7 @@ ${
           if (c.req.query("replies_to")) params.set("replies_to", c.req.query("replies_to")!);
           if (c.req.query("reactions")) params.set("reactions", c.req.query("reactions")!);
           if (c.req.query("comments")) params.set("comments", c.req.query("comments")!);
+          if (c.req.query("sort")) params.set("sort", c.req.query("sort")!);
           params.set("p", String(page));
           return params.toString();
         };
@@ -960,6 +997,11 @@ ${
                 <input name="q" value={c.req.query("q") ?? ""} style="width:100%;" />
                 <button>search</button>
               </form>
+              <SortToggle
+                sort={sort}
+                baseHref={`/c?${paginationParams(0).replace(/&?p=0/, "")}`}
+                title="search results"
+              />
             </section>
             <section>
               <div class="posts">{comments.map((cm) => Post(cm, c.get("uid")))}</div>
@@ -974,6 +1016,14 @@ ${
         );
       } else {
         const post = comments?.[0];
+        const replies = post?.child_comments?.filter((c: Record<string, any>) => !isReaction(c.body)) ?? [];
+        if (sort === "top") {
+          replies.sort((a: Record<string, any>, b: Record<string, any>) => {
+            const aReactions = (a.child_comments ?? []).filter((c: Record<string, any>) => isReaction(c.body)).length;
+            const bReactions = (b.child_comments ?? []).filter((c: Record<string, any>) => isReaction(c.body)).length;
+            return bReactions - aReactions || new Date(b.created_at).getTime() - new Date(a.created_at).getTime();
+          });
+        }
         return c.render(
           <>
             <section>
@@ -987,11 +1037,10 @@ ${
                 <textarea requried name="body" rows={18} minlength={1} maxlength={1441}></textarea>
                 <button>reply</button>
               </form>
+              <SortToggle sort={sort} baseHref={`/c/${cid}`} title="comments" />
             </section>
             <section>
-              {post?.child_comments?.filter((c: Record<string, any>) => !isReaction(c.body))?.map((
-                cm: Record<string, any>,
-              ) => Comment(cm, c.get("uid")))}
+              {replies.map((cm: Record<string, any>) => Comment(cm, c.get("uid")))}
             </section>
           </>,
           { title: post?.body?.slice(0, 16) },
