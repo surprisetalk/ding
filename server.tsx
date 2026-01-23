@@ -21,6 +21,10 @@ declare module "jsr:@hono/hono" {
   }
 }
 
+//// CONSTANTS /////////////////////////////////////////////////////////////////
+
+const MAX_POSTS_PER_DAY = 1000;
+
 //// HELPERS ///////////////////////////////////////////////////////////////////
 
 const TODO = (x: TemplateStringsArray) => {
@@ -833,10 +837,10 @@ app.post("/c/:parent_cid?", authed, async (c) => {
   }
 
   if (
-    (await sql`select true from com where uid = ${uid} and created_at > now() - interval '1 day' having count(*) > 19`)
+    (await sql`select true from com where uid = ${uid} and created_at > now() - interval '1 day' having count(*) > ${MAX_POSTS_PER_DAY}`)
       .length
   ) {
-    throw new HTTPException(400, { message: "You've reached your allotted limit of 19 comments per 24 hours." });
+    throw new HTTPException(400, { message: `You've reached your allotted limit of ${MAX_POSTS_PER_DAY} comments per 24 hours.` });
   }
 
   const com = {
