@@ -5,6 +5,7 @@
 - [ ] in the header, link to an official @ding post with places to start, etc
 - [-] hook up a bunch of fun bots and rss feed reposters
   - [ ] focus on stuff that i'm interested in, like smallweb, arxiv, memes, etc
+- [ ] we need a site/url/host tag like ~taylor.town or /taylor.town
 - [ ] if you hit "reply" and you're not logged in it should prompt to create new account
 - [ ] /t for creating private tag? /t for editing/moderating the tag and adding users?
 - [ ] show better titles for search pages, e.g. "#foo" if just searching the foo tag. add actions like "add to
