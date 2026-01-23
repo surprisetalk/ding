@@ -123,18 +123,41 @@ const sendVerificationEmail = async (email: string, token: string) =>
 
 //// COMPONENTS ////////////////////////////////////////////////////////////////
 
-const User = (u: Record<string, any>) => (
-  <div class="user">
-    <div>
-      <span>{u.name}</span>
-      {u.uid !== u.invited_by_uid || <a href={`/u/${u.invited_by_uid}`}>@{u.invited_by_username}</a>}
-      <a href={`/c?uid=${u.uid}`}>posts</a>
+const User = (u: Record<string, any>, viewerUid?: string, recentTags?: Record<string, any>[]) => {
+  const isOwner = viewerUid && viewerUid == u.uid;
+  return (
+    <div class="user">
+      <div>
+        <span>{u.name}</span>
+        {u.uid !== u.invited_by_uid || <a href={`/u/${u.invited_by_uid}`}>@{u.invited_by_username}</a>}
+        <a href={`/c?uid=${u.uid}`}>posts</a>
+        <a href={`/c?uid=${u.uid}&comments=1`}>comments</a>
+        {isOwner && (
+          <>
+            <a href={`/c?q=@${u.name}`}>mentions</a>
+            <a href={`/c?dm=${u.name}`}>dms</a>
+            <a href={`/c?replies_to=${u.uid}`}>replies</a>
+            <a href={`/c?uid=${u.uid}&reactions=1`}>reactions</a>
+          </>
+        )}
+      </div>
+      {isOwner && recentTags && recentTags.length > 0 && (
+        <div>
+          {recentTags.map((t) => {
+            const tag = t.tag as string;
+            const prefix = tag[0];
+            const name = tag.slice(1);
+            if (prefix === "@") return <a href={`/c?dm=${name}`}>{tag}</a>;
+            return <a href={`/c?tag=${name}`}>{tag}</a>;
+          })}
+        </div>
+      )}
+      <div>
+        <pre>{u.bio}</pre>
+      </div>
     </div>
-    <div>
-      <pre>{u.bio}</pre>
-    </div>
-  </div>
-);
+  );
+};
 
 const isReaction = (body: string): boolean => !!body && [...body].length === 1; // Single grapheme (handles emoji)
 
@@ -193,6 +216,7 @@ const Post = (c: Record<string, any>, uid?: string) => (
     </p>
     <div>
       <a href={`/c/${c.cid}`}>{new Date(c.created_at).toLocaleDateString()}</a>
+      {!c.parent_cid || <a href={`/c/${c.parent_cid}`}>parent</a>}
       <a href={`/u/${c.uid}`}>@{c.username}</a>
       {c.body !== "" && uid && c.uid == uid && <a href={`/c/${c.cid}/delete`}>delete</a>}
       <a href={`/c/${c.cid}`}>reply</a>
@@ -625,44 +649,82 @@ app.post("/signup", async (c) => {
 });
 
 app.get("/u", authed, async (c) => {
+  const uid = c.get("uid")!;
   const [usr] = await sql`
-    select u.uid, u.name, u.email, u.bio, u.invited_by, u.password is not null as password, i.name as invited_by_username
-    from usr u left join usr i on i.uid = u.invited_by where u.uid = ${c.get("uid")!}
+    select u.uid, u.name, u.email, u.bio, u.invited_by, u.password is not null as password, u.tags_prv_r, u.tags_prv_w, i.name as invited_by_username
+    from usr u left join usr i on i.uid = u.invited_by where u.uid = ${uid}
   `;
   if (!usr) return notFound();
   if (!usr.password) return c.redirect("/password");
+  // Recent tags: user's recent interactions, then their permissions, then popular
+  const recentTags = await sql`
+    select distinct on (tag) tag from (
+      select '#' || unnest(tags_pub) as tag, created_at, 1 as pri from com where uid = ${uid}
+      union all
+      select '*' || unnest(tags_prv), created_at, 1 from com where uid = ${uid}
+      union all
+      select '@' || unnest(tags_usr), created_at, 1 from com where uid = ${uid}
+      union all
+      select '*' || unnest(${usr.tags_prv_r ?? []}::text[]), null, 2
+      union all
+      select '*' || unnest(${usr.tags_prv_w ?? []}::text[]), null, 2
+      union all
+      select '#' || unnest(tags_pub), null, 3 from com where parent_cid is null
+    ) t order by tag, pri, created_at desc nulls last limit 20
+  `;
   return c.render(
     <>
-      <section>{User(usr)}</section>
-      {
-        /*
+      <section>{User(usr, uid, recentTags)}</section>
       <section>
-        <form method="post" action="/logout">
-          <button>logout</button>
+        <form method="post" action="/u">
+          <textarea name="bio" rows={6} placeholder="bio">{usr.bio}</textarea>
+          <button>save</button>
         </form>
       </section>
-      */
-      }
     </>,
     { title: "your account" },
   );
 });
 
-app.patch("/u", authed, async (c) => {
-  const usr = Object.fromEntries(await c.req.formData());
-  for (const i in usr) if (!usr[i]) delete usr[i];
-  await sql`update usr set ${sql(usr, "name", "bio")} where uid = ${c.get("uid")!}`;
-  return ok(c);
+app.post("/u", authed, async (c) => {
+  const data = await form(c);
+  await sql`update usr set bio = ${data.bio} where uid = ${c.get("uid")!}`;
+  return c.redirect("/u");
 });
 
 app.get("/u/:uid", async (c) => {
-  const [usr] = await sql`select uid, name, bio, invited_by from usr where uid = ${c.req.param("uid")}`;
+  const profileUid = c.req.param("uid");
+  const viewerUid = c.get("uid");
+  const isOwner = viewerUid && viewerUid == profileUid;
+  const [usr] = await sql`
+    select uid, name, bio, invited_by
+      ${isOwner ? sql`, tags_prv_r, tags_prv_w` : sql``}
+    from usr where uid = ${profileUid}
+  `;
   if (!usr) return notFound();
+  // Fetch recent tags only for owner
+  const recentTags = isOwner
+    ? await sql`
+      select distinct on (tag) tag from (
+        select '#' || unnest(tags_pub) as tag, created_at, 1 as pri from com where uid = ${profileUid}
+        union all
+        select '*' || unnest(tags_prv), created_at, 1 from com where uid = ${profileUid}
+        union all
+        select '@' || unnest(tags_usr), created_at, 1 from com where uid = ${profileUid}
+        union all
+        select '*' || unnest(${usr.tags_prv_r ?? []}::text[]), null, 2
+        union all
+        select '*' || unnest(${usr.tags_prv_w ?? []}::text[]), null, 2
+        union all
+        select '#' || unnest(tags_pub), null, 3 from com where parent_cid is null
+      ) t order by tag, pri, created_at desc nulls last limit 20
+    `
+    : [];
   switch (host(c)) {
     case "api":
       return c.json(usr, 200);
     default:
-      return c.render(<section>{User(usr)}</section>, { title: usr.name });
+      return c.render(<section>{User(usr, viewerUid, recentTags)}</section>, { title: usr.name });
   }
 });
 
@@ -778,6 +840,10 @@ app.get("/c/:cid?", async (c) => {
   const [viewer] = uid ? await sql`select tags_prv_r from usr where uid = ${uid}` : [{ tags_prv_r: [] }];
   const userTagsR = viewer?.tags_prv_r ?? [];
   const tagFilter: string[] = c.req.query("tag") ? [c.req.query("tag")!] : [];
+  const dmFilter = c.req.query("dm");
+  const repliesToFilter = c.req.query("replies_to");
+  const reactionsFilter = c.req.query("reactions");
+  const commentsFilter = c.req.query("comments");
   const comments = await sql`
     select
       c.uid,
@@ -830,11 +896,15 @@ app.get("/c/:cid?", async (c) => {
       ) as child_comments
     from com c
     inner join usr u using (uid)
-    where ${cid ? sql`cid = ${cid ?? null}` : sql`parent_cid is null`}
+    where ${cid ? sql`cid = ${cid ?? null}` : (reactionsFilter || repliesToFilter || commentsFilter) ? sql`c.parent_cid is not null` : sql`c.parent_cid is null`}
       and uid = ${c.req.query("uid") ?? sql`uid`}
       and c.tags_pub @> ${tagFilter}::text[]
       and c.tags_prv <@ ${userTagsR}::text[]
       and (c.tags_usr = '{}' or ${username}::text = any(c.tags_usr))
+    ${dmFilter ? sql`and ${dmFilter}::text = any(c.tags_usr)` : sql``}
+    ${repliesToFilter ? sql`and c.parent_cid in (select cid from com where uid = ${repliesToFilter}) and char_length(c.body) > 1` : sql``}
+    ${reactionsFilter ? sql`and char_length(c.body) = 1` : sql``}
+    ${commentsFilter ? sql`and char_length(c.body) > 1` : sql``}
     ${
     c.req.query("q")
       ? sql`and to_tsvector('english', body) @@ plainto_tsquery('english', ${c.req.query("q") ?? ""}::text)`
@@ -876,6 +946,10 @@ ${
           if (c.req.query("q")) params.set("q", c.req.query("q")!);
           if (c.req.query("uid")) params.set("uid", c.req.query("uid")!);
           if (c.req.query("tag")) params.set("tag", c.req.query("tag")!);
+          if (c.req.query("dm")) params.set("dm", c.req.query("dm")!);
+          if (c.req.query("replies_to")) params.set("replies_to", c.req.query("replies_to")!);
+          if (c.req.query("reactions")) params.set("reactions", c.req.query("reactions")!);
+          if (c.req.query("comments")) params.set("comments", c.req.query("comments")!);
           params.set("p", String(page));
           return params.toString();
         };
