@@ -4,12 +4,12 @@
       "start here" post?
 - [ ] in the header, link to an official @ding post with places to start, etc
 - [ ] hook up a bunch of fun bots and rss feed reposters
-- [ ] sort comments by new or top
+  - [ ] focus on stuff that i'm interested in, like smallweb, arxiv, memes, etc
+- [-] sort comments by new or top
 - [ ] if you hit "reply" and you're not logged in it should prompt to create new account
 - [ ] /t for creating private tag? /t for editing/moderating the tag and adding users?
 - [ ] show better titles for search pages, e.g. "#foo" if just searching the foo tag. add actions like "add to
       homepage". "*foo" should also show special info
-- [ ] add @user as a tag name for dms and group chats
 - [ ] the searchbar should always show the full query, including "baz +#foo -#bar"
 - [ ] create a "bestof" bot that collects and summarizes stuff from around the site. they're just normal posts like any
       other. don't define any special rec engines or discovery in the database.
