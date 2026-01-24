@@ -364,8 +364,8 @@ app.use("*", async (c, next) => {
                 <a href="/u" style="letter-spacing:2px;font-size:0.875rem;opacity:0.8;">
                   ${c.get("username") ? `@${c.get("username")}` : "account"}
                 </a>
-                <a href="https://github.com/surprisetalk/ding" style="letter-spacing:2px;font-size:0.875rem;opacity:0.8;">
-                  source
+                <a href="/c/379" style="letter-spacing:2px;font-size:0.875rem;opacity:0.8;">
+                  help
                 </a>
               </section>
             </header>
@@ -840,7 +840,9 @@ app.post("/c/:parent_cid?", authed, async (c) => {
     (await sql`select true from com where uid = ${uid} and created_at > now() - interval '1 day' having count(*) > ${MAX_POSTS_PER_DAY}`)
       .length
   ) {
-    throw new HTTPException(400, { message: `You've reached your allotted limit of ${MAX_POSTS_PER_DAY} comments per 24 hours.` });
+    throw new HTTPException(400, {
+      message: `You've reached your allotted limit of ${MAX_POSTS_PER_DAY} comments per 24 hours.`,
+    });
   }
 
   const com = {

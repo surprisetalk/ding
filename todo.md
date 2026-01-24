@@ -1,11 +1,10 @@
 - [ ] make the reactions A LOT more efficient by calculating the counts in sql rather than js
+- [ ] change the api to be more like this: https://ding.bar/c/379
+- [ ] add to welcome guide: github source
 - [ ] index pages (and coments): every post should have a square thumbnail, which is either main extracted image, or
       screenshot of site
 - [ ] detail pages: show big square and thumbnail squares underneath for all attachments.
-- [ ] maybe we need an /about page or main directory that links you to all the bots with curated feeds, like best_of,
-      tag rankings, user rankings, etc? no obvious way to see which communities are available. maybe just link to a
-      "start here" post?
-  - [ ] in the header, link to an official @ding post with places to start, etc
+- [ ] create curation bots that post top tags, users, etc
 - [ ] we need a site/url/host tag like ~taylor.town or /taylor.town
 - [ ] if you hit "reply" and you're not logged in it should prompt to create new account
 - [ ] figure out adding/managing private tags. /t for creating private tag? /t for editing/moderating the tag and adding
