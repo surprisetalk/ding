@@ -861,6 +861,7 @@ app.post("/c/:parent_cid?", authed, async (c) => {
 
 app.get("/c/:cid?", async (c) => {
   const p = parseInt(c.req.query("p") ?? "0");
+  const limit = Math.min(Math.max(parseInt(c.req.query("limit") ?? "25"), 1), 100);
   const sort = c.req.query("sort") === "top" ? "top" : "new";
   const cid = c.req.param("cid");
   const uid = c.get("uid");
@@ -951,8 +952,8 @@ app.get("/c/:cid?", async (c) => {
       : sql``
   }
     ${sort === "top" ? sql`order by reaction_count desc, c.created_at desc` : sql`order by c.created_at desc`}
-    offset ${p * 25}
-    limit 25
+    offset ${p * limit}
+    limit ${limit}
   `;
   switch (host(c)) {
     case "api":

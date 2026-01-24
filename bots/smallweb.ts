@@ -9,7 +9,7 @@ const auth = btoa(`${BOT_EMAIL}:${BOT_PASSWORD}`);
 
 // Fetch bot's latest posts to find watermark
 async function getPostedUrls(): Promise<Set<string>> {
-  const res = await fetch(`${DING_API_URL}/c?uid=3`, {
+  const res = await fetch(`${DING_API_URL}/c?uid=3&limit=100`, {
     headers: { Accept: "application/json", Authorization: `Basic ${auth}` },
   });
   if (!res.ok) return new Set();
