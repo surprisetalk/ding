@@ -19,37 +19,37 @@ create table usr (
   bio text not null check (length(bio) between 1 and 1441),
   email_verified_at timestamp,
   invited_by int not null references usr (uid),
-  tags_prv_r text[] not null default '{}',  -- private tags user can read
-  tags_prv_w text[] not null default '{}',  -- private tags user can write
-  tags_prv_x text[] not null default '{}',  -- private tags user can moderate (future)
+  orgs_r text[] not null default '{}',  -- orgs user can read
+  orgs_w text[] not null default '{}',  -- orgs user can write
+  orgs_x text[] not null default '{}',  -- orgs user can moderate (future)
   created_at timestamptz not null default current_timestamp
 );
 
 create index usr_email_idx on usr (email);
-create index usr_tags_prv_r_idx on usr using gin (tags_prv_r);
+create index usr_orgs_r_idx on usr using gin (orgs_r);
 
 create table com (
   cid serial primary key,
   parent_cid int references com (cid),
   uid int references usr (uid) not null,
-  tags_pub text[] not null default '{}',  -- public (e.g., 'linking')
-  tags_prv text[] not null default '{}',  -- private (e.g., 'secret')
-  tags_usr text[] not null default '{}',  -- usernames (e.g., 'john')
+  tags text[] not null default '{}',  -- public tags (e.g., 'linking')
+  orgs text[] not null default '{}',  -- org/private tags (e.g., 'secret')
+  usrs text[] not null default '{}',  -- user mentions (e.g., 'john')
   body text not null check (length(body) between 0 and 1441),
   created_at timestamp default current_timestamp,
   -- Root posts require at least one public tag
-  check ((parent_cid is null and tags_pub <> '{}') or parent_cid is not null)
+  check ((parent_cid is null and tags <> '{}') or parent_cid is not null)
 );
 
 create index com_body_idx on com using gin (to_tsvector('english', body));
-create index com_tags_pub_idx on com using gin (tags_pub);
-create index com_tags_prv_idx on com using gin (tags_prv);
-create index com_tags_usr_idx on com using gin (tags_usr);
+create index com_tags_idx on com using gin (tags);
+create index com_orgs_idx on com using gin (orgs);
+create index com_usrs_idx on com using gin (usrs);
 create index com_parent_cid_idx on com (parent_cid);
 create index com_uid_idx on com (uid);
 
 insert into
-usr (uid, name, email, password, bio, email_verified_at, invited_by, tags_prv_r, tags_prv_w)
+usr (uid, name, email, password, bio, email_verified_at, invited_by, orgs_r, orgs_w)
 values
 (201, 'BugHunter42', 'bughunter42@example.com', crypt('bugzapper123!', gen_salt('bf', 8)), 'I squash bugs for fun and profit.', null, 201, '{secret,internal}', '{secret}'),
 (202, 'NullPointerQueen', 'nullpointerqueen@example.com', crypt('segfaults4ever!', gen_salt('bf', 8)), 'Segfaults are my specialty.', null, 202, '{secret}', '{secret}'),
@@ -59,7 +59,7 @@ values
 (206, 'SyntaxSamurai', 'syntaxsamurai@example.com', crypt('semicolon&samurai', gen_salt('bf', 8)), 'Syntax errors fear me.', null, 206, '{}', '{}');
 
 insert into
-com (cid, parent_cid, uid, body, tags_pub, tags_prv, tags_usr)
+com (cid, parent_cid, uid, body, tags, orgs, usrs)
 values
 (301, null, 201, 'Why do bugs always show up on Fridays?', '{humor,bugs}', '{}', '{}'),
 (302, null, 202, 'Just had a null pointer exception. Classic!', '{humor,exceptions}', '{}', '{}'),

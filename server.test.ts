@@ -1,6 +1,6 @@
 //// IMPORTS ///////////////////////////////////////////////////////////////////
 
-import app, { setSql } from "./server.tsx";
+import app, { setSql, parseLabels, encodeLabels, decodeLabels, formatLabels } from "./server.tsx";
 import { assertEquals } from "jsr:@std/assert@1";
 import pg from "https://deno.land/x/postgresjs@v3.4.8/mod.js";
 import { PGlite } from "@electric-sql/pglite";
@@ -47,7 +47,7 @@ const pglite = (f: (sql: pg.Sql) => (t: Deno.TestContext) => Promise<void>) => a
 
   // Insert test user with default tag permissions
   await db.exec(`
-    insert into usr (uid, name, email, password, bio, email_verified_at, invited_by, tags_prv_r, tags_prv_w)
+    insert into usr (uid, name, email, password, bio, email_verified_at, invited_by, orgs_r, orgs_w)
     values (101, 'john_doe', 'john@example.com', 'hashed:password1!', 'sample bio', now(), 101, '{secret}', '{secret}')
     on conflict do nothing;
   `);
@@ -180,5 +180,106 @@ Deno.test(
         bio: "sample bio",
       });
     });
+
+    await t.step("GET /c with tag filter", async () => {
+      const res = await app.request("/c?tag=humor");
+      assertEquals(res.status, 200);
+    });
+
+    await t.step("GET /c with multiple tag filters", async () => {
+      const res = await app.request("/c?tag=humor&tag=bugs");
+      assertEquals(res.status, 200);
+    });
   }),
 );
+
+//// LABEL PARSING TESTS ///////////////////////////////////////////////////////
+
+Deno.test("parseLabels", async (t) => {
+  await t.step("parses all label types", () => {
+    const result = parseLabels("#pub *org @User ~example.com lorem ipsum");
+    assertEquals(result.tag, ["pub"]);
+    assertEquals(result.org, ["org"]);
+    assertEquals(result.usr, ["User"]);
+    assertEquals(result.www, ["example.com"]);
+    assertEquals(result.text, "lorem ipsum");
+  });
+
+  await t.step("lowercases tags, orgs, and www but preserves usr case", () => {
+    const result = parseLabels("#PUB *ORG @UserName ~EXAMPLE.COM");
+    assertEquals(result.tag, ["pub"]);
+    assertEquals(result.org, ["org"]);
+    assertEquals(result.usr, ["UserName"]);
+    assertEquals(result.www, ["example.com"]);
+  });
+
+  await t.step("handles empty input", () => {
+    const result = parseLabels("");
+    assertEquals(result.tag, []);
+    assertEquals(result.org, []);
+    assertEquals(result.usr, []);
+    assertEquals(result.www, []);
+    assertEquals(result.text, "");
+  });
+
+  await t.step("handles multiple of same type", () => {
+    const result = parseLabels("#tag1 #tag2 *org1 *org2");
+    assertEquals(result.tag, ["tag1", "tag2"]);
+    assertEquals(result.org, ["org1", "org2"]);
+  });
+});
+
+Deno.test("encodeLabels", async (t) => {
+  await t.step("encodes labels to URLSearchParams", () => {
+    const labels = { tag: ["pub"], org: ["org"], usr: ["user"], www: ["example.com"], text: "query" };
+    const params = encodeLabels(labels);
+    assertEquals(params.getAll("tag"), ["pub"]);
+    assertEquals(params.getAll("org"), ["org"]);
+    assertEquals(params.getAll("usr"), ["user"]);
+    assertEquals(params.getAll("www"), ["example.com"]);
+    assertEquals(params.get("q"), "query");
+  });
+
+  await t.step("handles empty text", () => {
+    const labels = { tag: ["pub"], org: [], usr: [], www: [], text: "" };
+    const params = encodeLabels(labels);
+    assertEquals(params.get("q"), null);
+  });
+});
+
+Deno.test("decodeLabels", async (t) => {
+  await t.step("decodes URLSearchParams to search string", () => {
+    const params = new URLSearchParams("tag=pub&org=org&usr=user&www=example.com&q=query");
+    const result = decodeLabels(params);
+    assertEquals(result, "#pub *org @user ~example.com query");
+  });
+
+  await t.step("handles empty params", () => {
+    const params = new URLSearchParams();
+    const result = decodeLabels(params);
+    assertEquals(result, "");
+  });
+});
+
+Deno.test("formatLabels", async (t) => {
+  await t.step("formats database record to display strings", () => {
+    const record = { tags: ["humor", "coding"], orgs: ["secret"], usrs: ["john"] };
+    const result = formatLabels(record);
+    assertEquals(result, ["#humor", "#coding", "*secret", "@john"]);
+  });
+
+  await t.step("handles missing fields", () => {
+    const record = { tags: ["humor"] };
+    const result = formatLabels(record);
+    assertEquals(result, ["#humor"]);
+  });
+});
+
+Deno.test("label encoding round-trip", () => {
+  const input = "#pub *org @User ~example.com lorem ipsum";
+  const labels = parseLabels(input);
+  const params = encodeLabels(labels);
+  const decoded = decodeLabels(params);
+  // Note: order may differ and case is normalized
+  assertEquals(decoded, "#pub *org @User ~example.com lorem ipsum");
+});

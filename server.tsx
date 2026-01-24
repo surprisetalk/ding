@@ -38,21 +38,56 @@ const escapeXml = (s: string): string =>
     .replace(/"/g, "&quot;")
     .replace(/'/g, "&apos;");
 
-//// TAG PARSING ///////////////////////////////////////////////////////////////
+//// LABEL PARSING /////////////////////////////////////////////////////////////
 
-const parseTags = (input: string) => {
-  const tags = input.split(/\s+/).filter(Boolean);
+export type Labels = {
+  tag: string[];  // from # (public tags)
+  org: string[];  // from * (org/private tags)
+  usr: string[];  // from @ (user mentions)
+  www: string[];  // from ~ (domain filter, search only)
+  text: string;   // remaining free text
+};
+
+// Parse search input → Labels
+export const parseLabels = (input: string): Labels => {
+  const tokens = input.split(/\s+/).filter(Boolean);
   return {
-    pub: tags.filter((t) => t.startsWith("#")).map((t) => t.slice(1).toLowerCase()),
-    prv: tags.filter((t) => t.startsWith("*")).map((t) => t.slice(1).toLowerCase()),
-    usr: tags.filter((t) => t.startsWith("@")).map((t) => t.slice(1)),
+    tag: tokens.filter((t) => t.startsWith("#")).map((t) => t.slice(1).toLowerCase()),
+    org: tokens.filter((t) => t.startsWith("*")).map((t) => t.slice(1).toLowerCase()),
+    usr: tokens.filter((t) => t.startsWith("@")).map((t) => t.slice(1)),
+    www: tokens.filter((t) => t.startsWith("~")).map((t) => t.slice(1).toLowerCase()),
+    text: tokens.filter((t) => !/^[#*@~]/.test(t)).join(" "),
   };
 };
 
-const formatTags = (c: Record<string, any>): string[] => [
-  ...(c.tags_pub ?? []).map((t: string) => `#${t}`),
-  ...(c.tags_prv ?? []).map((t: string) => `*${t}`),
-  ...(c.tags_usr ?? []).map((t: string) => `@${t}`),
+// Labels → URLSearchParams
+export const encodeLabels = (labels: Labels): URLSearchParams => {
+  const params = new URLSearchParams();
+  for (const tag of labels.tag) params.append("tag", tag);
+  for (const org of labels.org) params.append("org", org);
+  for (const usr of labels.usr) params.append("usr", usr);
+  for (const www of labels.www) params.append("www", www);
+  if (labels.text) params.set("q", labels.text);
+  return params;
+};
+
+// URLSearchParams → search input string
+export const decodeLabels = (params: URLSearchParams): string => {
+  const parts: string[] = [];
+  for (const tag of params.getAll("tag")) parts.push(`#${tag}`);
+  for (const org of params.getAll("org")) parts.push(`*${org}`);
+  for (const usr of params.getAll("usr")) parts.push(`@${usr}`);
+  for (const www of params.getAll("www")) parts.push(`~${www}`);
+  const q = params.get("q");
+  if (q) parts.push(q);
+  return parts.join(" ");
+};
+
+// Database record → display strings (for UI)
+export const formatLabels = (c: Record<string, any>): string[] => [
+  ...(c.tags ?? []).map((t: string) => `#${t}`),
+  ...(c.orgs ?? []).map((t: string) => `*${t}`),
+  ...(c.usrs ?? []).map((t: string) => `@${t}`),
 ];
 
 //// EMAIL TOKEN ///////////////////////////////////////////////////////////////
@@ -138,8 +173,7 @@ const User = (u: Record<string, any>, viewerUid?: string, recentTags?: Record<st
         <a href={`/c?uid=${u.uid}&comments=1`}>comments</a>
         {isOwner && (
           <>
-            <a href={`/c?q=@${u.name}`}>mentions</a>
-            <a href={`/c?dm=${u.name}`}>dms</a>
+            <a href={`/c?usr=${u.name}`}>mentions</a>
             <a href={`/c?replies_to=${u.uid}`}>replies</a>
             <a href={`/c?uid=${u.uid}&reactions=1`}>reactions</a>
           </>
@@ -148,11 +182,12 @@ const User = (u: Record<string, any>, viewerUid?: string, recentTags?: Record<st
       {isOwner && recentTags && recentTags.length > 0 && (
         <div>
           {recentTags.map((t) => {
-            const tag = t.tag as string;
-            const prefix = tag[0];
-            const name = tag.slice(1);
-            if (prefix === "@") return <a href={`/c?dm=${name}`}>{tag}</a>;
-            return <a href={`/c?tag=${name}`}>{tag}</a>;
+            const label = t.tag as string;
+            const prefix = label[0];
+            const name = label.slice(1);
+            if (prefix === "@") return <a href={`/c?usr=${name}`}>{label}</a>;
+            if (prefix === "*") return <a href={`/c?org=${name}`}>{label}</a>;
+            return <a href={`/c?tag=${name}`}>{label}</a>;
           })}
         </div>
       )}
@@ -218,7 +253,12 @@ const Comment = (c: Record<string, any>, uid?: string) => {
         <a href={`/u/${c.uid}`}>@{c.username ?? "unknown"}</a>
         {c.body !== "" && uid && c.uid == uid && <a href={`/c/${c.cid}/delete`}>delete</a>}
         <a href={`/c/${c.cid}`}>reply</a>
-        {formatTags(c).map((tag: string) => <a href={`/c?tag=${tag.slice(1)}`}>{tag}</a>)}
+        {formatLabels(c).map((label: string) => {
+          const prefix = label[0];
+          const name = label.slice(1);
+          const param = prefix === "*" ? "org" : prefix === "@" ? "usr" : "tag";
+          return <a href={`/c?${param}=${name}`}>{label}</a>;
+        })}
         {Reactions(c, uid)}
       </div>
       <pre>{c.body === "" ? "[deleted by author]" : c.body}</pre>
@@ -249,7 +289,12 @@ const Post = (c: Record<string, any>, uid?: string) => (
       <a href={`/u/${c.uid}`}>@{c.username}</a>
       {c.body !== "" && uid && c.uid == uid && <a href={`/c/${c.cid}/delete`}>delete</a>}
       <a href={`/c/${c.cid}`}>reply</a>
-      {formatTags(c).map((tag: string) => <a href={`/c?tag=${tag.slice(1)}`}>{tag}</a>)}
+      {formatLabels(c).map((label: string) => {
+          const prefix = label[0];
+          const name = label.slice(1);
+          const param = prefix === "*" ? "org" : prefix === "@" ? "usr" : "tag";
+          return <a href={`/c?${param}=${name}`}>{label}</a>;
+        })}
       {Reactions(c, uid)}
     </div>
   </div>
@@ -388,6 +433,26 @@ app.use("*", async (c, next) => {
                 };
               }
             }
+            const searchForm = document.getElementById('search-form');
+            if (searchForm) {
+              searchForm.onsubmit = (e) => {
+                e.preventDefault();
+                const input = searchForm.querySelector('input[name="search"]');
+                const tokens = input.value.split(/\\s+/).filter(Boolean);
+                const params = new URLSearchParams();
+                for (const t of tokens) {
+                  if (t.startsWith('#')) params.append('tag', t.slice(1).toLowerCase());
+                  else if (t.startsWith('*')) params.append('org', t.slice(1).toLowerCase());
+                  else if (t.startsWith('@')) params.append('usr', t.slice(1));
+                  else if (t.startsWith('~')) params.append('www', t.slice(1).toLowerCase());
+                  else {
+                    const q = params.get('q');
+                    params.set('q', q ? q + ' ' + t : t);
+                  }
+                }
+                window.location.href = '/c?' + params.toString();
+              };
+            }
             </script>
           </body>
         </html>
@@ -425,21 +490,21 @@ app.get("/", async (c) => {
   const username = c.get("username") ?? "";
   // Get user's private tag permissions (empty if not logged in)
   const [viewer] = uid
-    ? await sql`select tags_prv_r, tags_prv_w from usr where uid = ${uid}`
-    : [{ tags_prv_r: [], tags_prv_w: [] }];
-  const userTagsR = viewer?.tags_prv_r ?? [];
+    ? await sql`select orgs_r, orgs_w from usr where uid = ${uid}`
+    : [{ orgs_r: [], orgs_w: [] }];
+  const userOrgsR = viewer?.orgs_r ?? [];
   // Get preset tags: user's writable private tags, then tags from their posts, then popular platform tags
   const presetTags = await sql`
     select distinct on (tag) tag from (
-      select '*' || unnest(${viewer?.tags_prv_w ?? []}::text[]) as tag, 1 as pri
+      select '*' || unnest(${viewer?.orgs_w ?? []}::text[]) as tag, 1 as pri
       union all
-      select '#' || unnest(tags_pub), 2 from com where uid = ${uid ?? 0} and parent_cid is null
+      select '#' || unnest(tags), 2 from com where uid = ${uid ?? 0} and parent_cid is null
       union all
-      select '*' || unnest(tags_prv), 2 from com where uid = ${uid ?? 0} and parent_cid is null
+      select '*' || unnest(orgs), 2 from com where uid = ${uid ?? 0} and parent_cid is null
       union all
-      select '@' || unnest(tags_usr), 2 from com where uid = ${uid ?? 0} and parent_cid is null
+      select '@' || unnest(usrs), 2 from com where uid = ${uid ?? 0} and parent_cid is null
       union all
-      select '#' || unnest(tags_pub), 3 from com where parent_cid is null
+      select '#' || unnest(tags), 3 from com where parent_cid is null
     ) t order by tag, pri limit 20
   `;
   const comments = await sql`
@@ -447,9 +512,9 @@ app.get("/", async (c) => {
       c.cid,
       c.uid,
       c.body,
-      c.tags_pub,
-      c.tags_prv,
-      c.tags_usr,
+      c.tags,
+      c.orgs,
+      c.usrs,
       c.created_at,
       (select count(*) from com c_ where c_.parent_cid = c.cid) as comments,
       (select count(*) from com r where r.parent_cid = c.cid and char_length(r.body) = 1) as reaction_count,
@@ -470,8 +535,8 @@ app.get("/", async (c) => {
     from com c
     inner join usr u using (uid)
     where parent_cid is null
-      and c.tags_prv <@ ${userTagsR}::text[]
-      and (c.tags_usr = '{}' or ${username}::text = any(c.tags_usr))
+      and c.orgs <@ ${userOrgsR}::text[]
+      and (c.usrs = '{}' or ${username}::text = any(c.usrs))
     ${sort === "top" ? sql`order by reaction_count desc, c.created_at desc` : sql`order by c.created_at desc`}
     offset ${p * 25}
     limit 25
@@ -679,7 +744,7 @@ app.post("/signup", async (c) => {
 app.get("/u", authed, async (c) => {
   const uid = c.get("uid")!;
   const [usr] = await sql`
-    select u.uid, u.name, u.email, u.bio, u.invited_by, u.password is not null as password, u.tags_prv_r, u.tags_prv_w, i.name as invited_by_username
+    select u.uid, u.name, u.email, u.bio, u.invited_by, u.password is not null as password, u.orgs_r, u.orgs_w, i.name as invited_by_username
     from usr u left join usr i on i.uid = u.invited_by where u.uid = ${uid}
   `;
   if (!usr) return notFound();
@@ -687,17 +752,17 @@ app.get("/u", authed, async (c) => {
   // Recent tags: user's recent interactions, then their permissions, then popular
   const recentTags = await sql`
     select distinct on (tag) tag from (
-      select '#' || unnest(tags_pub) as tag, created_at, 1 as pri from com where uid = ${uid}
+      select '#' || unnest(tags) as tag, created_at, 1 as pri from com where uid = ${uid}
       union all
-      select '*' || unnest(tags_prv), created_at, 1 from com where uid = ${uid}
+      select '*' || unnest(orgs), created_at, 1 from com where uid = ${uid}
       union all
-      select '@' || unnest(tags_usr), created_at, 1 from com where uid = ${uid}
+      select '@' || unnest(usrs), created_at, 1 from com where uid = ${uid}
       union all
-      select '*' || unnest(${usr.tags_prv_r ?? []}::text[]), null, 2
+      select '*' || unnest(${usr.orgs_r ?? []}::text[]), null, 2
       union all
-      select '*' || unnest(${usr.tags_prv_w ?? []}::text[]), null, 2
+      select '*' || unnest(${usr.orgs_w ?? []}::text[]), null, 2
       union all
-      select '#' || unnest(tags_pub), null, 3 from com where parent_cid is null
+      select '#' || unnest(tags), null, 3 from com where parent_cid is null
     ) t order by tag, pri, created_at desc nulls last limit 20
   `;
   return c.render(
@@ -726,7 +791,7 @@ app.get("/u/:uid", async (c) => {
   const isOwner = viewerUid && viewerUid == profileUid;
   const [usr] = await sql`
     select uid, name, bio, invited_by
-      ${isOwner ? sql`, tags_prv_r, tags_prv_w` : sql``}
+      ${isOwner ? sql`, orgs_r, orgs_w` : sql``}
     from usr where uid = ${profileUid}
   `;
   if (!usr) return notFound();
@@ -734,17 +799,17 @@ app.get("/u/:uid", async (c) => {
   const recentTags = isOwner
     ? await sql`
       select distinct on (tag) tag from (
-        select '#' || unnest(tags_pub) as tag, created_at, 1 as pri from com where uid = ${profileUid}
+        select '#' || unnest(tags) as tag, created_at, 1 as pri from com where uid = ${profileUid}
         union all
-        select '*' || unnest(tags_prv), created_at, 1 from com where uid = ${profileUid}
+        select '*' || unnest(orgs), created_at, 1 from com where uid = ${profileUid}
         union all
-        select '@' || unnest(tags_usr), created_at, 1 from com where uid = ${profileUid}
+        select '@' || unnest(usrs), created_at, 1 from com where uid = ${profileUid}
         union all
-        select '*' || unnest(${usr.tags_prv_r ?? []}::text[]), null, 2
+        select '*' || unnest(${usr.orgs_r ?? []}::text[]), null, 2
         union all
-        select '*' || unnest(${usr.tags_prv_w ?? []}::text[]), null, 2
+        select '*' || unnest(${usr.orgs_w ?? []}::text[]), null, 2
         union all
-        select '#' || unnest(tags_pub), null, 3 from com where parent_cid is null
+        select '#' || unnest(tags), null, 3 from com where parent_cid is null
       ) t order by tag, pri, created_at desc nulls last limit 20
     `
     : [];
@@ -802,37 +867,37 @@ app.post("/c/:parent_cid?", authed, async (c) => {
   const uid = c.get("uid")!;
 
   // Get user's write permissions
-  const [user] = await sql`select tags_prv_w from usr where uid = ${uid}`;
-  const userTagsW = user?.tags_prv_w ?? [];
+  const [user] = await sql`select orgs_w from usr where uid = ${uid}`;
+  const userOrgsW = user?.orgs_w ?? [];
 
-  let tags_pub: string[], tags_prv: string[], tags_usr: string[];
+  let tags: string[], orgs: string[], usrs: string[];
 
   if (parent_cid) {
     // Child comment: inherit all tags from parent
-    const [parent] = await sql`select tags_pub, tags_prv, tags_usr from com where cid = ${parent_cid}`;
+    const [parent] = await sql`select tags, orgs, usrs from com where cid = ${parent_cid}`;
     if (!parent) throw new HTTPException(404, { message: "Parent comment not found." });
-    tags_pub = parent.tags_pub;
-    tags_prv = parent.tags_prv;
-    tags_usr = parent.tags_usr;
+    tags = parent.tags;
+    orgs = parent.orgs;
+    usrs = parent.usrs;
 
     // Check user can read (and thus reply to) posts with these private tags
-    const [viewer] = await sql`select tags_prv_r from usr where uid = ${uid}`;
-    const userTagsR = viewer?.tags_prv_r ?? [];
-    const canRead = tags_prv.every((t: string) => userTagsR.includes(t));
-    const canSeeUsr = tags_usr.length === 0 || tags_usr.includes(c.get("username") ?? "");
+    const [viewer] = await sql`select orgs_r from usr where uid = ${uid}`;
+    const userOrgsR = viewer?.orgs_r ?? [];
+    const canRead = orgs.every((t: string) => userOrgsR.includes(t));
+    const canSeeUsr = usrs.length === 0 || usrs.includes(c.get("username") ?? "");
     if (!canRead || !canSeeUsr) throw new HTTPException(403, { message: "Cannot reply to this post." });
   } else {
-    // Root post: parse tags from input
-    const tagsInput = formData.get("tags")?.toString() ?? "";
-    const parsed = parseTags(tagsInput);
-    tags_pub = parsed.pub;
-    tags_prv = parsed.prv;
-    tags_usr = parsed.usr;
+    // Root post: parse labels from input
+    const labelsInput = formData.get("tags")?.toString() ?? "";
+    const parsed = parseLabels(labelsInput);
+    tags = parsed.tag;
+    orgs = parsed.org;
+    usrs = parsed.usr;
 
-    if (!tags_pub.length) throw new HTTPException(400, { message: "Must include at least one #public tag." });
+    if (!tags.length) throw new HTTPException(400, { message: "Must include at least one #public tag." });
 
     // Check user can write all specified private tags
-    const canWrite = tags_prv.every((t) => userTagsW.includes(t));
+    const canWrite = orgs.every((t) => userOrgsW.includes(t));
     if (!canWrite) throw new HTTPException(403, { message: "You don't have permission to use those private tags." });
   }
 
@@ -849,9 +914,9 @@ app.post("/c/:parent_cid?", authed, async (c) => {
     parent_cid,
     uid,
     body: formData.get("body")?.toString() ?? "",
-    tags_pub,
-    tags_prv,
-    tags_usr,
+    tags,
+    orgs,
+    usrs,
   };
 
   const [comment] = await sql`insert into com ${sql(com)} returning cid`;
@@ -869,10 +934,13 @@ app.get("/c/:cid?", async (c) => {
   const uid = c.get("uid");
   const username = c.get("username") ?? "";
   // Get user's private tag permissions (empty if not logged in)
-  const [viewer] = uid ? await sql`select tags_prv_r from usr where uid = ${uid}` : [{ tags_prv_r: [] }];
-  const userTagsR = viewer?.tags_prv_r ?? [];
-  const tagFilter: string[] = c.req.query("tag") ? [c.req.query("tag")!] : [];
-  const dmFilter = c.req.query("dm");
+  const [viewer] = uid ? await sql`select orgs_r from usr where uid = ${uid}` : [{ orgs_r: [] }];
+  const userOrgsR = viewer?.orgs_r ?? [];
+  // Label filters (multiple allowed)
+  const tagFilters: string[] = c.req.queries("tag") ?? [];
+  const orgFilters: string[] = c.req.queries("org") ?? [];
+  const usrFilters: string[] = c.req.queries("usr") ?? [];
+  const wwwFilters: string[] = c.req.queries("www") ?? [];
   const repliesToFilter = c.req.query("replies_to");
   const reactionsFilter = c.req.query("reactions");
   const commentsFilter = c.req.query("comments");
@@ -882,9 +950,9 @@ app.get("/c/:cid?", async (c) => {
       c.cid,
       c.parent_cid,
       c.body,
-      c.tags_pub,
-      c.tags_prv,
-      c.tags_usr,
+      c.tags,
+      c.orgs,
+      c.usrs,
       c.created_at,
       (select count(*) from com c_ where c_.parent_cid = c.cid) as comments,
       (select count(*) from com r where r.parent_cid = c.cid and char_length(r.body) = 1) as reaction_count,
@@ -896,9 +964,9 @@ app.get("/c/:cid?", async (c) => {
           'cid', c_.cid,
           'created_at', c_.created_at,
           'username', u_.name,
-          'tags_pub', c_.tags_pub,
-          'tags_prv', c_.tags_prv,
-          'tags_usr', c_.tags_usr,
+          'tags', c_.tags,
+          'orgs', c_.orgs,
+          'usrs', c_.usrs,
           'child_comments', array(
             select jsonb_build_object(
               'body', c__.body,
@@ -906,9 +974,9 @@ app.get("/c/:cid?", async (c) => {
               'cid', c__.cid,
               'created_at', c__.created_at,
               'username', u_.name,
-              'tags_pub', c__.tags_pub,
-              'tags_prv', c__.tags_prv,
-              'tags_usr', c__.tags_usr,
+              'tags', c__.tags,
+              'orgs', c__.orgs,
+              'usrs', c__.usrs,
               'child_comments_ids', array(
                 select c___.cid
                 from com c___
@@ -937,10 +1005,12 @@ app.get("/c/:cid?", async (c) => {
       : sql`c.parent_cid is null`
   }
       and uid = ${c.req.query("uid") ?? sql`uid`}
-      and c.tags_pub @> ${tagFilter}::text[]
-      and c.tags_prv <@ ${userTagsR}::text[]
-      and (c.tags_usr = '{}' or ${username}::text = any(c.tags_usr))
-    ${dmFilter ? sql`and ${dmFilter}::text = any(c.tags_usr)` : sql``}
+      and c.tags @> ${tagFilters}::text[]
+      and c.orgs <@ ${userOrgsR}::text[]
+      and (c.usrs = '{}' or ${username}::text = any(c.usrs))
+    ${orgFilters.length ? sql`and c.orgs && ${orgFilters}::text[]` : sql``}
+    ${usrFilters.length ? sql`and c.usrs && ${usrFilters}::text[]` : sql``}
+    ${wwwFilters.length ? sql`and c.body ~* ${wwwFilters.map((d) => d.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")).join("|")}` : sql``}
     ${
     repliesToFilter
       ? sql`and c.parent_cid in (select cid from com where uid = ${repliesToFilter}) and char_length(c.body) > 1`
@@ -988,8 +1058,10 @@ ${
           const params = new URLSearchParams();
           if (c.req.query("q")) params.set("q", c.req.query("q")!);
           if (c.req.query("uid")) params.set("uid", c.req.query("uid")!);
-          if (c.req.query("tag")) params.set("tag", c.req.query("tag")!);
-          if (c.req.query("dm")) params.set("dm", c.req.query("dm")!);
+          for (const tag of c.req.queries("tag") ?? []) params.append("tag", tag);
+          for (const org of c.req.queries("org") ?? []) params.append("org", org);
+          for (const usr of c.req.queries("usr") ?? []) params.append("usr", usr);
+          for (const www of c.req.queries("www") ?? []) params.append("www", www);
           if (c.req.query("replies_to")) params.set("replies_to", c.req.query("replies_to")!);
           if (c.req.query("reactions")) params.set("reactions", c.req.query("reactions")!);
           if (c.req.query("comments")) params.set("comments", c.req.query("comments")!);
@@ -997,11 +1069,12 @@ ${
           params.set("p", String(page));
           return params.toString();
         };
+        const searchValue = decodeLabels(new URL(c.req.url).searchParams);
         return c.render(
           <>
             <section>
-              <form method="get" action="/c" style="display:flex;flex-direction:row;gap:0.5rem;">
-                <input name="q" value={c.req.query("q") ?? ""} style="width:100%;" />
+              <form id="search-form" method="get" action="/c" style="display:flex;flex-direction:row;gap:0.5rem;">
+                <input name="search" value={searchValue} placeholder="#tag *org @user ~domain text" style="width:100%;" />
                 <button>search</button>
               </form>
               <SortToggle
