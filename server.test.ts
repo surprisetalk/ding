@@ -47,8 +47,8 @@ const pglite = (f: (sql: pg.Sql) => (t: Deno.TestContext) => Promise<void>) => a
 
   // Insert test user with default tag permissions
   await db.exec(`
-    insert into usr (uid, name, email, password, bio, email_verified_at, invited_by, orgs_r, orgs_w)
-    values (101, 'john_doe', 'john@example.com', 'hashed:password1!', 'sample bio', now(), 101, '{secret}', '{secret}')
+    insert into usr (name, email, password, bio, email_verified_at, invited_by, orgs_r, orgs_w)
+    values ('john_doe', 'john@example.com', 'hashed:password1!', 'sample bio', now(), 'john_doe', '{secret}', '{secret}')
     on conflict do nothing;
   `);
 
@@ -112,13 +112,13 @@ Deno.test(
       assertEquals(res.status, 401);
     });
 
-    await t.step("GET /u/:uid valid uid", async () => {
-      const res = await app.request("/u/101");
+    await t.step("GET /u/:name valid name", async () => {
+      const res = await app.request("/u/john_doe");
       assertEquals(res.status, 200);
     });
 
-    await t.step("GET /u/:uid invalid uid", async () => {
-      const res = await app.request("/u/0");
+    await t.step("GET /u/:name invalid name", async () => {
+      const res = await app.request("/u/nonexistent_user");
       assertEquals(res.status, 404);
     });
 
@@ -166,7 +166,7 @@ Deno.test(
     });
 
     await t.step("GET /u (api) with valid credentials", async () => {
-      const res = await app.request("/u/101", {
+      const res = await app.request("/u/john_doe", {
         headers: {
           Accept: "application/json",
           Authorization: "Basic " + btoa("john@example.com:password1!"),
@@ -174,8 +174,7 @@ Deno.test(
       });
       assertEquals(res.status, 200);
       assertEquals(await res.json(), {
-        uid: 101,
-        invited_by: 101,
+        invited_by: "john_doe",
         name: "john_doe",
         bio: "sample bio",
       });
