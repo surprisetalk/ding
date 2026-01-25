@@ -506,6 +506,10 @@ app.get("/", async (c) => {
   // Get user's private tag permissions (empty if not logged in)
   const [viewer] = name ? await sql`select orgs_r, orgs_w from usr where name = ${name}` : [{ orgs_r: [], orgs_w: [] }];
   const userOrgsR = viewer?.orgs_r ?? [];
+  // Extract filter params from query string
+  const filterTags = c.req.queries("tag") ?? [];
+  const filterOrgs = c.req.queries("org") ?? [];
+  const filterUsrs = c.req.queries("usr") ?? [];
   // Get preset tags: user's writable private tags, then tags from their posts, then popular platform tags
   const presetTags = await sql`
     select distinct on (tag) tag from (
@@ -554,6 +558,9 @@ app.get("/", async (c) => {
     where parent_cid is null
       and c.orgs <@ ${userOrgsR}::text[]
       and (c.usrs = '{}' or ${name ?? ""}::text = any(c.usrs))
+      ${filterTags.length > 0 ? sql`and c.tags @> ${filterTags}::text[]` : sql``}
+      ${filterOrgs.length > 0 ? sql`and c.orgs @> ${filterOrgs}::text[]` : sql``}
+      ${filterUsrs.length > 0 ? sql`and c.usrs @> ${filterUsrs}::text[]` : sql``}
     ${sort === "top" ? sql`order by reaction_count desc, c.created_at desc` : sql`order by c.created_at desc`}
     offset ${p * 25}
     limit 25
@@ -862,7 +869,7 @@ app.get("/c/:cid/delete", authed, async (c) => {
   return c.render(
     <section>
       <h2>Delete this post?</h2>
-      <pre style="margin: 1rem 0; padding: 1rem; background: var(--bg-secondary, #f5f5f5);">
+      <pre style="margin: 1rem 0; padding: 1rem; background: #f5f5f5; color: #222;">
         {comment.body.length > 200 ? comment.body.slice(0, 200) + "…" : comment.body}
       </pre>
       <p style="opacity: 0.8;">This will show "[deleted by author]" but preserve any replies.</p>
