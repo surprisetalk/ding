@@ -208,9 +208,9 @@ const User = (u: Record<string, any>, viewerName?: string) => {
   const isOwner = viewerName && viewerName == u.name;
   return (
     <div class="user">
+      <h2>@{u.name}</h2>
       <div>
-        <span>{u.name}</span>
-        {u.name !== u.invited_by || <a href={`/u/${u.invited_by}`}>@{u.invited_by}</a>}
+        {u.name !== u.invited_by || <a href={`/u/${u.invited_by}`}>invited by @{u.invited_by}</a>}
         <a href={`/c?usr=${u.name}`}>posts</a>
         <a href={`/c?usr=${u.name}&comments=1`}>comments</a>
         {isOwner && (
@@ -480,20 +480,6 @@ app.use("*", async (c, next) => {
                   : \`<a href="\${url}">\${url}</a>\`;
               });
             }
-            const presets = document.querySelector('.tag-presets');
-            if (presets) {
-              presets.style.display = 'flex';
-              for (const btn of presets.querySelectorAll('.tag-preset')) {
-                btn.onclick = () => {
-                  const input = document.querySelector('input[name="tags"]');
-                  const tag = btn.dataset.tag;
-                  if (!input.value.split(/\\s+/).includes(tag)) {
-                    input.value = input.value.trim() ? input.value.trim() + ' ' + tag : tag;
-                  }
-                  input.focus();
-                };
-              }
-            }
             const searchForm = document.getElementById('search-form');
             if (searchForm) {
               searchForm.onsubmit = (e) => {
@@ -634,11 +620,17 @@ app.get("/", async (c) => {
           </div>
           {presetTags.length > 0 && (
             <div class="tag-presets">
-              {presetTags.map((t) => <button type="button" class="tag-preset" data-tag={t.tag}>{t.tag}</button>)}
+              {presetTags.map((t) => {
+                const prefix = (t.tag as string)[0];
+                const name = (t.tag as string).slice(1);
+                const param = prefix === "*" ? "org" : prefix === "@" ? "usr" : "tag";
+                return <a href={buildAdditiveLink(currentParams, param, name)} class="tag-preset">{t.tag}</a>;
+              })}
             </div>
           )}
         </form>
         <ActiveFilters params={currentParams} />
+        {buildFilterTitle(currentParams) && <h2>{buildFilterTitle(currentParams)}</h2>}
       </section>
       <section>
         {!comments.length && (
@@ -1227,10 +1219,11 @@ ${
                 <button>search</button>
               </form>
               <ActiveFilters params={currentParams} />
+              {buildFilterTitle(currentParams) && <h2>{buildFilterTitle(currentParams)}</h2>}
               <SortToggle
                 sort={sort}
                 baseHref={`/c?${paginationParams(0).replace(/&?p=0/, "")}`}
-                title="search results"
+                title="results"
               />
             </section>
             <section>
