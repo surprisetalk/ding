@@ -255,7 +255,7 @@ const SortToggle = ({ sort, baseHref, title }: { sort: string; baseHref: string;
   );
 };
 
-const ActiveFilters = ({ params }: { params: URLSearchParams }) => {
+const ActiveFilters = ({ params, basePath = "/c" }: { params: URLSearchParams; basePath?: string }) => {
   const filters: { label: string; param: string; value: string }[] = [];
   for (const tag of params.getAll("tag")) filters.push({ label: `#${tag}`, param: "tag", value: tag });
   for (const org of params.getAll("org")) filters.push({ label: `*${org}`, param: "org", value: org });
@@ -275,7 +275,7 @@ const ActiveFilters = ({ params }: { params: URLSearchParams }) => {
           newParams.delete(f.param);
           for (const v of values) newParams.append(f.param, v);
           newParams.delete("p");
-          return <a href={`/c?${newParams}`} class="filter-pill">{f.label} x</a>;
+          return <a href={`${basePath}?${newParams}`} class="filter-pill">{f.label} x</a>;
         })}
       </div>
     )
@@ -629,7 +629,7 @@ app.get("/", async (c) => {
             </div>
           )}
         </form>
-        <ActiveFilters params={currentParams} />
+        <ActiveFilters params={currentParams} basePath="/" />
         {buildFilterTitle(currentParams) && <h2>{buildFilterTitle(currentParams)}</h2>}
       </section>
       <section>
