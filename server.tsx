@@ -433,8 +433,15 @@ app.use("*", async (c, next) => {
             <main>${content}</main>
             <footer></footer>
             <script>
-            for (const x of document.querySelectorAll("pre")) x.innerHTML = x.innerHTML.replace(/(https?:\\/\\/\\S+)/g,
-            '<a href="$1">$1</a>');
+            for (const x of document.querySelectorAll("pre")) {
+              x.innerHTML = x.innerHTML.replace(/(https?:\\/\\/\\S+)/g, (url) => {
+                const isImage = /\\.(jpe?g|png|gif|webp|svg)(\\?.*)?$/i.test(url) ||
+                  /^https?:\\/\\/(i\\.redd\\.it|i\\.imgur\\.com|pbs\\.twimg\\.com)\\//i.test(url);
+                return isImage
+                  ? \`<a href="\${url}">\${url}</a><br><img src="\${url}" loading="lazy" style="max-width:100%;max-height:400px;">\`
+                  : \`<a href="\${url}">\${url}</a>\`;
+              });
+            }
             const presets = document.querySelector('.tag-presets');
             if (presets) {
               presets.style.display = 'flex';
