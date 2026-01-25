@@ -1,8 +1,7 @@
-- [-] make the reactions A LOT more efficient by calculating the counts in sql rather than js
 - [ ] fix the help message; fix the readme too
   - [ ] add to welcome guide: github source
-- [ ] index pages (and coments): every post should have a square thumbnail, which is either main extracted image, or
-      screenshot of site or favicon or app image
+- [-] index pages (and coments): every post should have a square thumbnail, which is either main extracted image, or
+  screenshot of site or favicon or app image
 - [ ] detail pages: show big square and thumbnail squares underneath for all attachments.
 - [ ] create curation bots that post top tags, users, etc
 - [ ] if you hit "reply" and you're not logged in it should prompt to create new account

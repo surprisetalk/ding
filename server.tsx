@@ -38,6 +38,25 @@ const escapeXml = (s: string): string =>
     .replace(/"/g, "&quot;")
     .replace(/'/g, "&apos;");
 
+const extractFirstUrl = (body: string): string | null => body.match(/https?:\/\/[^\s]+/)?.[0] || null;
+
+const resolveThumbnail = async (url: string): Promise<string> => {
+  // 1. Try og:image extraction
+  try {
+    const res = await fetch(url, {
+      headers: { "User-Agent": "ding/1.0" },
+      signal: AbortSignal.timeout(3000),
+    });
+    const html = await res.text();
+    const og = html.match(/<meta[^>]+(?:property="og:image"|name="twitter:image")[^>]+content="([^"]+)"/i)?.[1];
+    if (og) return og;
+  } catch { /* fall through to favicon */ }
+
+  // 2. Favicon fallback via Google's service
+  const domain = new URL(url).hostname;
+  return `https://www.google.com/s2/favicons?domain=${domain}&sz=128`;
+};
+
 //// LABEL PARSING /////////////////////////////////////////////////////////////
 
 export type Labels = {
@@ -261,33 +280,39 @@ const Comment = (c: Record<string, any>, viewerName?: string) => {
   );
 };
 
+const defaultThumb =
+  "data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 1 1'%3E%3Crect fill='%23222' width='1' height='1'/%3E%3C/svg%3E";
+
 const Post = (c: Record<string, any>, viewerName?: string) => (
-  <div>
-    <p>
-      <a href={`/c/${c.cid}`}>
-        {c.body === ""
-          ? "[deleted by author]"
-          : `${c.body.trim().replace(/[\r\n\t].+$/, "").slice(0, 60)}${c.body.length > 60 ? "…" : ""}`.padEnd(
-            40,
-            " .",
-          )}
-      </a>
-    </p>
-    <div>
-      <a href={`/c/${c.cid}`}>{new Date(c.created_at).toLocaleDateString()}</a>
-      {!c.parent_cid || <a href={`/c/${c.parent_cid}`}>parent</a>}
-      <a href={`/u/${c.created_by}`}>@{c.created_by}</a>
-      {c.body !== "" && viewerName && c.created_by == viewerName && <a href={`/c/${c.cid}/delete`}>delete</a>}
-      <a href={`/c/${c.cid}`}>reply</a>
-      {formatLabels(c).map((label: string) => {
-        const prefix = label[0];
-        const labelName = label.slice(1);
-        const param = prefix === "*" ? "org" : prefix === "@" ? "usr" : "tag";
-        return <a href={`/c?${param}=${labelName}`}>{label}</a>;
-      })}
-      {Reactions(c)}
+  <>
+    <img src={c.thumb || defaultThumb} loading="lazy" />
+    <div class="post-content">
+      <span>
+        <a href={`/c/${c.cid}`}>
+          {c.body === ""
+            ? "[deleted by author]"
+            : `${c.body.trim().replace(/[\r\n\t].+$/, "").slice(0, 60)}${c.body.length > 60 ? "…" : ""}`.padEnd(
+              40,
+              " .",
+            )}
+        </a>
+      </span>
+      <div>
+        <a href={`/c/${c.cid}`}>{new Date(c.created_at).toLocaleDateString()}</a>
+        {!c.parent_cid || <a href={`/c/${c.parent_cid}`}>parent</a>}
+        <a href={`/u/${c.created_by}`}>@{c.created_by}</a>
+        {c.body !== "" && viewerName && c.created_by == viewerName && <a href={`/c/${c.cid}/delete`}>delete</a>}
+        <a href={`/c/${c.cid}`}>reply</a>
+        {formatLabels(c).map((label: string) => {
+          const prefix = label[0];
+          const labelName = label.slice(1);
+          const param = prefix === "*" ? "org" : prefix === "@" ? "usr" : "tag";
+          return <a href={`/c?${param}=${labelName}`}>{label}</a>;
+        })}
+        {Reactions(c)}
+      </div>
     </div>
-  </div>
+  </>
 );
 
 //// HONO //////////////////////////////////////////////////////////////////////
@@ -496,6 +521,7 @@ app.get("/", async (c) => {
       c.cid,
       c.created_by,
       c.body,
+      c.thumb,
       c.tags,
       c.orgs,
       c.usrs,
@@ -507,7 +533,7 @@ app.get("/", async (c) => {
         from (select body, count(*) as cnt from com where parent_cid = c.cid and char_length(body) = 1 group by body) r
       ) as reaction_counts,
       array(
-        select body from com where parent_cid = c.cid and char_length(body) = 1 and created_by = ${name ?? ''}
+        select body from com where parent_cid = c.cid and char_length(body) = 1 and created_by = ${name ?? ""}
       ) as user_reactions,
       array(
         select jsonb_build_object(
@@ -908,13 +934,23 @@ app.post("/c/:parent_cid?", authed, async (c) => {
     });
   }
 
+  const body = formData.get("body")?.toString() ?? "";
+
+  // Extract thumbnail for root posts only (not replies)
+  let thumb: string | null = null;
+  if (!parent_cid) {
+    const url = extractFirstUrl(body);
+    if (url) thumb = await resolveThumbnail(url);
+  }
+
   const com = {
     parent_cid,
     created_by: name,
-    body: formData.get("body")?.toString() ?? "",
+    body,
     tags,
     orgs,
     usrs,
+    thumb,
   };
 
   const [comment] = await sql`insert into com ${sql(com)} returning cid`;
@@ -948,6 +984,7 @@ app.get("/c/:cid?", async (c) => {
       c.cid,
       c.parent_cid,
       c.body,
+      c.thumb,
       c.tags,
       c.orgs,
       c.usrs,
@@ -959,7 +996,7 @@ app.get("/c/:cid?", async (c) => {
         from (select body, count(*) as cnt from com where parent_cid = c.cid and char_length(body) = 1 group by body) r
       ) as reaction_counts,
       array(
-        select body from com where parent_cid = c.cid and char_length(body) = 1 and created_by = ${name ?? ''}
+        select body from com where parent_cid = c.cid and char_length(body) = 1 and created_by = ${name ?? ""}
       ) as user_reactions,
       array(
         select jsonb_build_object(
@@ -975,7 +1012,7 @@ app.get("/c/:cid?", async (c) => {
             from (select body, count(*) as cnt from com where parent_cid = c_.cid and char_length(body) = 1 group by body) r
           ),
           'user_reactions', array(
-            select body from com where parent_cid = c_.cid and char_length(body) = 1 and created_by = ${name ?? ''}
+            select body from com where parent_cid = c_.cid and char_length(body) = 1 and created_by = ${name ?? ""}
           ),
           'child_comments', array(
             select jsonb_build_object(
@@ -991,7 +1028,7 @@ app.get("/c/:cid?", async (c) => {
                 from (select body, count(*) as cnt from com where parent_cid = c__.cid and char_length(body) = 1 group by body) r
               ),
               'user_reactions', array(
-                select body from com where parent_cid = c__.cid and char_length(body) = 1 and created_by = ${name ?? ''}
+                select body from com where parent_cid = c__.cid and char_length(body) = 1 and created_by = ${name ?? ""}
               ),
               'child_comments_ids', array(
                 select c___.cid

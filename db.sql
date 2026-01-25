@@ -35,6 +35,7 @@ create table com (
   orgs text[] not null default '{}',  -- org/private tags (e.g., 'secret')
   usrs text[] not null default '{}',  -- user mentions (e.g., 'john')
   body text not null check (length(body) between 0 and 1441),
+  thumb text,  -- thumbnail URL (og:image or favicon fallback)
   created_at timestamp default current_timestamp,
   -- Root posts require at least one public tag
   check ((parent_cid is null and tags <> '{}') or parent_cid is not null)
