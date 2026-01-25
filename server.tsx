@@ -621,6 +621,8 @@ app.post("/login", async (c) => {
   if (!usr.email_verified_at && !(await getSignedCookie(c, cookieSecret, "name")))
     await sendVerificationEmail(usr.email, usr.token);
   await setSignedCookie(c, "name", usr.name, cookieSecret);
+  const next = c.req.query("next");
+  if (next?.startsWith("/")) return c.redirect(next);
   return c.redirect("/u");
 });
 
@@ -777,8 +779,59 @@ app.post("/signup", async (c) => {
   return c.redirect("/");
 });
 
-app.get("/u", authed, async (c) => {
-  const name = c.get("name")!;
+app.get("/u", async (c) => {
+  // Try cookie auth first
+  let name: string | undefined = (await getSignedCookie(c, cookieSecret, "name")) || undefined;
+
+  // Try Basic Auth if no cookie
+  if (!name) {
+    const authHeader = c.req.header("Authorization");
+    if (authHeader?.startsWith("Basic ")) {
+      const decoded = atob(authHeader.slice(6));
+      const [email, password] = decoded.split(":");
+      if (email && password) {
+        const [usr] = await sql`
+          select *, password = crypt(${password}, password) AS is_password_correct
+          from usr where email = ${email} or name = ${email}
+        `;
+        if (usr?.is_password_correct) {
+          name = usr.name;
+          c.set("name", name);
+        } else if (authHeader) {
+          // Invalid Basic Auth credentials provided - reject
+          throw new HTTPException(401, { message: "Invalid credentials." });
+        }
+      }
+    }
+  } else {
+    c.set("name", name);
+  }
+
+  const next = c.req.query("next") ?? "";
+
+  if (!name) {
+    const action = next ? `/login?next=${encodeURIComponent(next)}` : "/login";
+    return c.render(
+      <section>
+        <h2>login</h2>
+        <form method="post" action={action}>
+          <input type="email" name="email" placeholder="email" required />
+          <input type="password" name="password" placeholder="password" required />
+          <button>login</button>
+        </form>
+        <p><a href="/forgot">forgot password?</a></p>
+
+        <h2>sign up</h2>
+        <form method="post" action="/signup">
+          <input type="text" name="name" placeholder="username" required />
+          <input type="email" name="email" placeholder="email" required />
+          <button>create account</button>
+        </form>
+      </section>,
+      { title: "login" },
+    );
+  }
+
   const [usr] = await sql`
     select name, email, bio, invited_by, password is not null as password, orgs_r, orgs_w
     from usr where name = ${name}
@@ -896,10 +949,16 @@ app.post("/c/:cid/delete", authed, async (c) => {
   return c.redirect(comment.parent_cid ? `/c/${comment.parent_cid}` : "/");
 });
 
-app.post("/c/:parent_cid?", authed, async (c) => {
+app.post("/c/:parent_cid?", async (c) => {
+  const name = c.get("name");
+  if (!name) {
+    const parent_cid = c.req.param("parent_cid");
+    const returnUrl = parent_cid ? `/c/${parent_cid}` : "/";
+    return c.redirect(`/u?next=${encodeURIComponent(returnUrl)}`);
+  }
+
   const formData = await c.req.formData();
   const parent_cid = c.req.param("parent_cid") ?? null;
-  const name = c.get("name")!;
 
   // Get user's write permissions
   const [user] = await sql`select orgs_w from usr where name = ${name}`;

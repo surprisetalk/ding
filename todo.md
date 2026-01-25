@@ -9,7 +9,6 @@
       other. don't define any special rec engines or discovery in the database.
 - [ ] add related tags and posts to footer (backlinks)
 - [ ] add mod/flagging mechanism by commenting "spam" or "abuse"
-- [-] prettier signin/signup/forgot-password ui. probably form and links on /u
 - [ ] figure out self-reactions and dup reaction counts
 - [ ] launch
 - [ ] bubbletea cli/tui

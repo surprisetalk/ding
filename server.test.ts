@@ -107,9 +107,11 @@ Deno.test(
       assertEquals(res.status, 400); // Invalid or expired token
     });
 
-    await t.step("GET /u with invalid session", async () => {
+    await t.step("GET /u without auth shows login form", async () => {
       const res = await app.request("/u");
-      assertEquals(res.status, 401);
+      assertEquals(res.status, 200);
+      const text = await res.text();
+      assertEquals(text.includes("<h2>login</h2>"), true);
     });
 
     await t.step("GET /u/:name valid name", async () => {
@@ -160,9 +162,11 @@ Deno.test(
       assertEquals(res.status, 401);
     });
 
-    await t.step("GET /u with missing credentials", async () => {
-      const res = await app.request("/u");
-      assertEquals(res.status, 401);
+    await t.step("GET /u with next param shows login form with redirect", async () => {
+      const res = await app.request("/u?next=%2Fc%2F123");
+      assertEquals(res.status, 200);
+      const text = await res.text();
+      assertEquals(text.includes("/login?next=%2Fc%2F123"), true);
     });
 
     await t.step("GET /u (api) with valid credentials", async () => {
