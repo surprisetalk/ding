@@ -425,7 +425,7 @@ app.use("*", async (c, next) => {
                 <a href="/u" style="letter-spacing:2px;font-size:0.875rem;opacity:0.8;">
                   ${c.get("name") ? `@${c.get("name")}` : "account"}
                 </a>
-                <a href="/c/379" style="letter-spacing:2px;font-size:0.875rem;opacity:0.8;">
+                <a href="/c/496" style="letter-spacing:2px;font-size:0.875rem;opacity:0.8;">
                   help
                 </a>
               </section>

@@ -1,5 +1,5 @@
-- [ ] fix the help message; fix the readme too
-  - [ ] add to welcome guide: github source
+- [ ] filter the frontpage based on the query params
+- [ ] white background on "delete" post page
 - [ ] detail pages: show big square and thumbnail squares underneath for all attachments.
 - [ ] create curation bots that post top tags, users, etc
 - [ ] if you hit "reply" and you're not logged in it should prompt to create new account
