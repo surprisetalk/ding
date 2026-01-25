@@ -1,4 +1,4 @@
-- [ ] make the reactions A LOT more efficient by calculating the counts in sql rather than js
+- [-] make the reactions A LOT more efficient by calculating the counts in sql rather than js
 - [ ] fix the help message; fix the readme too
   - [ ] add to welcome guide: github source
 - [ ] index pages (and coments): every post should have a square thumbnail, which is either main extracted image, or

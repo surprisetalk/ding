@@ -225,19 +225,11 @@ const SortToggle = ({ sort, baseHref, title }: { sort: string; baseHref: string;
   );
 };
 
-const Reactions = (c: Record<string, any>, name?: string) => {
-  const reactions: { [k: string]: { count: number; userReacted: boolean } } = {
-    "▲": { count: 0, userReacted: false },
-    "▼": { count: 0, userReacted: false },
-  };
-  for (const child of (c.child_comments ?? [])) {
-    if (!isReaction(child.body)) continue;
-    reactions[child.body] = reactions[child.body] ?? { count: 0, userReacted: false };
-    reactions[child.body].count++;
-    if (name && child.created_by == name) reactions[child.body].userReacted = true;
-  }
-  return Object.entries(reactions).map(([char, { count, userReacted }]) => (
-    <form method="post" action={`/c/${c.cid}`} class={`reaction${userReacted ? " reacted" : ""}`}>
+const Reactions = (c: Record<string, any>) => {
+  const counts: Record<string, number> = { "▲": 0, "▼": 0, ...(c.reaction_counts ?? {}) };
+  const userReactions: string[] = c.user_reactions ?? [];
+  return Object.entries(counts).map(([char, count]) => (
+    <form method="post" action={`/c/${c.cid}`} class={`reaction${userReactions.includes(char) ? " reacted" : ""}`}>
       <input type="hidden" name="body" value={char} />
       <button type="submit">{char} {count}</button>
     </form>
@@ -259,13 +251,11 @@ const Comment = (c: Record<string, any>, viewerName?: string) => {
           const param = prefix === "*" ? "org" : prefix === "@" ? "usr" : "tag";
           return <a href={`/c?${param}=${labelName}`}>{label}</a>;
         })}
-        {Reactions(c, viewerName)}
+        {Reactions(c)}
       </div>
       <pre>{c.body === "" ? "[deleted by author]" : c.body}</pre>
       <div style="padding-left: 1rem;">
-        {c?.child_comments?.filter((c: Record<string, any>) => !isReaction(c.body)).map((child: Record<string, any>) =>
-          Comment(child, viewerName)
-        )}
+        {c?.child_comments?.map((child: Record<string, any>) => Comment(child, viewerName))}
       </div>
     </div>
   );
@@ -295,7 +285,7 @@ const Post = (c: Record<string, any>, viewerName?: string) => (
         const param = prefix === "*" ? "org" : prefix === "@" ? "usr" : "tag";
         return <a href={`/c?${param}=${labelName}`}>{label}</a>;
       })}
-      {Reactions(c, viewerName)}
+      {Reactions(c)}
     </div>
   </div>
 );
@@ -512,6 +502,13 @@ app.get("/", async (c) => {
       c.created_at,
       (select count(*) from com c_ where c_.parent_cid = c.cid) as comments,
       (select count(*) from com r where r.parent_cid = c.cid and char_length(r.body) = 1) as reaction_count,
+      (
+        select coalesce(jsonb_object_agg(body, cnt), '{}')
+        from (select body, count(*) as cnt from com where parent_cid = c.cid and char_length(body) = 1 group by body) r
+      ) as reaction_counts,
+      array(
+        select body from com where parent_cid = c.cid and char_length(body) = 1 and created_by = ${name ?? ''}
+      ) as user_reactions,
       array(
         select jsonb_build_object(
           'body', c_.body,
@@ -520,7 +517,7 @@ app.get("/", async (c) => {
           'created_at', c_.created_at
         )
         from com c_
-        where c_.parent_cid = c.cid
+        where c_.parent_cid = c.cid and char_length(c_.body) > 1
         order by c_.created_at desc
       ) as child_comments
     from com c
@@ -957,6 +954,13 @@ app.get("/c/:cid?", async (c) => {
       c.created_at,
       (select count(*) from com c_ where c_.parent_cid = c.cid) as comments,
       (select count(*) from com r where r.parent_cid = c.cid and char_length(r.body) = 1) as reaction_count,
+      (
+        select coalesce(jsonb_object_agg(body, cnt), '{}')
+        from (select body, count(*) as cnt from com where parent_cid = c.cid and char_length(body) = 1 group by body) r
+      ) as reaction_counts,
+      array(
+        select body from com where parent_cid = c.cid and char_length(body) = 1 and created_by = ${name ?? ''}
+      ) as user_reactions,
       array(
         select jsonb_build_object(
           'body', c_.body,
@@ -966,6 +970,13 @@ app.get("/c/:cid?", async (c) => {
           'tags', c_.tags,
           'orgs', c_.orgs,
           'usrs', c_.usrs,
+          'reaction_counts', (
+            select coalesce(jsonb_object_agg(body, cnt), '{}')
+            from (select body, count(*) as cnt from com where parent_cid = c_.cid and char_length(body) = 1 group by body) r
+          ),
+          'user_reactions', array(
+            select body from com where parent_cid = c_.cid and char_length(body) = 1 and created_by = ${name ?? ''}
+          ),
           'child_comments', array(
             select jsonb_build_object(
               'body', c__.body,
@@ -975,6 +986,13 @@ app.get("/c/:cid?", async (c) => {
               'tags', c__.tags,
               'orgs', c__.orgs,
               'usrs', c__.usrs,
+              'reaction_counts', (
+                select coalesce(jsonb_object_agg(body, cnt), '{}')
+                from (select body, count(*) as cnt from com where parent_cid = c__.cid and char_length(body) = 1 group by body) r
+              ),
+              'user_reactions', array(
+                select body from com where parent_cid = c__.cid and char_length(body) = 1 and created_by = ${name ?? ''}
+              ),
               'child_comments_ids', array(
                 select c___.cid
                 from com c___
@@ -983,12 +1001,12 @@ app.get("/c/:cid?", async (c) => {
               )
             )
             from com c__
-            where c__.parent_cid = c_.cid
+            where c__.parent_cid = c_.cid and char_length(c__.body) > 1
             order by c__.created_at desc
           )
         )
         from com c_
-        where c_.parent_cid = c.cid
+        where c_.parent_cid = c.cid and char_length(c_.body) > 1
         order by c_.created_at desc
       ) as child_comments
     from com c
