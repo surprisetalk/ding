@@ -97,6 +97,10 @@ export const decodeLabels = (params: URLSearchParams): string => {
   for (const org of params.getAll("org")) parts.push(`*${org}`);
   for (const usr of params.getAll("usr")) parts.push(`@${usr}`);
   for (const www of params.getAll("www")) parts.push(`~${www}`);
+  for (const mention of params.getAll("mention")) parts.push(`mention:${mention}`);
+  if (params.get("replies_to")) parts.push(`replies_to:${params.get("replies_to")}`);
+  if (params.get("reactions") === "1") parts.push(`reactions`);
+  if (params.get("comments") === "1") parts.push(`comments`);
   const q = params.get("q");
   if (q) parts.push(q);
   return parts.join(" ");
@@ -108,6 +112,25 @@ export const formatLabels = (c: Record<string, any>): string[] => [
   ...(c.orgs ?? []).map((t: string) => `*${t}`),
   ...(c.usrs ?? []).map((t: string) => `@${t}`),
 ];
+
+// Build page title from active filters (returns empty string if no filters)
+const buildFilterTitle = (params: URLSearchParams): string => {
+  const parts: string[] = [];
+  for (const tag of params.getAll("tag")) parts.push(`#${tag}`);
+  for (const org of params.getAll("org")) parts.push(`*${org}`);
+  for (const usr of params.getAll("usr")) parts.push(`@${usr}`);
+  return parts.join(" ");
+};
+
+// Build additive filter link (adds param without replacing existing)
+const buildAdditiveLink = (params: URLSearchParams | undefined, paramName: string, value: string): string => {
+  const newParams = new URLSearchParams(params);
+  if (!newParams.getAll(paramName).includes(value)) {
+    newParams.append(paramName, value);
+  }
+  newParams.delete("p");
+  return `/c?${newParams}`;
+};
 
 //// EMAIL TOKEN ///////////////////////////////////////////////////////////////
 
@@ -181,7 +204,7 @@ const sendVerificationEmail = async (email: string, token: string) =>
 
 //// COMPONENTS ////////////////////////////////////////////////////////////////
 
-const User = (u: Record<string, any>, viewerName?: string, recentTags?: Record<string, any>[]) => {
+const User = (u: Record<string, any>, viewerName?: string) => {
   const isOwner = viewerName && viewerName == u.name;
   return (
     <div class="user">
@@ -198,18 +221,6 @@ const User = (u: Record<string, any>, viewerName?: string, recentTags?: Record<s
           </>
         )}
       </div>
-      {isOwner && recentTags && recentTags.length > 0 && (
-        <div>
-          {recentTags.map((t) => {
-            const label = t.tag as string;
-            const prefix = label[0];
-            const name = label.slice(1);
-            if (prefix === "@") return <a href={`/c?usr=${name}`}>{label}</a>;
-            if (prefix === "*") return <a href={`/c?org=${name}`}>{label}</a>;
-            return <a href={`/c?tag=${name}`}>{label}</a>;
-          })}
-        </div>
-      )}
       <div>
         <pre>{u.bio}</pre>
       </div>
@@ -242,6 +253,33 @@ const SortToggle = ({ sort, baseHref, title }: { sort: string; baseHref: string;
       </span>
     </nav>
   );
+};
+
+const ActiveFilters = ({ params }: { params: URLSearchParams }) => {
+  const filters: { label: string; param: string; value: string }[] = [];
+  for (const tag of params.getAll("tag")) filters.push({ label: `#${tag}`, param: "tag", value: tag });
+  for (const org of params.getAll("org")) filters.push({ label: `*${org}`, param: "org", value: org });
+  for (const usr of params.getAll("usr")) filters.push({ label: `@${usr}`, param: "usr", value: usr });
+  for (const www of params.getAll("www")) filters.push({ label: `~${www}`, param: "www", value: www });
+  for (const mention of params.getAll("mention")) filters.push({ label: `mention:${mention}`, param: "mention", value: mention });
+  if (params.get("replies_to")) filters.push({ label: `replies_to:${params.get("replies_to")}`, param: "replies_to", value: params.get("replies_to")! });
+  if (params.get("reactions") === "1") filters.push({ label: "reactions", param: "reactions", value: "1" });
+  if (params.get("comments") === "1") filters.push({ label: "comments", param: "comments", value: "1" });
+
+  return filters.length > 0
+    ? (
+      <div class="active-filters">
+        {filters.map((f) => {
+          const newParams = new URLSearchParams(params);
+          const values = newParams.getAll(f.param).filter((v) => v !== f.value);
+          newParams.delete(f.param);
+          for (const v of values) newParams.append(f.param, v);
+          newParams.delete("p");
+          return <a href={`/c?${newParams}`} class="filter-pill">{f.label} x</a>;
+        })}
+      </div>
+    )
+    : <div class="active-filters"></div>;
 };
 
 const Reactions = (c: Record<string, any>) => {
@@ -283,7 +321,7 @@ const Comment = (c: Record<string, any>, viewerName?: string) => {
 const defaultThumb =
   "data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 1 1'%3E%3Crect fill='%23222' width='1' height='1'/%3E%3C/svg%3E";
 
-const Post = (c: Record<string, any>, viewerName?: string) => (
+const Post = (c: Record<string, any>, viewerName?: string, currentParams?: URLSearchParams) => (
   <>
     <img
       src={c.thumb || defaultThumb}
@@ -311,7 +349,7 @@ const Post = (c: Record<string, any>, viewerName?: string) => (
           const prefix = label[0];
           const labelName = label.slice(1);
           const param = prefix === "*" ? "org" : prefix === "@" ? "usr" : "tag";
-          return <a href={`/c?${param}=${labelName}`}>{label}</a>;
+          return <a href={buildAdditiveLink(currentParams, param, labelName)}>{label}</a>;
         })}
         {Reactions(c)}
       </div>
@@ -578,6 +616,7 @@ app.get("/", async (c) => {
     ...(c.req.queries("org") ?? []).map((t) => `*${t}`),
     ...(c.req.queries("usr") ?? []).map((t) => `@${t}`),
   ].join(" ");
+  const currentParams = new URL(c.req.url).searchParams;
   return c.render(
     <>
       <section>
@@ -599,6 +638,7 @@ app.get("/", async (c) => {
             </div>
           )}
         </form>
+        <ActiveFilters params={currentParams} />
       </section>
       <section>
         {!comments.length && (
@@ -606,7 +646,7 @@ app.get("/", async (c) => {
             no posts. <a href="/">go home.</a>
           </p>
         )}
-        <div class="posts">{comments.map((cm) => Post(cm, c.get("name")))}</div>
+        <div class="posts">{comments.map((cm) => Post(cm, c.get("name"), currentParams))}</div>
       </section>
       <section>
         <div style="margin-top: 2rem;">
@@ -615,6 +655,7 @@ app.get("/", async (c) => {
         </div>
       </section>
     </>,
+    { title: buildFilterTitle(currentParams) || undefined },
   );
 });
 
@@ -850,25 +891,9 @@ app.get("/u", async (c) => {
   `;
   if (!usr) return notFound();
   if (!usr.password) return c.redirect("/password");
-  // Recent tags: user's recent interactions, then their permissions, then popular
-  const recentTags = await sql`
-    select distinct on (tag) tag from (
-      select '#' || unnest(tags) as tag, created_at, 1 as pri from com where created_by = ${name}
-      union all
-      select '*' || unnest(orgs), created_at, 1 from com where created_by = ${name}
-      union all
-      select '@' || unnest(usrs), created_at, 1 from com where created_by = ${name}
-      union all
-      select '*' || unnest(${usr.orgs_r ?? []}::text[]), null, 2
-      union all
-      select '*' || unnest(${usr.orgs_w ?? []}::text[]), null, 2
-      union all
-      select '#' || unnest(tags), null, 3 from com where parent_cid is null
-    ) t order by tag, pri, created_at desc nulls last limit 20
-  `;
   return c.render(
     <>
-      <section>{User(usr, name, recentTags)}</section>
+      <section>{User(usr, name)}</section>
       <section>
         <form method="post" action="/u">
           <textarea name="bio" rows={6} placeholder="bio">{usr.bio}</textarea>
@@ -896,29 +921,11 @@ app.get("/u/:name", async (c) => {
     from usr where name = ${profileName}
   `;
   if (!usr) return notFound();
-  // Fetch recent tags only for owner
-  const recentTags = isOwner
-    ? await sql`
-      select distinct on (tag) tag from (
-        select '#' || unnest(tags) as tag, created_at, 1 as pri from com where created_by = ${profileName}
-        union all
-        select '*' || unnest(orgs), created_at, 1 from com where created_by = ${profileName}
-        union all
-        select '@' || unnest(usrs), created_at, 1 from com where created_by = ${profileName}
-        union all
-        select '*' || unnest(${usr.orgs_r ?? []}::text[]), null, 2
-        union all
-        select '*' || unnest(${usr.orgs_w ?? []}::text[]), null, 2
-        union all
-        select '#' || unnest(tags), null, 3 from com where parent_cid is null
-      ) t order by tag, pri, created_at desc nulls last limit 20
-    `
-    : [];
   switch (host(c)) {
     case "api":
       return c.json(usr, 200);
     default:
-      return c.render(<section>{User(usr, viewerName, recentTags)}</section>, { title: usr.name });
+      return c.render(<section>{User(usr, viewerName)}</section>, { title: usr.name });
   }
 });
 
@@ -1205,7 +1212,8 @@ ${
           params.set("p", String(page));
           return params.toString();
         };
-        const searchValue = decodeLabels(new URL(c.req.url).searchParams);
+        const currentParams = new URL(c.req.url).searchParams;
+        const searchValue = decodeLabels(currentParams);
         return c.render(
           <>
             <section>
@@ -1218,6 +1226,7 @@ ${
                 />
                 <button>search</button>
               </form>
+              <ActiveFilters params={currentParams} />
               <SortToggle
                 sort={sort}
                 baseHref={`/c?${paginationParams(0).replace(/&?p=0/, "")}`}
@@ -1225,7 +1234,7 @@ ${
               />
             </section>
             <section>
-              <div class="posts">{comments.map((cm) => Post(cm, c.get("name")))}</div>
+              <div class="posts">{comments.map((cm) => Post(cm, c.get("name"), currentParams))}</div>
             </section>
             <section>
               <div style="margin-top: 2rem;">
@@ -1234,6 +1243,7 @@ ${
               </div>
             </section>
           </>,
+          { title: buildFilterTitle(currentParams) || "search" },
         );
       } else {
         const post = comments?.[0];

@@ -1,8 +1,8 @@
 - [-] if you hit "reply" and you're not logged in it should prompt to create new account
-- [ ] fix the confusing frontpage tag list and /u tag list
-- [ ] show better titles for search pages, e.g. "#foo" if just searching the foo tag. add actions like "add to
-      homepage". "*foo" should also show special info
-- [ ] the searchbar should always show the full query, including "#foo #bar baz"
+- [-] fix the confusing frontpage tag list and /u tag list
+- [-] show better titles for search pages, e.g. "#foo" if just searching the foo tag. add actions like "add to
+  homepage". "*foo" should also show special info
+- [-] the searchbar should always show the full query, including "#foo #bar baz"
 - [ ] figure out adding/managing orgs. /o for creating org? /o for editing/moderating the org and adding users?
 - [ ] add related tags and posts to footer (backlinks)
 - [ ] create curation bots that post top tags, users, etc

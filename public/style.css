@@ -162,3 +162,22 @@ a:link {
 .tag-preset:hover {
   opacity: 1;
 }
+
+.active-filters {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.25rem;
+}
+
+.filter-pill {
+  font-size: 0.75rem;
+  padding: 0.125rem 0.375rem;
+  background: none;
+  border: 1px solid currentColor;
+  border-radius: 0.25rem;
+  opacity: 0.8;
+}
+
+.filter-pill:hover {
+  opacity: 1;
+}
