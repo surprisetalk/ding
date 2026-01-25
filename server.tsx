@@ -753,8 +753,12 @@ app.post("/invite", authed, async (c) => {
 
 // TODO: Remove this when we want to disallow self-signups.
 app.get("/signup", async (c) => {
+  const ok = c.req.query("ok") !== undefined;
+  const error = c.req.query("error");
   return c.render(
     <section>
+      {ok && <p style="color:green;">Check your email for a verification link.</p>}
+      {error === "conflict" && <p style="color:red;">Username or email already taken.</p>}
       <form method="post" action="/signup" style="display:flex;flex-direction:row;">
         <input type="text" name="name" placeholder="ivan_grease" />
         <input type="email" name="email" placeholder="hello@example.com" />
@@ -782,8 +786,9 @@ app.post("/signup", async (c) => {
   if (newUsr?.email) {
     const token = await emailToken(new Date(), newUsr.email);
     await sendVerificationEmail(newUsr.email, token);
+    return c.redirect("/signup?ok");
   }
-  return c.redirect("/");
+  return c.redirect("/signup?error=conflict");
 });
 
 app.get("/u", async (c) => {

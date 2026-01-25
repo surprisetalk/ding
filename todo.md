@@ -1,4 +1,3 @@
-- [-] detail pages: show big square and thumbnail squares underneath for all attachments.
 - [-] if you hit "reply" and you're not logged in it should prompt to create new account
 - [ ] fix the confusing frontpage tag list and /u tag list
 - [ ] show better titles for search pages, e.g. "#foo" if just searching the foo tag. add actions like "add to
