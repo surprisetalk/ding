@@ -285,7 +285,11 @@ const defaultThumb =
 
 const Post = (c: Record<string, any>, viewerName?: string) => (
   <>
-    <img src={c.thumb || defaultThumb} loading="lazy" />
+    <img
+      src={c.thumb || defaultThumb}
+      loading="lazy"
+      onerror={`this.onerror=null;this.src='${defaultThumb}'`}
+    />
     <div class="post-content">
       <span>
         <a href={`/c/${c.cid}`}>
