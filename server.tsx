@@ -129,7 +129,7 @@ const buildAdditiveLink = (params: URLSearchParams | undefined, paramName: strin
     newParams.append(paramName, value);
   }
   newParams.delete("p");
-  return `/c?${newParams}`;
+  return `/?${newParams}`;
 };
 
 //// EMAIL TOKEN ///////////////////////////////////////////////////////////////
