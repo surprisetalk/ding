@@ -2,14 +2,17 @@
 // Posts top Lobsters stories
 
 const DING_API_URL = Deno.env.get("DING_API_URL") || "https://ding.bar";
-const BOT_EMAIL = Deno.env.get("BOT_EMAIL") || "";
-const BOT_PASSWORD = Deno.env.get("BOT_PASSWORD") || "";
+const BOT_EMAIL = Deno.env.get("BOT_LOBSTERS_EMAIL") || "";
+const BOT_PASSWORD = Deno.env.get("BOT_LOBSTERS_PASSWORD") || "";
 
 const auth = btoa(`${BOT_EMAIL}:${BOT_PASSWORD}`);
 
+// Derive username from email: bot-lobsters@ding.bar → bot_lobsters
+const BOT_USERNAME = BOT_EMAIL.split("@")[0].replace(/-/g, "_");
+
 // Fetch bot's latest posts to find watermark
 async function getPostedUrls(): Promise<Set<string>> {
-  const res = await fetch(`${DING_API_URL}/c?usr=lobsters&limit=100`, {
+  const res = await fetch(`${DING_API_URL}/c?usr=${BOT_USERNAME}&limit=100`, {
     headers: { Accept: "application/json", Authorization: `Basic ${auth}` },
   });
   if (!res.ok) return new Set();
@@ -79,7 +82,7 @@ async function postItem(item: LobstersItem): Promise<boolean> {
 // Main
 async function main() {
   if (!BOT_EMAIL || !BOT_PASSWORD) {
-    console.error("Missing BOT_EMAIL or BOT_PASSWORD");
+    console.error("Missing BOT_LOBSTERS_EMAIL or BOT_LOBSTERS_PASSWORD");
     Deno.exit(1);
   }
 

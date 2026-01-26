@@ -2,14 +2,17 @@
 // Posts top HN stories via hnrss.org
 
 const DING_API_URL = Deno.env.get("DING_API_URL") || "https://ding.bar";
-const BOT_EMAIL = Deno.env.get("BOT_EMAIL") || "";
-const BOT_PASSWORD = Deno.env.get("BOT_PASSWORD") || "";
+const BOT_EMAIL = Deno.env.get("BOT_HN_EMAIL") || "";
+const BOT_PASSWORD = Deno.env.get("BOT_HN_PASSWORD") || "";
 
 const auth = btoa(`${BOT_EMAIL}:${BOT_PASSWORD}`);
 
+// Derive username from email: bot-hn@ding.bar → bot_hn
+const BOT_USERNAME = BOT_EMAIL.split("@")[0].replace(/-/g, "_");
+
 // Fetch bot's latest posts to find watermark
 async function getPostedUrls(): Promise<Set<string>> {
-  const res = await fetch(`${DING_API_URL}/c?usr=hn&limit=100`, {
+  const res = await fetch(`${DING_API_URL}/c?usr=${BOT_USERNAME}&limit=100`, {
     headers: { Accept: "application/json", Authorization: `Basic ${auth}` },
   });
   if (!res.ok) return new Set();
@@ -79,7 +82,7 @@ async function postItem(item: HNItem): Promise<boolean> {
 // Main
 async function main() {
   if (!BOT_EMAIL || !BOT_PASSWORD) {
-    console.error("Missing BOT_EMAIL or BOT_PASSWORD");
+    console.error("Missing BOT_HN_EMAIL or BOT_HN_PASSWORD");
     Deno.exit(1);
   }
 

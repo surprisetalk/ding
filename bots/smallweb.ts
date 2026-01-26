@@ -7,9 +7,12 @@ const BOT_PASSWORD = Deno.env.get("BOT_SMALLWEB_PASSWORD") || "";
 
 const auth = btoa(`${BOT_EMAIL}:${BOT_PASSWORD}`);
 
+// Derive username from email: bot-smallweb@ding.bar → bot_smallweb
+const BOT_USERNAME = BOT_EMAIL.split("@")[0].replace(/-/g, "_");
+
 // Fetch bot's latest posts to find watermark
 async function getPostedUrls(): Promise<Set<string>> {
-  const res = await fetch(`${DING_API_URL}/c?usr=smallweb&limit=100`, {
+  const res = await fetch(`${DING_API_URL}/c?usr=${BOT_USERNAME}&limit=100`, {
     headers: { Accept: "application/json", Authorization: `Basic ${auth}` },
   });
   if (!res.ok) return new Set();

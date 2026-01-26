@@ -7,11 +7,14 @@ const BOT_PASSWORD = Deno.env.get("BOT_HMMM_PASSWORD") || "";
 
 const auth = btoa(`${BOT_EMAIL}:${BOT_PASSWORD}`);
 
+// Derive username from email: bot-hmmm@ding.bar → bot_hmmm
+const BOT_USERNAME = BOT_EMAIL.split("@")[0].replace(/-/g, "_");
+
 const FEED_URL = "https://www.reddit.com/r/hmmm/.rss";
 
 // Fetch bot's latest posts to find watermark
 async function getPostedUrls(): Promise<Set<string>> {
-  const res = await fetch(`${DING_API_URL}/c?usr=hmmm&limit=100`, {
+  const res = await fetch(`${DING_API_URL}/c?usr=${BOT_USERNAME}&limit=100`, {
     headers: { Accept: "application/json", Authorization: `Basic ${auth}` },
   });
   if (!res.ok) return new Set();
