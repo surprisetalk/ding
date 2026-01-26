@@ -1,6 +1,6 @@
 //// IMPORTS ///////////////////////////////////////////////////////////////////
 
-import app, { setSql, parseLabels, encodeLabels, decodeLabels, formatLabels } from "./server.tsx";
+import app, { setSql, parseLabels, encodeLabels, decodeLabels, formatLabels, extractImageUrl } from "./server.tsx";
 import { assertEquals } from "jsr:@std/assert@1";
 import pg from "https://deno.land/x/postgresjs@v3.4.8/mod.js";
 import { PGlite } from "@electric-sql/pglite";
@@ -285,4 +285,62 @@ Deno.test("label encoding round-trip", () => {
   const decoded = decodeLabels(params);
   // Note: order may differ and case is normalized
   assertEquals(decoded, "#pub *org @User ~example.com lorem ipsum");
+});
+
+//// IMAGE URL EXTRACTION TESTS ////////////////////////////////////////////////
+
+Deno.test("extractImageUrl", async (t) => {
+  await t.step("extracts .jpg URLs", () => {
+    assertEquals(extractImageUrl("Check this https://i.imgur.com/abc.jpg out"), "https://i.imgur.com/abc.jpg");
+  });
+
+  await t.step("extracts .jpeg URLs", () => {
+    assertEquals(extractImageUrl("https://example.com/photo.jpeg"), "https://example.com/photo.jpeg");
+  });
+
+  await t.step("extracts .png URLs", () => {
+    assertEquals(extractImageUrl("Image: https://cdn.site.com/img.png"), "https://cdn.site.com/img.png");
+  });
+
+  await t.step("extracts .gif URLs", () => {
+    assertEquals(extractImageUrl("https://i.redd.it/animation.gif"), "https://i.redd.it/animation.gif");
+  });
+
+  await t.step("extracts .webp URLs", () => {
+    assertEquals(extractImageUrl("https://images.site.com/photo.webp"), "https://images.site.com/photo.webp");
+  });
+
+  await t.step("extracts .svg URLs", () => {
+    assertEquals(extractImageUrl("https://example.com/icon.svg"), "https://example.com/icon.svg");
+  });
+
+  await t.step("is case-insensitive", () => {
+    assertEquals(extractImageUrl("https://example.com/photo.JPG"), "https://example.com/photo.JPG");
+    assertEquals(extractImageUrl("https://example.com/photo.PNG"), "https://example.com/photo.PNG");
+  });
+
+  await t.step("handles query params", () => {
+    assertEquals(extractImageUrl("https://cdn.site.com/img.jpg?w=800&h=600"), "https://cdn.site.com/img.jpg?w=800&h=600");
+  });
+
+  await t.step("returns null when no image URL", () => {
+    assertEquals(extractImageUrl("Just text with https://example.com link"), null);
+    assertEquals(extractImageUrl("No URLs here"), null);
+  });
+
+  await t.step("returns first match when multiple exist", () => {
+    const body = "First https://a.com/one.jpg then https://b.com/two.png";
+    assertEquals(extractImageUrl(body), "https://a.com/one.jpg");
+  });
+
+  await t.step("prefers image URL over regular URL in body", () => {
+    const body = `Test post
+
+https://www.reddit.com/r/hmmm/comments/abc
+
+https://i.redd.it/xyz123.jpg
+
+via /u/someone`;
+    assertEquals(extractImageUrl(body), "https://i.redd.it/xyz123.jpg");
+  });
 });

@@ -40,6 +40,9 @@ const escapeXml = (s: string): string =>
 
 const extractFirstUrl = (body: string): string | null => body.match(/https?:\/\/[^\s]+/)?.[0] || null;
 
+const IMAGE_URL_PATTERN = /https?:\/\/[^\s]+\.(?:jpe?g|png|gif|webp|svg)(?:\?[^\s]*)?/i;
+export const extractImageUrl = (body: string): string | null => body.match(IMAGE_URL_PATTERN)?.[0] || null;
+
 const resolveThumbnail = async (url: string): Promise<string> => {
   // 1. Try og:image extraction
   try {
@@ -1035,8 +1038,13 @@ app.post("/c/:parent_cid?", async (c) => {
   // Extract thumbnail for root posts only (not replies)
   let thumb: string | null = null;
   if (!parent_cid) {
-    const url = extractFirstUrl(body);
-    if (url) thumb = await resolveThumbnail(url);
+    const imageUrl = extractImageUrl(body);
+    if (imageUrl) {
+      thumb = imageUrl;
+    } else {
+      const url = extractFirstUrl(body);
+      if (url) thumb = await resolveThumbnail(url);
+    }
   }
 
   const com = {
