@@ -961,7 +961,22 @@ app.post("/c/:cid/delete", authed, async (c) => {
 });
 
 app.post("/c/:parent_cid?", async (c) => {
-  const name = c.get("name");
+  let name = c.get("name");
+
+  // Support Basic Auth for bots
+  if (!name) {
+    const authHeader = c.req.header("Authorization");
+    if (authHeader?.startsWith("Basic ")) {
+      const [email, password] = atob(authHeader.slice(6)).split(":");
+      const [user] = await sql`
+        SELECT name FROM usr
+        WHERE email = ${email}
+        AND password = crypt(${password}, password)
+      `;
+      if (user) name = user.name;
+    }
+  }
+
   if (!name) {
     const parent_cid = c.req.param("parent_cid");
     const returnUrl = parent_cid ? `/c/${parent_cid}` : "/";

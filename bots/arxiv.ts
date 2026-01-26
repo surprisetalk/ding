@@ -8,11 +8,10 @@ const BOT_PASSWORD = Deno.env.get("BOT_ARXIV_PASSWORD") || "";
 const auth = btoa(`${BOT_EMAIL}:${BOT_PASSWORD}`);
 
 const CATEGORIES = ["cs"]; // Computer science; expand as needed
-const BOT_UID = "207";
 
 // Fetch bot's latest posts to find watermark
 async function getPostedUrls(): Promise<Set<string>> {
-  const res = await fetch(`${DING_API_URL}/c?uid=${BOT_UID}&limit=100`, {
+  const res = await fetch(`${DING_API_URL}/c?usr=arxiv&limit=100`, {
     headers: { Accept: "application/json", Authorization: `Basic ${auth}` },
   });
   if (!res.ok) return new Set();
