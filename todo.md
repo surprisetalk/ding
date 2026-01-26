@@ -6,7 +6,7 @@
 - [ ] create curation bots that post top tags, users, etc
   - [ ] create a "bestof" bot that collects and summarizes stuff from around the site. they're just normal posts like
         any other. don't define any special rec engines or discovery in the database.
-- [ ] add mod/flagging mechanism by commenting "spam" or "abuse"
+- [ ] add mod/flagging mechanism by commenting "flag"
 - [ ] figure out self-reactions and dup reaction counts
 - [ ] launch
 - [ ] bubbletea cli/tui
