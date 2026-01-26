@@ -49,7 +49,7 @@ const resolveThumbnail = async (url: string): Promise<string> => {
     });
     const html = await res.text();
     const og = html.match(/<meta[^>]+(?:property="og:image"|name="twitter:image")[^>]+content="([^"]+)"/i)?.[1];
-    if (og) return og;
+    if (og) return new URL(og, url).href;
   } catch { /* fall through to favicon */ }
 
   // 2. Favicon fallback via Google's service
@@ -319,7 +319,7 @@ const Comment = (c: Record<string, any>, viewerName?: string) => {
 };
 
 const defaultThumb =
-  "data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 1 1'%3E%3Crect fill='%23222' width='1' height='1'/%3E%3C/svg%3E";
+  "data:image/svg+xml,%3Csvg xmlns=%27http://www.w3.org/2000/svg%27 viewBox=%270 0 1 1%27%3E%3Crect fill=%27%23222%27 width=%271%27 height=%271%27/%3E%3C/svg%3E";
 
 const Post = (c: Record<string, any>, viewerName?: string, currentParams?: URLSearchParams) => (
   <>
