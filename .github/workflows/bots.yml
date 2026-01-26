@@ -18,13 +18,34 @@ jobs:
       - name: Run HN bot
         env:
           DING_API_URL: ${{ secrets.DING_API_URL }}
-          BOT_EMAIL: ${{ secrets.BOT_HN_EMAIL }}
-          BOT_PASSWORD: ${{ secrets.BOT_HN_PASSWORD }}
+          BOT_HN_EMAIL: ${{ secrets.BOT_HN_EMAIL }}
+          BOT_HN_PASSWORD: ${{ secrets.BOT_HN_PASSWORD }}
         run: deno run -A bots/hn.ts
 
       - name: Run Lobsters bot
         env:
           DING_API_URL: ${{ secrets.DING_API_URL }}
-          BOT_EMAIL: ${{ secrets.BOT_LOBSTERS_EMAIL }}
-          BOT_PASSWORD: ${{ secrets.BOT_LOBSTERS_PASSWORD }}
+          BOT_LOBSTERS_EMAIL: ${{ secrets.BOT_LOBSTERS_EMAIL }}
+          BOT_LOBSTERS_PASSWORD: ${{ secrets.BOT_LOBSTERS_PASSWORD }}
         run: deno run -A bots/lobsters.ts
+
+      - name: Run arXiv bot
+        env:
+          DING_API_URL: ${{ secrets.DING_API_URL }}
+          BOT_ARXIV_EMAIL: ${{ secrets.BOT_ARXIV_EMAIL }}
+          BOT_ARXIV_PASSWORD: ${{ secrets.BOT_ARXIV_PASSWORD }}
+        run: deno run -A bots/arxiv.ts
+
+      - name: Run SmallWeb bot
+        env:
+          DING_API_URL: ${{ secrets.DING_API_URL }}
+          BOT_SMALLWEB_EMAIL: ${{ secrets.BOT_SMALLWEB_EMAIL }}
+          BOT_SMALLWEB_PASSWORD: ${{ secrets.BOT_SMALLWEB_PASSWORD }}
+        run: deno run -A bots/smallweb.ts
+
+      - name: Run Hmmm bot
+        env:
+          DING_API_URL: ${{ secrets.DING_API_URL }}
+          BOT_HMMM_EMAIL: ${{ secrets.BOT_HMMM_EMAIL }}
+          BOT_HMMM_PASSWORD: ${{ secrets.BOT_HMMM_PASSWORD }}
+        run: deno run -A bots/hmmm.ts
