@@ -29,12 +29,12 @@ jobs:
           BOT_LOBSTERS_PASSWORD: ${{ secrets.BOT_LOBSTERS_PASSWORD }}
         run: deno run -A bots/lobsters.ts
 
-      - name: Run arXiv bot
-        env:
-          DING_API_URL: ${{ secrets.DING_API_URL }}
-          BOT_ARXIV_EMAIL: ${{ secrets.BOT_ARXIV_EMAIL }}
-          BOT_ARXIV_PASSWORD: ${{ secrets.BOT_ARXIV_PASSWORD }}
-        run: deno run -A bots/arxiv.ts
+      # - name: Run arXiv bot
+      #   env:
+      #     DING_API_URL: ${{ secrets.DING_API_URL }}
+      #     BOT_ARXIV_EMAIL: ${{ secrets.BOT_ARXIV_EMAIL }}
+      #     BOT_ARXIV_PASSWORD: ${{ secrets.BOT_ARXIV_PASSWORD }}
+      #   run: deno run -A bots/arxiv.ts
 
       - name: Run SmallWeb bot
         env:
