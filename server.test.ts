@@ -5,6 +5,7 @@ import { assertEquals } from "jsr:@std/assert@1";
 import pg from "https://deno.land/x/postgresjs@v3.4.8/mod.js";
 import { PGlite } from "@electric-sql/pglite";
 import { citext } from "@electric-sql/pglite/contrib/citext";
+import { hstore } from "@electric-sql/pglite/contrib/hstore";
 import { PostgresConnection } from "pg-gateway";
 import dbSql from "./db.sql" with { type: "text" };
 
@@ -13,7 +14,7 @@ import dbSql from "./db.sql" with { type: "text" };
 const pglite = (f: (sql: pg.Sql) => (t: Deno.TestContext) => Promise<void>) => async (t: Deno.TestContext) => {
   const port = 2000 + Math.floor(Math.random() * 8000);
   const listener = Deno.listen({ hostname: "127.0.0.1", port });
-  const db = new PGlite({ extensions: { citext } });
+  const db = new PGlite({ extensions: { citext, hstore } });
   const testSql = pg(`postgresql://postgres@127.0.0.1:${port}/postgres`, { fetch_types: true });
 
   (async () => {
@@ -41,7 +42,7 @@ const pglite = (f: (sql: pg.Sql) => (t: Deno.TestContext) => Promise<void>) => a
     $$;
   `);
 
-  // Load schema (skip pgcrypto extension since we mocked it)
+  // Load schema (skip pgcrypto extension since we mocked it; hstore needs explicit CREATE)
   const schema = dbSql.replace(/create extension if not exists pgcrypto;/i, "");
   await db.exec(schema);
 

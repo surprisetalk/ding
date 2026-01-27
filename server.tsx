@@ -235,8 +235,11 @@ const isReaction = (body: string): boolean => !!body && [...body].length === 1; 
 
 const SortToggle = ({ sort, baseHref, title }: { sort: string; baseHref: string; title: string }) => {
   const base = new URL(baseHref, "http://x");
+  const hotParams = new URLSearchParams(base.search);
+  hotParams.delete("sort");
+  hotParams.delete("p");
   const newParams = new URLSearchParams(base.search);
-  newParams.delete("sort");
+  newParams.set("sort", "new");
   newParams.delete("p");
   const topParams = new URLSearchParams(base.search);
   topParams.set("sort", "top");
@@ -250,6 +253,8 @@ const SortToggle = ({ sort, baseHref, title }: { sort: string; baseHref: string;
         {". ".repeat(100)}
       </span>
       <span style="font-size:0.85rem;">
+        {sort === "hot" ? "hot" : <a href={`${base.pathname}?${hotParams}`}>hot</a>}
+        {" • "}
         {sort === "new" ? "new" : <a href={`${base.pathname}?${newParams}`}>new</a>}
         {" • "}
         {sort === "top" ? "top" : <a href={`${base.pathname}?${topParams}`}>top</a>}
@@ -535,7 +540,8 @@ app.onError((err, c) => {
 
 app.get("/", async (c) => {
   const p = parseInt(c.req.query("p") ?? "0");
-  const sort = c.req.query("sort") === "top" ? "top" : "new";
+  const sortParam = c.req.query("sort");
+  const sort = sortParam === "new" ? "new" : sortParam === "top" ? "top" : "hot";
   const name = c.get("name");
   // Get user's private tag permissions (empty if not logged in)
   const [viewer] = name ? await sql`select orgs_r, orgs_w from usr where name = ${name}` : [{ orgs_r: [], orgs_w: [] }];
@@ -595,7 +601,19 @@ app.get("/", async (c) => {
       ${filterTags.length > 0 ? sql`and c.tags @> ${filterTags}::text[]` : sql``}
       ${filterOrgs.length > 0 ? sql`and c.orgs @> ${filterOrgs}::text[]` : sql``}
       ${filterUsrs.length > 0 ? sql`and c.usrs @> ${filterUsrs}::text[]` : sql``}
-    ${sort === "top" ? sql`order by reaction_count desc, c.created_at desc` : sql`order by c.created_at desc`}
+    ${sort === "new"
+      ? sql`order by c.created_at desc`
+      : sort === "top"
+      ? sql`order by reaction_count desc, c.created_at desc`
+      : sql`order by (
+          c.created_at
+          + interval '2 hours' * ln(greatest(coalesce((c.c_reactions -> '▲')::int, 0) + 1, 1))
+          + interval '30 minutes' * ln(greatest(c.c_comments + 1, 1))
+          - c.c_flags * interval '6 hours'
+          - (c.tags @> ARRAY['bot'])::int * interval '4 hours'
+          + interval '1 second' * (hashtext(c.cid::text) % 120)
+        ) desc`
+    }
     offset ${p * 25}
     limit 25
   `;
@@ -645,8 +663,8 @@ app.get("/", async (c) => {
       </section>
       <section>
         <div style="margin-top: 2rem;">
-          {!p || <a href={`/?${sort === "top" ? "sort=top&" : ""}p=${p - 1}`}>prev</a>}
-          {!comments.length || <a href={`/?${sort === "top" ? "sort=top&" : ""}p=${p + 1}`}>next</a>}
+          {!p || <a href={`/?${sort !== "hot" ? `sort=${sort}&` : ""}p=${p - 1}`}>prev</a>}
+          {!comments.length || <a href={`/?${sort !== "hot" ? `sort=${sort}&` : ""}p=${p + 1}`}>next</a>}
         </div>
       </section>
     </>,
@@ -1058,6 +1076,18 @@ app.post("/c/:parent_cid?", async (c) => {
   };
 
   const [comment] = await sql`insert into com ${sql(com)} returning cid`;
+
+  // Update parent's denormalized counts
+  if (parent_cid) {
+    if (isReaction(body)) {
+      await sql`update com set c_reactions = c_reactions || hstore(${body}, (coalesce((c_reactions -> ${body})::int, 0) + 1)::text) where cid = ${parent_cid}`;
+    } else if (body === "flag") {
+      await sql`update com set c_flags = c_flags + 1 where cid = ${parent_cid}`;
+    } else {
+      await sql`update com set c_comments = c_comments + 1 where cid = ${parent_cid}`;
+    }
+  }
+
   if (!parent_cid) return c.redirect(`/c/${comment.cid}`);
   const [parent] = await sql`select parent_cid from com where cid = ${parent_cid}`;
   // Show parent comment in grandparent context, or just the parent if it's top-level
@@ -1067,7 +1097,8 @@ app.post("/c/:parent_cid?", async (c) => {
 app.get("/c/:cid?", async (c) => {
   const p = parseInt(c.req.query("p") ?? "0");
   const limit = Math.min(Math.max(parseInt(c.req.query("limit") ?? "25"), 1), 100);
-  const sort = c.req.query("sort") === "top" ? "top" : "new";
+  const sortParam = c.req.query("sort");
+  const sort = sortParam === "new" ? "new" : sortParam === "top" ? "top" : "hot";
   const cid = c.req.param("cid");
   const name = c.get("name");
   // Get user's private tag permissions (empty if not logged in)
@@ -1181,7 +1212,19 @@ app.get("/c/:cid?", async (c) => {
       ? sql`and to_tsvector('english', body) @@ plainto_tsquery('english', ${c.req.query("q") ?? ""}::text)`
       : sql``
   }
-    ${sort === "top" ? sql`order by reaction_count desc, c.created_at desc` : sql`order by c.created_at desc`}
+    ${sort === "new"
+      ? sql`order by c.created_at desc`
+      : sort === "top"
+      ? sql`order by reaction_count desc, c.created_at desc`
+      : sql`order by (
+          c.created_at
+          + interval '2 hours' * ln(greatest(coalesce((c.c_reactions -> '▲')::int, 0) + 1, 1))
+          + interval '30 minutes' * ln(greatest(c.c_comments + 1, 1))
+          - c.c_flags * interval '6 hours'
+          - (c.tags @> ARRAY['bot'])::int * interval '4 hours'
+          + interval '1 second' * (hashtext(c.cid::text) % 120)
+        ) desc`
+    }
     offset ${p * limit}
     limit ${limit}
   `;

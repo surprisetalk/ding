@@ -2,6 +2,8 @@ create extension if not exists pgcrypto;
 
 create extension if not exists citext;
 
+create extension if not exists hstore;
+
 create function email_token(ts timestamptz, email text) returns text
 language sql
 immutable
@@ -37,6 +39,10 @@ create table com (
   body text not null check (length(body) between 0 and 1441),
   thumb text,  -- thumbnail URL (og:image or favicon fallback)
   created_at timestamp default current_timestamp,
+  -- Denormalized counts for hot ranking (maintained by server)
+  c_comments int not null default 0,    -- count of non-reaction replies
+  c_reactions hstore not null default ''::hstore,  -- reaction counts (e.g., '▲=>5,👍=>3')
+  c_flags int not null default 0,       -- count of 'flag' replies
   -- Root posts require at least one public tag
   check ((parent_cid is null and tags <> '{}') or parent_cid is not null)
 );
@@ -47,6 +53,7 @@ create index com_orgs_idx on com using gin (orgs);
 create index com_usrs_idx on com using gin (usrs);
 create index com_parent_cid_idx on com (parent_cid);
 create index com_created_by_idx on com (created_by);
+
 
 insert into
 usr (name, email, password, bio, email_verified_at, invited_by, orgs_r, orgs_w)
