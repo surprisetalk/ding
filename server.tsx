@@ -435,7 +435,10 @@ app.use(async function prettyJSON(c, next) {
 
 app.notFound(notFound);
 
-app.get("/robots.txt", (c) => c.text(`User-agent: *\nDisallow:`));
+app.get("/robots.txt", (c) =>
+  c.text(`User-agent: *
+Disallow: /*?*
+Crawl-delay: 1`));
 
 app.get("/sitemap.txt", (c) => c.text("https://ding.bar/"));
 
