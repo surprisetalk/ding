@@ -435,6 +435,23 @@ app.use(async function prettyJSON(c, next) {
 
 app.notFound(notFound);
 
+// Block crawlers from query string URLs
+const botPattern = /bot|crawl|spider|slurp|bingpreview|facebookexternalhit|mediapartners|google|yandex|baidu|duckduck|sogou|exabot|ia_archiver|semrush|ahref|mj12|dotbot|petalbot|bytespider/i;
+app.use("*", async (c, next) => {
+  const url = new URL(c.req.url);
+  const tags = url.searchParams.getAll("tag");
+  // Option A: Limit tag count
+  if (tags.length > 3) {
+    return c.text("Too many tags", 400);
+  }
+  // Option B: Block bots from query string URLs
+  const ua = c.req.header("User-Agent") || "";
+  if (url.search && botPattern.test(ua)) {
+    return c.text("Forbidden", 403);
+  }
+  await next();
+});
+
 app.get("/robots.txt", (c) =>
   c.text(`User-agent: *
 Disallow: /*?*
