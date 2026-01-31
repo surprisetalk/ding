@@ -3,6 +3,7 @@
   homepage". "*foo" should also show special info
 - [ ] clicking the thumbnail should take directly to the linked page, while clicking title takes you to the comments
       page
+- [ ] create skills for claude code
 - [ ] figure out adding/managing orgs. /o for creating org? /o for editing/moderating the org and adding users?
 - [ ] add related tags and posts to footer (backlinks)
 - [ ] create curation bots that post top tags, users, etc
