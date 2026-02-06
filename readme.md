@@ -28,6 +28,8 @@ http POST ding.bar ...     # TODO
 
 ## local dev
 
+prereqs: [deno](https://deno.com/), `postgresql`, `postgresql-contrib`, & `postgresql-client` (includes the `psql` CLI)
+
 ```bash
 psql -d postgres -c "create database ding"
 psql -d ding -x < db.sql
