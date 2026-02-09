@@ -30,10 +30,12 @@ http POST ding.bar ...     # TODO
 
 prereqs: [deno](https://deno.com/), `postgresql`, `postgresql-contrib`, & `postgresql-client` (includes the `psql` CLI)
 
+`.env`: refer to `.env.example`
+
 ```bash
 psql -d postgres -c "create database ding"
 psql -d ding -x < db.sql
-deno serve --watch -A server.tsx
+deno serve --watch -A --env server.tsx
 ```
 
 ## tests
