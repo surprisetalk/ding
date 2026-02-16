@@ -8,7 +8,9 @@
     "npm:@electric-sql/pglite@0.3.15": "0.3.15",
     "npm:@sendgrid/mail@*": "8.1.0",
     "npm:@types/node@*": "18.16.19",
-    "npm:pg-gateway@0.3.0-beta.4": "0.3.0-beta.4"
+    "npm:pg-gateway@0.3.0-beta.4": "0.3.0-beta.4",
+    "npm:stripe@*": "20.3.1_@types+node@18.16.19",
+    "npm:stripe@^20.3.1": "20.3.1_@types+node@18.16.19"
   },
   "jsr": {
     "@hono/hono@4.5.3": {
@@ -99,6 +101,15 @@
     },
     "proxy-from-env@1.1.0": {
       "integrity": "sha512-D+zkORCbA9f1tdWRK0RaCR3GPv50cMxcrz4X8k5LTSUD1Dkw47mKJEZQNunItRTkWwgtaUSo1RVFRIG9ZXiFYg=="
+    },
+    "stripe@20.3.1_@types+node@18.16.19": {
+      "integrity": "sha512-k990yOT5G5rhX3XluRPw5Y8RLdJDW4dzQ29wWT66piHrbnM2KyamJ1dKgPsw4HzGHRWjDiSSdcI2WdxQUPV3aQ==",
+      "dependencies": [
+        "@types/node"
+      ],
+      "optionalPeers": [
+        "@types/node"
+      ]
     }
   },
   "redirects": {
@@ -656,7 +667,8 @@
     "dependencies": [
       "jsr:@hono/hono@*",
       "npm:@electric-sql/pglite@0.3.15",
-      "npm:pg-gateway@0.3.0-beta.4"
+      "npm:pg-gateway@0.3.0-beta.4",
+      "npm:stripe@^20.3.1"
     ]
   }
 }

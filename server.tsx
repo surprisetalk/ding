@@ -2,7 +2,7 @@
 
 import { HTTPException } from "jsr:@hono/hono/http-exception";
 import { Context, Hono } from "jsr:@hono/hono";
-import { every, except, some } from "jsr:@hono/hono/combine";
+import { some } from "jsr:@hono/hono/combine";
 import { createMiddleware } from "jsr:@hono/hono/factory";
 import { logger } from "jsr:@hono/hono/logger";
 import { prettyJSON } from "jsr:@hono/hono/pretty-json";
@@ -14,6 +14,7 @@ import { serveStatic } from "jsr:@hono/hono/deno";
 import pg from "https://deno.land/x/postgresjs@v3.4.8/mod.js";
 
 import sg from "npm:@sendgrid/mail";
+import Stripe from "npm:stripe";
 
 declare module "jsr:@hono/hono" {
   interface ContextRenderer {
@@ -32,11 +33,7 @@ const TODO = (x: TemplateStringsArray) => {
 };
 
 const escapeXml = (s: string): string =>
-  s.replace(/&/g, "&amp;")
-    .replace(/</g, "&lt;")
-    .replace(/>/g, "&gt;")
-    .replace(/"/g, "&quot;")
-    .replace(/'/g, "&apos;");
+  s.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;").replace(/"/g, "&quot;").replace(/'/g, "&apos;");
 
 const extractFirstUrl = (body: string): string | null => body.match(/https?:\/\/[^\s]+/)?.[0] || null;
 
@@ -53,7 +50,9 @@ const resolveThumbnail = async (url: string): Promise<string> => {
     const html = await res.text();
     const og = html.match(/<meta[^>]+(?:property="og:image"|name="twitter:image")[^>]+content="([^"]+)"/i)?.[1];
     if (og) return new URL(og, url).href;
-  } catch { /* fall through to favicon */ }
+  } catch {
+    /* fall through to favicon */
+  }
 
   // 2. Favicon fallback via Google's service
   const domain = new URL(url).hostname;
@@ -74,11 +73,11 @@ export type Labels = {
 export const parseLabels = (input: string): Labels => {
   const tokens = input.split(/\s+/).filter(Boolean);
   return {
-    tag: tokens.filter((t) => t.startsWith("#")).map((t) => t.slice(1).toLowerCase()),
-    org: tokens.filter((t) => t.startsWith("*")).map((t) => t.slice(1).toLowerCase()),
-    usr: tokens.filter((t) => t.startsWith("@")).map((t) => t.slice(1)),
-    www: tokens.filter((t) => t.startsWith("~")).map((t) => t.slice(1).toLowerCase()),
-    text: tokens.filter((t) => !/^[#*@~]/.test(t)).join(" "),
+    tag: tokens.filter(t => t.startsWith("#")).map(t => t.slice(1).toLowerCase()),
+    org: tokens.filter(t => t.startsWith("*")).map(t => t.slice(1).toLowerCase()),
+    usr: tokens.filter(t => t.startsWith("@")).map(t => t.slice(1)),
+    www: tokens.filter(t => t.startsWith("~")).map(t => t.slice(1).toLowerCase()),
+    text: tokens.filter(t => !/^[#*@~]/.test(t)).join(" "),
   };
 };
 
@@ -128,8 +127,7 @@ const buildFilterTitle = (params: URLSearchParams): string => {
 // Build additive filter link (adds param without replacing existing)
 const buildAdditiveLink = (params: URLSearchParams | undefined, paramName: string, value: string): string => {
   const newParams = new URLSearchParams(params);
-  if (!newParams.getAll(paramName).includes(value))
-    newParams.append(paramName, value);
+  if (!newParams.getAll(paramName).includes(value)) newParams.append(paramName, value);
   newParams.delete("p");
   return `/?${newParams}`;
 };
@@ -141,16 +139,10 @@ const EMAIL_TOKEN_SECRET = Deno.env.get("EMAIL_TOKEN_SECRET") ?? Math.random().t
 async function emailToken(ts: Date, email: string): Promise<string> {
   const epoch = Math.floor(ts.getTime() / 1000);
   const encoder = new TextEncoder();
-  const key = await crypto.subtle.importKey(
-    "raw",
-    encoder.encode(EMAIL_TOKEN_SECRET),
-    { name: "HMAC", hash: "SHA-256" },
-    false,
-    ["sign"],
-  );
+  const key = await crypto.subtle.importKey("raw", encoder.encode(EMAIL_TOKEN_SECRET), { name: "HMAC", hash: "SHA-256" }, false, ["sign"]);
   const signature = await crypto.subtle.sign("HMAC", key, encoder.encode(`${epoch}:${email}`));
   const hash = Array.from(new Uint8Array(signature))
-    .map((b) => b.toString(16).padStart(2, "0"))
+    .map(b => b.toString(16).padStart(2, "0"))
     .join("")
     .slice(0, 32); // Match md5 length for compatibility
   return `${epoch}:${hash}`;
@@ -163,11 +155,7 @@ function parseTokenTimestamp(token: string): Date | null {
   return new Date(epoch * 1000);
 }
 
-async function validateEmailToken(
-  token: string,
-  email: string,
-  maxAgeMs: number = 2 * 24 * 60 * 60 * 1000,
-): Promise<boolean> {
+async function validateEmailToken(token: string, email: string, maxAgeMs: number = 2 * 24 * 60 * 60 * 1000): Promise<boolean> {
   const ts = parseTokenTimestamp(token);
   if (!ts) return false;
   if (Date.now() - ts.getTime() > maxAgeMs) return false;
@@ -191,7 +179,8 @@ const sendVerificationEmail = async (email: string, token: string) =>
       to: email,
       from: "taylor@troe.sh",
       subject: "Verify your email",
-      text: `` +
+      text:
+        `` +
         `Welcome to ᵗ𝕙𝔢 𝐟𝐔𝓉𝓾гє 𝔬𝔣 ᑕⓞ𝓓ƗŇg.` +
         `\n\n` +
         `Please verify your email: ` +
@@ -199,10 +188,22 @@ const sendVerificationEmail = async (email: string, token: string) =>
         `?email=${encodeURIComponent(email)}` +
         `&token=${encodeURIComponent(token)}`,
     })
-    .catch((err) => {
-      console.log(`/password?email=${email}&token=${token}`);
+    .catch(err => {
       console.error(`Could not send verification email to ${email}:`, err?.response?.body || err);
     }));
+
+//// STRIPE ////////////////////////////////////////////////////////////////////
+
+const stripeKey = Deno.env.get("STRIPE_SECRET_KEY") ?? "";
+if (stripeKey === "" || stripeKey === "YOUR_SECRET_KEY" || !stripeKey.startsWith("sk_")) {
+  console.warn("STRIPE_SECRET_KEY is missing, invalid, or still a placeholder. org features will fail.");
+}
+
+export const stripe = new Stripe(stripeKey, {
+  // @ts-ignore: stripe version types
+  apiVersion: "2024-12-18.acacia",
+  httpClient: Stripe.createFetchHttpClient(),
+});
 
 //// COMPONENTS ////////////////////////////////////////////////////////////////
 
@@ -245,12 +246,8 @@ const SortToggle = ({ sort, baseHref, title }: { sort: string; baseHref: string;
   topParams.delete("p");
   return (
     <nav style="margin-bottom:0.5rem;display:flex;gap:0.5rem;align-items:baseline;justify-content:space-between;text-wrap:nowrap;">
-      <span>
-        {title}
-      </span>
-      <span style="text-overflow:hidden;overflow:hidden;opacity:0.5;">
-        {". ".repeat(100)}
-      </span>
+      <span>{title}</span>
+      <span style="text-overflow:hidden;overflow:hidden;opacity:0.5;">{". ".repeat(100)}</span>
       <span style="font-size:0.85rem;">
         {sort === "hot" ? "hot" : <a href={`${base.pathname}?${hotParams}`}>hot</a>}
         {" • "}
@@ -268,8 +265,7 @@ const ActiveFilters = ({ params, basePath = "/c" }: { params: URLSearchParams; b
   for (const org of params.getAll("org")) filters.push({ label: `*${org}`, param: "org", value: org });
   for (const usr of params.getAll("usr")) filters.push({ label: `@${usr}`, param: "usr", value: usr });
   for (const www of params.getAll("www")) filters.push({ label: `~${www}`, param: "www", value: www });
-  for (const mention of params.getAll("mention"))
-    filters.push({ label: `mention:${mention}`, param: "mention", value: mention });
+  for (const mention of params.getAll("mention")) filters.push({ label: `mention:${mention}`, param: "mention", value: mention });
   if (params.get("replies_to")) {
     filters.push({
       label: `replies_to:${params.get("replies_to")}`,
@@ -280,20 +276,24 @@ const ActiveFilters = ({ params, basePath = "/c" }: { params: URLSearchParams; b
   if (params.get("reactions") === "1") filters.push({ label: "reactions", param: "reactions", value: "1" });
   if (params.get("comments") === "1") filters.push({ label: "comments", param: "comments", value: "1" });
 
-  return filters.length > 0
-    ? (
-      <div class="active-filters">
-        {filters.map((f) => {
-          const newParams = new URLSearchParams(params);
-          const values = newParams.getAll(f.param).filter((v) => v !== f.value);
-          newParams.delete(f.param);
-          for (const v of values) newParams.append(f.param, v);
-          newParams.delete("p");
-          return <a href={`${basePath}?${newParams}`} class="filter-pill">{f.label} x</a>;
-        })}
-      </div>
-    )
-    : <div class="active-filters"></div>;
+  return filters.length > 0 ? (
+    <div class="active-filters">
+      {filters.map(f => {
+        const newParams = new URLSearchParams(params);
+        const values = newParams.getAll(f.param).filter(v => v !== f.value);
+        newParams.delete(f.param);
+        for (const v of values) newParams.append(f.param, v);
+        newParams.delete("p");
+        return (
+          <a href={`${basePath}?${newParams}`} class="filter-pill">
+            {f.label} x
+          </a>
+        );
+      })}
+    </div>
+  ) : (
+    <div class="active-filters"></div>
+  );
 };
 
 const Reactions = (c: Record<string, any>) => {
@@ -302,7 +302,9 @@ const Reactions = (c: Record<string, any>) => {
   return Object.entries(counts).map(([char, count]) => (
     <form method="post" action={`/c/${c.cid}`} class={`reaction${userReactions.includes(char) ? " reacted" : ""}`}>
       <input type="hidden" name="body" value={char} />
-      <button type="submit">{char} {count}</button>
+      <button type="submit">
+        {char} {count}
+      </button>
     </form>
   ));
 };
@@ -325,9 +327,7 @@ const Comment = (c: Record<string, any>, viewerName?: string) => {
         {Reactions(c)}
       </div>
       <pre>{c.body === "" ? "[deleted by author]" : c.body}</pre>
-      <div style="padding-left: 1rem;">
-        {c?.child_comments?.map((child: Record<string, any>) => Comment(child, viewerName))}
-      </div>
+      <div style="padding-left: 1rem;">{c?.child_comments?.map((child: Record<string, any>) => Comment(child, viewerName))}</div>
     </div>
   );
 };
@@ -337,20 +337,16 @@ const defaultThumb =
 
 const Post = (c: Record<string, any>, viewerName?: string, currentParams?: URLSearchParams) => (
   <>
-    <img
-      src={c.thumb || defaultThumb}
-      loading="lazy"
-      onerror={`this.onerror=null;this.src='${defaultThumb}'`}
-    />
+    <img src={c.thumb || defaultThumb} loading="lazy" onerror={`this.onerror=null;this.src='${defaultThumb}'`} />
     <div class="post-content">
       <span>
         <a href={`/c/${c.cid}`}>
           {c.body === ""
             ? "[deleted by author]"
-            : `${c.body.trim().replace(/[\r\n\t].+$/, "").slice(0, 60)}${c.body.length > 60 ? "…" : ""}`.padEnd(
-              40,
-              " .",
-            )}
+            : `${c.body
+                .trim()
+                .replace(/[\r\n\t].+$/, "")
+                .slice(0, 60)}${c.body.length > 60 ? "…" : ""}`.padEnd(40, " .")}
         </a>
       </span>
       <div>
@@ -448,103 +444,98 @@ app.use("*", async (c, next) => {
   const url = new URL(c.req.url);
   const tags = url.searchParams.getAll("tag");
   // Option A: Limit tag count
-  if (tags.length > 3)
-    return c.text("Too many tags", 400);
+  if (tags.length > 3) return c.text("Too many tags", 400);
   // Option B: Block bots from query string URLs
   const ua = c.req.header("User-Agent") || "";
-  if (url.search && botPattern.test(ua))
-    return c.text("Forbidden", 403);
+  if (url.search && botPattern.test(ua)) return c.text("Forbidden", 403);
   await next();
 });
 
-app.get("/robots.txt", (c) =>
+app.get("/robots.txt", c =>
   c.text(`User-agent: *
 Disallow: /*?*
-Crawl-delay: 1`));
+Crawl-delay: 1`),
+);
 
-app.get("/sitemap.txt", (c) => c.text("https://ding.bar/"));
+app.get("/sitemap.txt", c => c.text("https://ding.bar/"));
 
 app.use("*", async (c, next) => {
   const name = await getSignedCookie(c, cookieSecret, "name");
-  if (name)
-    c.set("name", name);
+  if (name) c.set("name", name);
   c.setRenderer((content, props) => {
-    return c.html(
-      html`
-        <!DOCTYPE html>
-        <html>
-          <head>
-            <title>${props?.title ? `ding | ${props?.title}` : "ding"}</title>
-            <meta charset="UTF-8" />
-            <meta name="color-scheme" content="light dark" />
-            <meta name="author" content="Taylor Troesh" />
-            <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-            <link rel="icon" sizes="16x16" href="/favicon-16x16.png" />
-            <link rel="icon" sizes="32x32" href="/favicon-32x32.png" />
-            <link rel="icon" sizes="192x192" href="/android-chrome-192x192.png" />
-            <link rel="icon" sizes="512x512" href="/android-chrome-512x512.png" />
-            <link rel="icon" href="/favicon.ico" type="image/x-icon" />
-            <link rel="shortcut icon" href="/favicon.ico" type="image/x-icon" />
-            <link rel="apple-touch-icon" sizes="180x180" href="/apple-touch-icon.png" />
-            <link rel="manifest" href="/manifest.json" />
-            <link rel="stylesheet" href="/style.css" />
-          </head>
-          <body>
-            <header>
-              <section>
-                <a href="/" style="letter-spacing:10px;font-weight:700;width:100%;">▢ding</a>
-                <a href="/u" style="letter-spacing:2px;font-size:0.875rem;opacity:0.8;">
-                  ${c.get("name") ? `@${c.get("name")}` : "account"}
-                </a>
-                <a href="/c/496" style="letter-spacing:2px;font-size:0.875rem;opacity:0.8;">
-                  help
-                </a>
-              </section>
-            </header>
-            <main>${content}</main>
-            <footer></footer>
-            <script>
+    return c.html(html`
+      <!DOCTYPE html>
+      <html>
+        <head>
+          <title>${props?.title ? `ding | ${props?.title}` : "ding"}</title>
+          <meta charset="UTF-8" />
+          <meta name="color-scheme" content="light dark" />
+          <meta name="author" content="Taylor Troesh" />
+          <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+          <link rel="icon" sizes="16x16" href="/favicon-16x16.png" />
+          <link rel="icon" sizes="32x32" href="/favicon-32x32.png" />
+          <link rel="icon" sizes="192x192" href="/android-chrome-192x192.png" />
+          <link rel="icon" sizes="512x512" href="/android-chrome-512x512.png" />
+          <link rel="icon" href="/favicon.ico" type="image/x-icon" />
+          <link rel="shortcut icon" href="/favicon.ico" type="image/x-icon" />
+          <link rel="apple-touch-icon" sizes="180x180" href="/apple-touch-icon.png" />
+          <link rel="manifest" href="/manifest.json" />
+          <link rel="stylesheet" href="/style.css" />
+        </head>
+        <body>
+          <header>
+            <section>
+              <a href="/" style="letter-spacing:10px;font-weight:700;width:100%;">▢ding</a>
+              <a href="/org/new" style="letter-spacing:2px;font-size:0.875rem;opacity:0.8;"> +org </a>
+              <a href="/u" style="letter-spacing:2px;font-size:0.875rem;opacity:0.8;">
+                ${c.get("name") ? `@${c.get("name")}` : "account"}
+              </a>
+              <a href="/c/496" style="letter-spacing:2px;font-size:0.875rem;opacity:0.8;"> help </a>
+            </section>
+          </header>
+          <main>${content}</main>
+          <footer></footer>
+          <script>
             for (const x of document.querySelectorAll("pre")) {
-            x.innerHTML = x.innerHTML.replace(/(https?:\\/\\/\\S+)/g, (url) => {
-              const isImage = /\\.(jpe?g|png|gif|webp|svg)(\\?.*)?$/i.test(url) ||
-                /^https?:\\/\\/(i\\.redd\\.it|i\\.imgur\\.com|pbs\\.twimg\\.com)\\//i.test(url);
-              return isImage
-                ? ${'`<a href="${url}">${url}</a><br><img src="${url}" loading="lazy" style="max-width:100%;max-height:400px;">`'}
-                : ${'`<a href="${url}">${url}</a>`'};
+              x.innerHTML = x.innerHTML.replace(/(https?:\\/\\/\\S+)/g, url => {
+                const isImage =
+                  /\\.(jpe?g|png|gif|webp|svg)(\\?.*)?$/i.test(url) ||
+                  /^https?:\\/\\/(i\\.redd\\.it|i\\.imgur\\.com|pbs\\.twimg\\.com)\\//i.test(url);
+                return isImage
+                  ? ${'`<a href="${url}">${url}</a><br><img src="${url}" loading="lazy" style="max-width:100%;max-height:400px;">`'}
+                  : ${'`<a href="${url}">${url}</a>`'};
               });
             }
-            const searchForm = document.getElementById('search-form');
+            const searchForm = document.getElementById("search-form");
             if (searchForm) {
-              searchForm.onsubmit = (e) => {
+              searchForm.onsubmit = e => {
                 e.preventDefault();
                 const input = searchForm.querySelector('input[name="search"]');
                 const tokens = input.value.split(/\\s+/).filter(Boolean);
                 const params = new URLSearchParams();
                 for (const t of tokens) {
-                  if (t.startsWith('#')) params.append('tag', t.slice(1).toLowerCase());
-                  else if (t.startsWith('*')) params.append('org', t.slice(1).toLowerCase());
-                  else if (t.startsWith('@')) params.append('usr', t.slice(1));
-                  else if (t.startsWith('~')) params.append('www', t.slice(1).toLowerCase());
+                  if (t.startsWith("#")) params.append("tag", t.slice(1).toLowerCase());
+                  else if (t.startsWith("*")) params.append("org", t.slice(1).toLowerCase());
+                  else if (t.startsWith("@")) params.append("usr", t.slice(1));
+                  else if (t.startsWith("~")) params.append("www", t.slice(1).toLowerCase());
                   else {
-                    const q = params.get('q');
-                    params.set('q', q ? q + ' ' + t : t);
+                    const q = params.get("q");
+                    params.set("q", q ? q + " " + t : t);
                   }
                 }
-                window.location.href = '/c?' + params.toString();
+                window.location.href = "/c?" + params.toString();
               };
             }
-            </script>
-          </body>
-        </html>
-      `,
-    );
+          </script>
+        </body>
+      </html>
+    `);
   });
   await next();
 });
 
 app.onError((err, c) => {
-  if (err instanceof HTTPException)
-    return err.getResponse();
+  if (err instanceof HTTPException) return err.getResponse();
   if (err) console.error(err);
   const message = "Sorry, this computer is мᎥｓβ𝕖𝓱𝐀𝓋𝓲𝓷g.";
   switch (host(c)) {
@@ -563,7 +554,7 @@ app.onError((err, c) => {
   }
 });
 
-app.get("/", async (c) => {
+app.get("/", async c => {
   const p = parseInt(c.req.query("p") ?? "0");
   const sortParam = c.req.query("sort");
   const sort = sortParam === "new" ? "new" : sortParam === "top" ? "top" : "hot";
@@ -627,11 +618,11 @@ app.get("/", async (c) => {
       ${filterOrgs.length > 0 ? sql`and c.orgs @> ${filterOrgs}::text[]` : sql``}
       ${filterUsrs.length > 0 ? sql`and c.usrs @> ${filterUsrs}::text[]` : sql``}
     ${
-    sort === "new"
-      ? sql`order by c.created_at desc`
-      : sort === "top"
-      ? sql`order by reaction_count desc, c.created_at desc`
-      : sql`order by (
+      sort === "new"
+        ? sql`order by c.created_at desc`
+        : sort === "top"
+          ? sql`order by reaction_count desc, c.created_at desc`
+          : sql`order by (
           c.created_at
           + interval '2 hours' * ln(greatest(coalesce((c.c_reactions -> '▲')::int, 0) + 1, 1))
           + interval '30 minutes' * ln(greatest(c.c_comments + 1, 1))
@@ -639,15 +630,15 @@ app.get("/", async (c) => {
           - (c.tags @> ARRAY['bot'])::int * interval '4 hours'
           + interval '1 second' * (hashtext(c.cid::text) % 120)
         ) desc`
-  }
+    }
     offset ${p * 25}
     limit 25
   `;
   // Prepopulate tags input from query params
   const initialTags = [
-    ...(c.req.queries("tag") ?? []).map((t) => `#${t}`),
-    ...(c.req.queries("org") ?? []).map((t) => `*${t}`),
-    ...(c.req.queries("usr") ?? []).map((t) => `@${t}`),
+    ...(c.req.queries("tag") ?? []).map(t => `#${t}`),
+    ...(c.req.queries("org") ?? []).map(t => `*${t}`),
+    ...(c.req.queries("usr") ?? []).map(t => `@${t}`),
   ].join(" ");
   const currentParams = new URL(c.req.url).searchParams;
   return c.render(
@@ -656,22 +647,20 @@ app.get("/", async (c) => {
         <form method="post" action="/c">
           <textarea requried name="body" rows={18} minlength={1} maxlength={1441}></textarea>
           <div style="display:flex;gap:0.5rem;justify-content:flex-end;align-items:center;">
-            <input
-              type="text"
-              name="tags"
-              value={initialTags}
-              placeholder="#linking #thinking *private @user"
-              style="flex:1;"
-            />
+            <input type="text" name="tags" value={initialTags} placeholder="#linking #thinking *private @user" style="flex:1;" />
             <button>create post</button>
           </div>
           {presetTags.length > 0 && (
             <div class="tag-presets">
-              {presetTags.map((t) => {
+              {presetTags.map(t => {
                 const prefix = (t.tag as string)[0];
                 const name = (t.tag as string).slice(1);
                 const param = prefix === "*" ? "org" : prefix === "@" ? "usr" : "tag";
-                return <a href={buildAdditiveLink(currentParams, param, name)} class="tag-preset">{t.tag}</a>;
+                return (
+                  <a href={buildAdditiveLink(currentParams, param, name)} class="tag-preset">
+                    {t.tag}
+                  </a>
+                );
               })}
             </div>
           )}
@@ -685,7 +674,7 @@ app.get("/", async (c) => {
             no posts. <a href="/">go home.</a>
           </p>
         )}
-        <div class="posts">{comments.map((cm) => Post(cm, c.get("name"), currentParams))}</div>
+        <div class="posts">{comments.map(cm => Post(cm, c.get("name"), currentParams))}</div>
       </section>
       <section>
         <div style="margin-top: 2rem;">
@@ -698,36 +687,34 @@ app.get("/", async (c) => {
   );
 });
 
-app.post("/login", async (c) => {
+app.post("/login", async c => {
   const { email, password } = await form(c);
   const [usr] = await sql`
     select *, password = crypt(${password}, password) AS is_password_correct
     from usr where email = ${email}
   `;
   if (!usr || !usr.is_password_correct) throw new HTTPException(401, { message: "Wrong credentials." });
-  if (!usr.email_verified_at && !(await getSignedCookie(c, cookieSecret, "name")))
-    await sendVerificationEmail(usr.email, usr.token);
+  if (!usr.email_verified_at && !(await getSignedCookie(c, cookieSecret, "name"))) await sendVerificationEmail(usr.email, usr.token);
   await setSignedCookie(c, "name", usr.name, cookieSecret);
   const next = c.req.query("next");
   if (next?.startsWith("/")) return c.redirect(next);
   return c.redirect("/u");
 });
 
-app.get("/logout", (c) => {
+app.get("/logout", c => {
   deleteCookie(c, "name");
   return c.redirect("/");
 });
 
-app.post("/logout", (c) => {
+app.post("/logout", c => {
   deleteCookie(c, "name");
   return ok(c);
 });
 
-app.get("/verify", async (c) => {
+app.get("/verify", async c => {
   const email = c.req.query("email") ?? "";
   const token = c.req.query("token") ?? "";
-  if (!(await validateEmailToken(token, email)))
-    throw new HTTPException(400, { message: "Invalid or expired token." });
+  if (!(await validateEmailToken(token, email))) throw new HTTPException(400, { message: "Invalid or expired token." });
   await sql`
     update usr
     set email_verified_at = now()
@@ -737,7 +724,7 @@ app.get("/verify", async (c) => {
   return ok(c);
 });
 
-app.get("/forgot", (c) => {
+app.get("/forgot", c => {
   return c.render(
     <section>
       <form method="post" action="/forgot">
@@ -751,7 +738,7 @@ app.get("/forgot", (c) => {
   );
 });
 
-app.post("/forgot", async (c) => {
+app.post("/forgot", async c => {
   const { email } = await form(c);
   const [usr] = await sql`select email from usr where email = ${email}`;
   if (usr) {
@@ -762,7 +749,8 @@ app.post("/forgot", async (c) => {
           to: email,
           from: "taylor@troe.sh",
           subject: "Reset your password",
-          text: `` +
+          text:
+            `` +
             `Click here to reset your password: ` +
             `https://ding.bar/password` +
             `?email=${encodeURIComponent(email)}` +
@@ -770,7 +758,7 @@ app.post("/forgot", async (c) => {
             `\n\n` +
             `If you didn't request a password reset, please ignore this message.`,
         })
-        .catch((err) => {
+        .catch(err => {
           console.log(`/password?email=${email}&token=${token}`);
           console.error(`Could not send password reset email to ${email}:`, err?.response?.body || err);
         }));
@@ -778,7 +766,7 @@ app.post("/forgot", async (c) => {
   return c.redirect("/");
 });
 
-app.get("/password", (c) => {
+app.get("/password", c => {
   const email = c.req.query("email") ?? "";
   const token = c.req.query("token") ?? "";
   return c.render(
@@ -796,10 +784,9 @@ app.get("/password", (c) => {
   );
 });
 
-app.post("/password", async (c) => {
+app.post("/password", async c => {
   const { email, token, password } = await form(c);
-  if (!(await validateEmailToken(token, email)))
-    throw new HTTPException(400, { message: "Invalid or expired token." });
+  if (!(await validateEmailToken(token, email))) throw new HTTPException(400, { message: "Invalid or expired token." });
   const [usr] = await sql`
     update usr
     set password = crypt(${password}, gen_salt('bf', 8)), email_verified_at = coalesce(email_verified_at, now())
@@ -810,7 +797,7 @@ app.post("/password", async (c) => {
   return ok(c);
 });
 
-app.post("/invite", authed, async (c) => {
+app.post("/invite", authed, async c => {
   const usr = {
     name: Math.random().toString().slice(2),
     email: (await form(c)).email,
@@ -832,7 +819,7 @@ app.post("/invite", authed, async (c) => {
 });
 
 // TODO: Remove this when we want to disallow self-signups.
-app.get("/signup", async (c) => {
+app.get("/signup", async c => {
   const ok = c.req.query("ok") !== undefined;
   const error = c.req.query("error");
   return c.render(
@@ -850,7 +837,7 @@ app.get("/signup", async (c) => {
 });
 
 // TODO: Remove this when we want to disallow self-signups.
-app.post("/signup", async (c) => {
+app.post("/signup", async c => {
   const formData = await form(c);
   const usr = {
     name: formData.name,
@@ -871,7 +858,7 @@ app.post("/signup", async (c) => {
   return c.redirect("/signup?error=conflict");
 });
 
-app.get("/u", async (c) => {
+app.get("/u", async c => {
   // Try cookie auth first
   let name: string | undefined = (await getSignedCookie(c, cookieSecret, "name")) || undefined;
 
@@ -937,7 +924,9 @@ app.get("/u", async (c) => {
       <section>{User(usr, name)}</section>
       <section>
         <form method="post" action="/u">
-          <textarea name="bio" rows={6} placeholder="bio">{usr.bio}</textarea>
+          <textarea name="bio" rows={6} placeholder="bio">
+            {usr.bio}
+          </textarea>
           <button>save</button>
         </form>
       </section>
@@ -946,13 +935,13 @@ app.get("/u", async (c) => {
   );
 });
 
-app.post("/u", authed, async (c) => {
+app.post("/u", authed, async c => {
   const data = await form(c);
   await sql`update usr set bio = ${data.bio} where name = ${c.get("name")!}`;
   return c.redirect("/u");
 });
 
-app.get("/u/:name", async (c) => {
+app.get("/u/:name", async c => {
   const profileName = c.req.param("name");
   const viewerName = c.get("name");
   const isOwner = viewerName && viewerName == profileName;
@@ -970,7 +959,218 @@ app.get("/u/:name", async (c) => {
   }
 });
 
-app.get("/c/:cid/delete", authed, async (c) => {
+app.get("/org/new", authed, c =>
+  c.render(
+    <section>
+      <h2>
+        <span style="margin-right: 0.5rem;">▢</span>create an organization
+      </h2>
+      <p style="font-size: 0.875rem; opacity: 0.8; line-height: 1.5; margin: 1rem 0 0.5rem 0;">
+        create a private organization for your team. access control is managed via the <code>*org</code> tag.
+      </p>
+      <p style="font-size: 0.875rem; opacity: 0.8; margin-bottom: 1.5rem;">cost: $1/member/month.</p>
+      <form method="post" action="/org/new" style="padding: 0;">
+        <div style="display:flex; gap:0.5rem; align-items:center;">
+          <input
+            required
+            pattern="^[0-9a-zA-Z_]{4,32}$"
+            name="name"
+            placeholder="org_name"
+            style="flex: 1; max-width: 300px; padding: 0.25rem 0.5rem; border-radius: 5px; border: 1px solid currentColor;"
+          />
+          <button type="submit">create & subscribe</button>
+        </div>
+      </form>
+      <p style="font-size: 0.75rem; opacity: 0.5; margin-top: 2rem;">
+        <a href="/u">← back to account</a>
+      </p>
+    </section>,
+    { title: "new org" },
+  ),
+);
+
+app.post("/org/new", authed, async c => {
+  const { name } = await form(c);
+  if (!name.match(/^[0-9a-zA-Z_]{4,32}$/)) throw new HTTPException(400, { message: "Invalid name" });
+
+  const session = await stripe.checkout.sessions.create({
+    line_items: [
+      {
+        price_data: {
+          currency: "usd",
+          product_data: {
+            name: `Ding Organization: ${name}`,
+          },
+          unit_amount: 100,
+          recurring: {
+            interval: "month",
+          },
+        },
+        quantity: 1,
+      },
+    ],
+    mode: "subscription",
+    success_url: `${new URL(c.req.url).origin}/org/success?session_id={CHECKOUT_SESSION_ID}`,
+    cancel_url: `${new URL(c.req.url).origin}/org/new`,
+    metadata: {
+      orgName: name,
+      creatorName: c.get("name")!,
+    },
+  });
+
+  return c.redirect(session.url!);
+});
+
+app.get("/org/success", authed, async c => {
+  const sessionId = c.req.query("session_id");
+  if (!sessionId) throw new HTTPException(400);
+
+  const session = await stripe.checkout.sessions.retrieve(sessionId);
+  if (session.status !== "complete") throw new HTTPException(400, { message: "Payment not complete" });
+
+  const { orgName, creatorName } = session.metadata!;
+  const subId = session.subscription as string;
+
+  await sql.begin(async sql => {
+    // @ts-ignore: postgres.js transaction types
+    await sql`
+      insert into org (name, created_by, stripe_sub_id)
+      values (${orgName}, ${creatorName}, ${subId})
+    `;
+    // @ts-ignore: postgres.js transaction types
+    await sql`
+      update usr
+      set orgs_r = array_append(orgs_r, ${orgName}),
+          orgs_w = array_append(orgs_w, ${orgName})
+      where name = ${creatorName}
+    `;
+  });
+
+  return c.redirect(`/org/${orgName}`);
+});
+
+app.get("/org/:name", async c => {
+  const [org, viewerOrgs, members] = await Promise.all([
+    sql`select * from org where name = ${c.req.param("name")}`.then(r => r[0]),
+    sql`select orgs_r from usr where name = ${c.get("name") ?? ""}`.then(r => r[0]?.orgs_r ?? []),
+    sql`select name from usr where ${c.req.param("name")} = any(orgs_r)`,
+  ]);
+  if (!org) return notFound();
+  if (!viewerOrgs.includes(org.name)) throw new HTTPException(403, { message: "Access denied" });
+
+  const viewer = c.get("name") ?? "";
+  return c.render(
+    <section>
+      <h2>*{org.name}</h2>
+      <p style="font-size: 0.875rem; opacity: 0.5; margin: 0.5rem 0 1.5rem 0;">
+        Created by @{org.created_by} on {new Date(org.created_at).toLocaleDateString()}.
+      </p>
+      <div style="display: flex; flex-direction: column; gap: 2rem;">
+        <div>
+          <h3 style="font-size: 0.875rem; font-weight: bold; margin-bottom: 0.5rem; opacity: 0.8;">members ({members.length})</h3>
+          <div style="display: flex; flex-direction: column; gap: 0.5rem;">
+            {members.map(m => (
+              <div style="display: flex; align-items: center; justify-content: space-between; font-size: 0.875rem;">
+                <a href={`/u/${m.name}`}>@{m.name}</a>
+                {org.created_by === viewer && m.name !== viewer && (
+                  <form method="post" action={`/org/${org.name}/remove`} style="display:inline; padding: 0; width: auto;">
+                    <input type="hidden" name="name" value={m.name} />
+                    <button
+                      type="submit"
+                      style="font-size:0.75rem; padding: 0.1rem 0.4rem; opacity: 0.6; border: 1px solid currentColor; background: none; border-radius: 4px;">
+                      remove
+                    </button>
+                  </form>
+                )}
+              </div>
+            ))}
+          </div>
+        </div>
+        {org.created_by === viewer && (
+          <div style="border-top: 1px solid rgba(128,128,128,0.2); padding-top: 1.5rem;">
+            <h3 style="font-size: 0.875rem; font-weight: bold; margin-bottom: 0.5rem; opacity: 0.8;">invite member</h3>
+            <form method="post" action={`/org/${org.name}/invite`} style="padding: 0; display: flex; flex-direction: row; gap: 0.5rem;">
+              <input
+                required
+                name="name"
+                placeholder="username"
+                style="flex: 1; max-width: 200px; padding: 0.25rem 0.5rem; border-radius: 5px; border: 1px solid currentColor;"
+              />
+              <button type="submit">invite ($1/mo)</button>
+            </form>
+          </div>
+        )}
+      </div>
+    </section>,
+    { title: org.name },
+  );
+});
+
+app.post("/org/:name/invite", authed, async c => {
+  const [org, { name: paramName }] = await Promise.all([
+    sql`select * from org where name = ${c.req.param("name")}`.then(r => r[0]),
+    form(c),
+  ]);
+  if (!org) return notFound();
+  if (org.created_by !== c.get("name")) throw new HTTPException(403, { message: "Only owner can invite" });
+
+  const sub = await stripe.subscriptions.retrieve(org.stripe_sub_id);
+  await Promise.all([
+    stripe.subscriptions.update(org.stripe_sub_id, {
+      items: [{ id: sub.items.data[0].id, quantity: sub.items.data[0].quantity! + 1 }],
+    }),
+    sql`update usr set orgs_r = array_append(orgs_r, ${org.name}), orgs_w = array_append(orgs_w, ${org.name}) where name = ${paramName}`,
+  ]);
+  return c.redirect(`/org/${org.name}`);
+});
+
+app.post("/org/:name/remove", authed, async c => {
+  const [org, { name: paramName }] = await Promise.all([
+    sql`select * from org where name = ${c.req.param("name")}`.then(r => r[0]),
+    form(c),
+  ]);
+  if (!org) return notFound();
+  if (org.created_by !== c.get("name")) throw new HTTPException(403, { message: "Only owner can remove" });
+
+  const sub = await stripe.subscriptions.retrieve(org.stripe_sub_id);
+  const qty = sub.items.data[0].quantity!;
+  await Promise.all([
+    qty > 1
+      ? stripe.subscriptions.update(org.stripe_sub_id, {
+          items: [{ id: sub.items.data[0].id, quantity: qty - 1 }],
+        })
+      : Promise.resolve(),
+    sql`update usr set orgs_r = array_remove(orgs_r, ${org.name}), orgs_w = array_remove(orgs_w, ${org.name}) where name = ${paramName}`,
+  ]);
+  return c.redirect(`/org/${org.name}`);
+});
+
+app.post("/api/stripe-webhook", async c => {
+  const sig = c.req.header("stripe-signature");
+  const body = await c.req.text();
+  let event;
+  try {
+    event = await stripe.webhooks.constructEventAsync(body, sig!, Deno.env.get("STRIPE_WEBHOOK_SECRET")!);
+  } catch (err) {
+    throw new HTTPException(400, { message: `Webhook Error` });
+  }
+
+  if (event.type === "customer.subscription.deleted") {
+    const sub = event.data.object;
+    const [org] = await sql`select name from org where stripe_sub_id = ${sub.id}`;
+    if (org) {
+      await sql.begin(async sql => {
+        // @ts-ignore: postgres.js transaction types
+        await sql`update usr set orgs_r = array_remove(orgs_r, ${org.name}), orgs_w = array_remove(orgs_w, ${org.name})`;
+        // @ts-ignore: postgres.js transaction types
+        await sql`delete from org where name = ${org.name}`;
+      });
+    }
+  }
+  return c.text("Received", 200);
+});
+
+app.get("/c/:cid/delete", authed, async c => {
   const cid = c.req.param("cid");
   const [comment] = await sql`
     select cid, body, parent_cid, created_by
@@ -997,7 +1197,7 @@ app.get("/c/:cid/delete", authed, async (c) => {
   );
 });
 
-app.post("/c/:cid/delete", authed, async (c) => {
+app.post("/c/:cid/delete", authed, async c => {
   const cid = c.req.param("cid");
   const [comment] = await sql`
     update com
@@ -1009,7 +1209,7 @@ app.post("/c/:cid/delete", authed, async (c) => {
   return c.redirect(comment.parent_cid ? `/c/${comment.parent_cid}` : "/");
 });
 
-app.post("/c/:parent_cid?", async (c) => {
+app.post("/c/:parent_cid?", async c => {
   let name = c.get("name");
 
   // Support Basic Auth for bots
@@ -1066,13 +1266,14 @@ app.post("/c/:parent_cid?", async (c) => {
     if (!tags.length) throw new HTTPException(400, { message: "Must include at least one #public tag." });
 
     // Check user can write all specified private tags
-    const canWrite = orgs.every((t) => userOrgsW.includes(t));
+    const canWrite = orgs.every(t => userOrgsW.includes(t));
     if (!canWrite) throw new HTTPException(403, { message: "You don't have permission to use those private tags." });
   }
 
   if (
-    (await sql`select true from com where created_by = ${name} and created_at > now() - interval '1 day' having count(*) > ${MAX_POSTS_PER_DAY}`)
-      .length
+    (
+      await sql`select true from com where created_by = ${name} and created_at > now() - interval '1 day' having count(*) > ${MAX_POSTS_PER_DAY}`
+    ).length
   ) {
     throw new HTTPException(400, {
       message: `You've reached your allotted limit of ${MAX_POSTS_PER_DAY} comments per 24 hours.`,
@@ -1085,8 +1286,7 @@ app.post("/c/:parent_cid?", async (c) => {
   let thumb: string | null = null;
   if (!parent_cid) {
     const imageUrl = extractImageUrl(body);
-    if (imageUrl)
-      thumb = imageUrl;
+    if (imageUrl) thumb = imageUrl;
     else {
       const url = extractFirstUrl(body);
       if (url) thumb = await resolveThumbnail(url);
@@ -1109,10 +1309,8 @@ app.post("/c/:parent_cid?", async (c) => {
   if (parent_cid) {
     if (isReaction(body))
       await sql`update com set c_reactions = c_reactions || hstore(${body}, (coalesce((c_reactions -> ${body})::int, 0) + 1)::text) where cid = ${parent_cid}`;
-    else if (body === "flag")
-      await sql`update com set c_flags = c_flags + 1 where cid = ${parent_cid}`;
-    else
-      await sql`update com set c_comments = c_comments + 1 where cid = ${parent_cid}`;
+    else if (body === "flag") await sql`update com set c_flags = c_flags + 1 where cid = ${parent_cid}`;
+    else await sql`update com set c_comments = c_comments + 1 where cid = ${parent_cid}`;
   }
 
   if (!parent_cid) return c.redirect(`/c/${comment.cid}`);
@@ -1121,7 +1319,7 @@ app.post("/c/:parent_cid?", async (c) => {
   return c.redirect(parent?.parent_cid ? `/c/${parent.parent_cid}#${parent_cid}` : `/c/${parent_cid}#${comment.cid}`);
 });
 
-app.get("/c/:cid?", async (c) => {
+app.get("/c/:cid?", async c => {
   const p = parseInt(c.req.query("p") ?? "0");
   const limit = Math.min(Math.max(parseInt(c.req.query("limit") ?? "25"), 1), 100);
   const sortParam = c.req.query("sort");
@@ -1210,41 +1408,34 @@ app.get("/c/:cid?", async (c) => {
       ) as child_comments
     from com c
     where ${
-    cid
-      ? sql`cid = ${cid ?? null}`
-      : (reactionsFilter || repliesToFilter || commentsFilter)
-      ? sql`c.parent_cid is not null`
-      : sql`c.parent_cid is null`
-  }
+      cid
+        ? sql`cid = ${cid ?? null}`
+        : reactionsFilter || repliesToFilter || commentsFilter
+          ? sql`c.parent_cid is not null`
+          : sql`c.parent_cid is null`
+    }
       ${usrFilters.length ? sql`and c.created_by = any(${usrFilters}::citext[])` : sql``}
       and c.tags @> ${tagFilters}::text[]
       and c.orgs <@ ${userOrgsR}::text[]
       and (c.usrs = '{}' or ${name ?? ""}::text = any(c.usrs))
     ${orgFilters.length ? sql`and c.orgs && ${orgFilters}::text[]` : sql``}
     ${mentionFilters.length ? sql`and c.usrs && ${mentionFilters}::text[]` : sql``}
+    ${wwwFilters.length ? sql`and c.body ~* ${wwwFilters.map(d => d.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")).join("|")}` : sql``}
     ${
-    wwwFilters.length
-      ? sql`and c.body ~* ${wwwFilters.map((d) => d.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")).join("|")}`
-      : sql``
-  }
-    ${
-    repliesToFilter
-      ? sql`and c.parent_cid in (select cid from com where created_by = ${repliesToFilter}) and char_length(c.body) > 1`
-      : sql``
-  }
+      repliesToFilter
+        ? sql`and c.parent_cid in (select cid from com where created_by = ${repliesToFilter}) and char_length(c.body) > 1`
+        : sql``
+    }
     ${reactionsFilter ? sql`and char_length(c.body) = 1` : sql``}
     ${commentsFilter ? sql`and char_length(c.body) > 1` : sql``}
+    ${c.req.query("q") ? sql`and to_tsvector('english', body) @@ plainto_tsquery('english', ${c.req.query("q") ?? ""}::text)` : sql``}
+    ${c.req.query("q") ? sql`and to_tsvector('english', body) @@ plainto_tsquery('english', ${c.req.query("q") ?? ""}::text)` : sql``}
     ${
-    c.req.query("q")
-      ? sql`and to_tsvector('english', body) @@ plainto_tsquery('english', ${c.req.query("q") ?? ""}::text)`
-      : sql``
-  }
-    ${
-    sort === "new"
-      ? sql`order by c.created_at desc`
-      : sort === "top"
-      ? sql`order by reaction_count desc, c.created_at desc`
-      : sql`order by (
+      sort === "new"
+        ? sql`order by c.created_at desc`
+        : sort === "top"
+          ? sql`order by reaction_count desc, c.created_at desc`
+          : sql`order by (
           c.created_at
           + interval '2 hours' * ln(greatest(coalesce((c.c_reactions -> '▲')::int, 0) + 1, 1))
           + interval '30 minutes' * ln(greatest(c.c_comments + 1, 1))
@@ -1252,7 +1443,7 @@ app.get("/c/:cid?", async (c) => {
           - (c.tags @> ARRAY['bot'])::int * interval '4 hours'
           + interval '1 second' * (hashtext(c.cid::text) % 120)
         ) desc`
-  }
+    }
     offset ${p * limit}
     limit ${limit}
   `;
@@ -1267,15 +1458,21 @@ app.get("/c/:cid?", async (c) => {
     <title>ding</title>
     <link>https://ding.bar/</link>
     <description>Simple social commenting</description>
-${
-          comments.map((cm: Record<string, any>) =>
-            `    <item>
-      <title>${escapeXml(cm.body.trim().replace(/[\r\n\t].+$/, "").slice(0, 60))}</title>
+${comments
+  .map(
+    (cm: Record<string, any>) =>
+      `    <item>
+      <title>${escapeXml(
+        cm.body
+          .trim()
+          .replace(/[\r\n\t].+$/, "")
+          .slice(0, 60),
+      )}</title>
       <link>https://ding.bar/c/${cm.cid}</link>
       <pubDate>${new Date(cm.created_at).toUTCString()}</pubDate>
-    </item>`
-          ).join("\n")
-        }
+    </item>`,
+  )
+  .join("\n")}
   </channel>
 </rss>`,
         200,
@@ -1304,24 +1501,15 @@ ${
           <>
             <section>
               <form id="search-form" method="get" action="/c" style="display:flex;flex-direction:row;gap:0.5rem;">
-                <input
-                  name="search"
-                  value={searchValue}
-                  placeholder="#tag *org @user ~domain text"
-                  style="width:100%;"
-                />
+                <input name="search" value={searchValue} placeholder="#tag *org @user ~domain text" style="width:100%;" />
                 <button>search</button>
               </form>
               <ActiveFilters params={currentParams} />
               {buildFilterTitle(currentParams) && <h2>{buildFilterTitle(currentParams)}</h2>}
-              <SortToggle
-                sort={sort}
-                baseHref={`/c?${paginationParams(0).replace(/&?p=0/, "")}`}
-                title="results"
-              />
+              <SortToggle sort={sort} baseHref={`/c?${paginationParams(0).replace(/&?p=0/, "")}`} title="results" />
             </section>
             <section>
-              <div class="posts">{comments.map((cm) => Post(cm, c.get("name"), currentParams))}</div>
+              <div class="posts">{comments.map(cm => Post(cm, c.get("name"), currentParams))}</div>
             </section>
             <section>
               <div style="margin-top: 2rem;">
@@ -1345,10 +1533,7 @@ ${
         return c.render(
           <>
             <section>
-              {Comment(
-                { ...post, child_comments: post.child_comments.filter((c: { body: string }) => isReaction(c.body)) },
-                c.get("name"),
-              )}
+              {Comment({ ...post, child_comments: post.child_comments.filter((c: { body: string }) => isReaction(c.body)) }, c.get("name"))}
             </section>
             <section>
               <form method="post" action={`/c/${post?.cid ?? 0}`}>
@@ -1357,9 +1542,7 @@ ${
               </form>
               <SortToggle sort={sort} baseHref={`/c/${cid}`} title="comments" />
             </section>
-            <section>
-              {replies.map((cm: Record<string, any>) => Comment(cm, c.get("name")))}
-            </section>
+            <section>{replies.map((cm: Record<string, any>) => Comment(cm, c.get("name")))}</section>
           </>,
           { title: post?.body?.slice(0, 16) },
         );

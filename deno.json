@@ -13,7 +13,8 @@
   },
   "imports": {
     "@electric-sql/pglite": "npm:@electric-sql/pglite@0.3.15",
-    "pg-gateway": "npm:pg-gateway@0.3.0-beta.4"
+    "pg-gateway": "npm:pg-gateway@0.3.0-beta.4",
+    "stripe": "npm:stripe@^20.3.1"
   },
   "tasks": {
     "deploy": "deno run -A jsr:@deno/deployctl deploy --prod --project=dong server.tsx"
