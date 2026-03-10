@@ -128,9 +128,8 @@ const buildFilterTitle = (params: URLSearchParams): string => {
 // Build additive filter link (adds param without replacing existing)
 const buildAdditiveLink = (params: URLSearchParams | undefined, paramName: string, value: string): string => {
   const newParams = new URLSearchParams(params);
-  if (!newParams.getAll(paramName).includes(value)) {
+  if (!newParams.getAll(paramName).includes(value))
     newParams.append(paramName, value);
-  }
   newParams.delete("p");
   return `/?${newParams}`;
 };
@@ -269,8 +268,15 @@ const ActiveFilters = ({ params, basePath = "/c" }: { params: URLSearchParams; b
   for (const org of params.getAll("org")) filters.push({ label: `*${org}`, param: "org", value: org });
   for (const usr of params.getAll("usr")) filters.push({ label: `@${usr}`, param: "usr", value: usr });
   for (const www of params.getAll("www")) filters.push({ label: `~${www}`, param: "www", value: www });
-  for (const mention of params.getAll("mention")) filters.push({ label: `mention:${mention}`, param: "mention", value: mention });
-  if (params.get("replies_to")) filters.push({ label: `replies_to:${params.get("replies_to")}`, param: "replies_to", value: params.get("replies_to")! });
+  for (const mention of params.getAll("mention"))
+    filters.push({ label: `mention:${mention}`, param: "mention", value: mention });
+  if (params.get("replies_to")) {
+    filters.push({
+      label: `replies_to:${params.get("replies_to")}`,
+      param: "replies_to",
+      value: params.get("replies_to")!,
+    });
+  }
   if (params.get("reactions") === "1") filters.push({ label: "reactions", param: "reactions", value: "1" });
   if (params.get("comments") === "1") filters.push({ label: "comments", param: "comments", value: "1" });
 
@@ -436,19 +442,18 @@ app.use(async function prettyJSON(c, next) {
 app.notFound(notFound);
 
 // Block crawlers from query string URLs
-const botPattern = /bot|crawl|spider|slurp|bingpreview|facebookexternalhit|mediapartners|google|yandex|baidu|duckduck|sogou|exabot|ia_archiver|semrush|ahref|mj12|dotbot|petalbot|bytespider/i;
+const botPattern =
+  /bot|crawl|spider|slurp|bingpreview|facebookexternalhit|mediapartners|google|yandex|baidu|duckduck|sogou|exabot|ia_archiver|semrush|ahref|mj12|dotbot|petalbot|bytespider/i;
 app.use("*", async (c, next) => {
   const url = new URL(c.req.url);
   const tags = url.searchParams.getAll("tag");
   // Option A: Limit tag count
-  if (tags.length > 3) {
+  if (tags.length > 3)
     return c.text("Too many tags", 400);
-  }
   // Option B: Block bots from query string URLs
   const ua = c.req.header("User-Agent") || "";
-  if (url.search && botPattern.test(ua)) {
+  if (url.search && botPattern.test(ua))
     return c.text("Forbidden", 403);
-  }
   await next();
 });
 
@@ -500,12 +505,12 @@ app.use("*", async (c, next) => {
             <footer></footer>
             <script>
             for (const x of document.querySelectorAll("pre")) {
-              x.innerHTML = x.innerHTML.replace(/(https?:\\/\\/\\S+)/g, (url) => {
-                const isImage = /\\.(jpe?g|png|gif|webp|svg)(\\?.*)?$/i.test(url) ||
-                  /^https?:\\/\\/(i\\.redd\\.it|i\\.imgur\\.com|pbs\\.twimg\\.com)\\//i.test(url);
-                return isImage
-                  ? \`<a href="\${url}">\${url}</a><br><img src="\${url}" loading="lazy" style="max-width:100%;max-height:400px;">\`
-                  : \`<a href="\${url}">\${url}</a>\`;
+            x.innerHTML = x.innerHTML.replace(/(https?:\\/\\/\\S+)/g, (url) => {
+              const isImage = /\\.(jpe?g|png|gif|webp|svg)(\\?.*)?$/i.test(url) ||
+                /^https?:\\/\\/(i\\.redd\\.it|i\\.imgur\\.com|pbs\\.twimg\\.com)\\//i.test(url);
+              return isImage
+                ? ${'`<a href="${url}">${url}</a><br><img src="${url}" loading="lazy" style="max-width:100%;max-height:400px;">`'}
+                : ${'`<a href="${url}">${url}</a>`'};
               });
             }
             const searchForm = document.getElementById('search-form');
@@ -621,7 +626,8 @@ app.get("/", async (c) => {
       ${filterTags.length > 0 ? sql`and c.tags @> ${filterTags}::text[]` : sql``}
       ${filterOrgs.length > 0 ? sql`and c.orgs @> ${filterOrgs}::text[]` : sql``}
       ${filterUsrs.length > 0 ? sql`and c.usrs @> ${filterUsrs}::text[]` : sql``}
-    ${sort === "new"
+    ${
+    sort === "new"
       ? sql`order by c.created_at desc`
       : sort === "top"
       ? sql`order by reaction_count desc, c.created_at desc`
@@ -633,7 +639,7 @@ app.get("/", async (c) => {
           - (c.tags @> ARRAY['bot'])::int * interval '4 hours'
           + interval '1 second' * (hashtext(c.cid::text) % 120)
         ) desc`
-    }
+  }
     offset ${p * 25}
     limit 25
   `;
@@ -905,7 +911,9 @@ app.get("/u", async (c) => {
           <input type="password" name="password" placeholder="password" required />
           <button>login</button>
         </form>
-        <p><a href="/forgot">forgot password?</a></p>
+        <p>
+          <a href="/forgot">forgot password?</a>
+        </p>
 
         <h2>sign up</h2>
         <form method="post" action="/signup">
@@ -1077,9 +1085,9 @@ app.post("/c/:parent_cid?", async (c) => {
   let thumb: string | null = null;
   if (!parent_cid) {
     const imageUrl = extractImageUrl(body);
-    if (imageUrl) {
+    if (imageUrl)
       thumb = imageUrl;
-    } else {
+    else {
       const url = extractFirstUrl(body);
       if (url) thumb = await resolveThumbnail(url);
     }
@@ -1099,13 +1107,12 @@ app.post("/c/:parent_cid?", async (c) => {
 
   // Update parent's denormalized counts
   if (parent_cid) {
-    if (isReaction(body)) {
+    if (isReaction(body))
       await sql`update com set c_reactions = c_reactions || hstore(${body}, (coalesce((c_reactions -> ${body})::int, 0) + 1)::text) where cid = ${parent_cid}`;
-    } else if (body === "flag") {
+    else if (body === "flag")
       await sql`update com set c_flags = c_flags + 1 where cid = ${parent_cid}`;
-    } else {
+    else
       await sql`update com set c_comments = c_comments + 1 where cid = ${parent_cid}`;
-    }
   }
 
   if (!parent_cid) return c.redirect(`/c/${comment.cid}`);
@@ -1232,7 +1239,8 @@ app.get("/c/:cid?", async (c) => {
       ? sql`and to_tsvector('english', body) @@ plainto_tsquery('english', ${c.req.query("q") ?? ""}::text)`
       : sql``
   }
-    ${sort === "new"
+    ${
+    sort === "new"
       ? sql`order by c.created_at desc`
       : sort === "top"
       ? sql`order by reaction_count desc, c.created_at desc`
@@ -1244,7 +1252,7 @@ app.get("/c/:cid?", async (c) => {
           - (c.tags @> ARRAY['bot'])::int * interval '4 hours'
           + interval '1 second' * (hashtext(c.cid::text) % 120)
         ) desc`
-    }
+  }
     offset ${p * limit}
     limit ${limit}
   `;

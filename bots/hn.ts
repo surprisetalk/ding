@@ -51,12 +51,11 @@ async function fetchHNFeed(): Promise<HNItem[]> {
     );
     const commentCount = parseInt(
       itemXml.match(/<description>.*?Comments:\s*(\d+).*?<\/description>/s)
-          ?.[1] || "0",
+        ?.[1] || "0",
     );
 
-    if (title && link) {
+    if (title && link)
       items.push({ title, link, comments, points, commentCount });
-    }
   }
   return items;
 }

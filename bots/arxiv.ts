@@ -63,8 +63,7 @@ async function fetchArxivFeed(category: string): Promise<ArxivItem[]> {
       .trim() || "";
 
     // Abstract from description
-    const rawAbstract =
-      itemXml.match(/<description>([\s\S]*?)<\/description>/)?.[1] || "";
+    const rawAbstract = itemXml.match(/<description>([\s\S]*?)<\/description>/)?.[1] || "";
     const abstract = rawAbstract
       .replace(/<[^>]+>/g, "") // Strip HTML tags
       .replace(/&lt;/g, "<")
@@ -74,8 +73,7 @@ async function fetchArxivFeed(category: string): Promise<ArxivItem[]> {
       .trim();
 
     // Primary category from arxiv:primary_category
-    const primaryCategory =
-      itemXml.match(/<arxiv:primary_category[^>]*term="([^"]+)"/)?.[1] ||
+    const primaryCategory = itemXml.match(/<arxiv:primary_category[^>]*term="([^"]+)"/)?.[1] ||
       category;
 
     if (title && link) {
@@ -100,9 +98,7 @@ function categoryToTags(category: string): string {
 // Post a single item to ding
 async function postItem(item: ArxivItem): Promise<boolean> {
   // Truncate abstract to ~1000 chars
-  const truncatedAbstract = item.abstract.length > 1000
-    ? item.abstract.slice(0, 997) + "..."
-    : item.abstract;
+  const truncatedAbstract = item.abstract.length > 1000 ? item.abstract.slice(0, 997) + "..." : item.abstract;
 
   const body = [
     item.title,

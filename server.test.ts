@@ -1,6 +1,6 @@
 //// IMPORTS ///////////////////////////////////////////////////////////////////
 
-import app, { setSql, parseLabels, encodeLabels, decodeLabels, formatLabels, extractImageUrl } from "./server.tsx";
+import app, { decodeLabels, encodeLabels, extractImageUrl, formatLabels, parseLabels, setSql } from "./server.tsx";
 import { assertEquals } from "jsr:@std/assert@1";
 import pg from "https://deno.land/x/postgresjs@v3.4.8/mod.js";
 import { PGlite } from "@electric-sql/pglite";
@@ -321,7 +321,10 @@ Deno.test("extractImageUrl", async (t) => {
   });
 
   await t.step("handles query params", () => {
-    assertEquals(extractImageUrl("https://cdn.site.com/img.jpg?w=800&h=600"), "https://cdn.site.com/img.jpg?w=800&h=600");
+    assertEquals(
+      extractImageUrl("https://cdn.site.com/img.jpg?w=800&h=600"),
+      "https://cdn.site.com/img.jpg?w=800&h=600",
+    );
   });
 
   await t.step("returns null when no image URL", () => {

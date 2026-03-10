@@ -93,9 +93,8 @@ async function fetchRedditFeed(): Promise<RedditItem[]> {
     const author = entryXml.match(/<author>[\s\S]*?<name>([^<]+)<\/name>/)?.[1]
       ?.trim() || "";
 
-    if (title && link) {
+    if (title && link)
       items.push({ title, link, imageUrl, author });
-    }
   }
 
   return items;
@@ -110,9 +109,8 @@ async function postItem(item: RedditItem): Promise<boolean> {
   ];
 
   // Add image URL if found
-  if (item.imageUrl) {
+  if (item.imageUrl)
     lines.push("", item.imageUrl);
-  }
 
   // Attribution
   lines.push("", `via ${item.author} on r/hmmm`);

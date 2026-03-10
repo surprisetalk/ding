@@ -47,13 +47,10 @@ async function fetchLobstersFeed(): Promise<LobstersItem[]> {
 
     // Extract category tags
     const tagMatches = itemXml.match(/<category>(.*?)<\/category>/g) || [];
-    const tags = tagMatches.map((t) =>
-      t.replace(/<\/?category>/g, "").toLowerCase()
-    );
+    const tags = tagMatches.map((t) => t.replace(/<\/?category>/g, "").toLowerCase());
 
-    if (title && link) {
+    if (title && link)
       items.push({ title, link, comments, tags });
-    }
   }
   return items;
 }

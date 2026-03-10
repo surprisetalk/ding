@@ -42,8 +42,7 @@ async function fetchSmallwebFeed(): Promise<SmallwebItem[]> {
   const entryMatches = xml.match(/<entry[^>]*>[\s\S]*?<\/entry>/g) || [];
   for (const entryXml of entryMatches) {
     // Title may be CDATA-wrapped or plain
-    const title =
-      entryXml.match(/<title><!\[CDATA\[(.*?)\]\]><\/title>/)?.[1] ||
+    const title = entryXml.match(/<title><!\[CDATA\[(.*?)\]\]><\/title>/)?.[1] ||
       entryXml.match(/<title[^>]*>(.*?)<\/title>/)?.[1] || "";
 
     // Atom links use href attribute: <link href="..." />
@@ -53,18 +52,15 @@ async function fetchSmallwebFeed(): Promise<SmallwebItem[]> {
     const author = entryXml.match(/<author>[\s\S]*?<name>(.*?)<\/name>/)?.[1] ||
       "";
 
-    if (title && link) {
+    if (title && link)
       items.push({ title, link, author });
-    }
   }
   return items;
 }
 
 // Post a single item to ding
 async function postItem(item: SmallwebItem): Promise<boolean> {
-  const attribution = item.author
-    ? `via ${item.author} on Kagi Small Web`
-    : "via Kagi Small Web";
+  const attribution = item.author ? `via ${item.author} on Kagi Small Web` : "via Kagi Small Web";
   const body = `${item.title}\n\n${item.link}\n\n${attribution}`;
 
   const formData = new FormData();

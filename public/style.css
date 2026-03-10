@@ -12,17 +12,17 @@ body {
   margin: 0;
 }
 
-body>* {
+body > * {
   padding: 1rem;
 }
 
-body>header {
+body > header {
   background: black;
   padding: 0.5rem 1rem;
   margin-bottom: 0.5rem;
 }
 
-body>header>section {
+body > header > section {
   display: flex;
   gap: 1rem;
   justify-content: space-between;
@@ -34,13 +34,13 @@ section {
   margin: 0 auto;
 }
 
-body>main {
+body > main {
   display: flex;
   flex-direction: column;
   gap: 1rem;
 }
 
-body>main>section {
+body > main > section {
   width: 100%;
   display: flex;
   flex-direction: column;
@@ -104,14 +104,14 @@ a:link {
   text-decoration: none;
 }
 
-.comment>div {
+.comment > div {
   display: flex;
   gap: 0.75rem;
   opacity: 0.8;
   font-size: 0.875rem;
 }
 
-.user>div {
+.user > div {
   display: flex;
   flex-wrap: wrap;
   gap: 0.75rem;
