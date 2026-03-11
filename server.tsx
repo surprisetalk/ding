@@ -195,11 +195,13 @@ const sendVerificationEmail = async (email: string, token: string) =>
 //// STRIPE ////////////////////////////////////////////////////////////////////
 
 const stripeKey = Deno.env.get("STRIPE_SECRET_KEY") ?? "";
-if (stripeKey === "" || stripeKey === "YOUR_SECRET_KEY" || !stripeKey.startsWith("sk_")) {
+const isStripeConfigured = stripeKey.startsWith("sk_");
+
+if (!isStripeConfigured) {
   console.warn("STRIPE_SECRET_KEY is missing, invalid, or still a placeholder. org features will fail.");
 }
 
-export const stripe = new Stripe(stripeKey, {
+export const stripe = new Stripe(isStripeConfigured ? stripeKey : "sk_test_placeholder", {
   // @ts-ignore: stripe version types
   apiVersion: "2024-12-18.acacia",
   httpClient: Stripe.createFetchHttpClient(),
@@ -645,7 +647,7 @@ app.get("/", async c => {
     <>
       <section>
         <form method="post" action="/c">
-          <textarea requried name="body" rows={18} minlength={1} maxlength={1441}></textarea>
+          <textarea required name="body" rows={18} minlength={1} maxlength={1441}></textarea>
           <div style="display:flex;gap:0.5rem;justify-content:flex-end;align-items:center;">
             <input type="text" name="tags" value={initialTags} placeholder="#linking #thinking *private @user" style="flex:1;" />
             <button>create post</button>
@@ -694,7 +696,10 @@ app.post("/login", async c => {
     from usr where email = ${email}
   `;
   if (!usr || !usr.is_password_correct) throw new HTTPException(401, { message: "Wrong credentials." });
-  if (!usr.email_verified_at && !(await getSignedCookie(c, cookieSecret, "name"))) await sendVerificationEmail(usr.email, usr.token);
+  if (!usr.email_verified_at && !(await getSignedCookie(c, cookieSecret, "name"))) {
+    const token = await emailToken(new Date(), usr.email);
+    await sendVerificationEmail(usr.email, token);
+  }
   await setSignedCookie(c, "name", usr.name, cookieSecret);
   const next = c.req.query("next");
   if (next?.startsWith("/")) return c.redirect(next);
@@ -1522,7 +1527,8 @@ ${comments
         );
       } else {
         const post = comments?.[0];
-        const replies = post?.child_comments?.filter((c: Record<string, any>) => !isReaction(c.body)) ?? [];
+        if (!post) return notFound();
+        const replies = post.child_comments?.filter((c: Record<string, any>) => !isReaction(c.body)) ?? [];
         if (sort === "top") {
           replies.sort((a: Record<string, any>, b: Record<string, any>) => {
             const aReactions = (a.child_comments ?? []).filter((c: Record<string, any>) => isReaction(c.body)).length;
@@ -1533,18 +1539,18 @@ ${comments
         return c.render(
           <>
             <section>
-              {Comment({ ...post, child_comments: post.child_comments.filter((c: { body: string }) => isReaction(c.body)) }, c.get("name"))}
+              {Comment({ ...post, child_comments: (post.child_comments ?? []).filter((c: { body: string }) => isReaction(c.body)) }, c.get("name"))}
             </section>
             <section>
-              <form method="post" action={`/c/${post?.cid ?? 0}`}>
-                <textarea requried name="body" rows={18} minlength={1} maxlength={1441}></textarea>
+              <form method="post" action={`/c/${post.cid}`}>
+                <textarea required name="body" rows={18} minlength={1} maxlength={1441}></textarea>
                 <button>reply</button>
               </form>
               <SortToggle sort={sort} baseHref={`/c/${cid}`} title="comments" />
             </section>
             <section>{replies.map((cm: Record<string, any>) => Comment(cm, c.get("name")))}</section>
           </>,
-          { title: post?.body?.slice(0, 16) },
+          { title: post.body?.slice(0, 16) },
         );
       }
     }
