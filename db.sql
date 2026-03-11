@@ -32,7 +32,7 @@ create index usr_orgs_r_idx on usr using gin (orgs_r);
 create table org (
   name citext primary key check (name ~ '^[0-9a-zA-Z_]{4,32}$'),
   created_by citext references usr (name) not null,
-  stripe_sub_id text,
+  stripe_sub_id text unique,
   created_at timestamptz not null default current_timestamp
 );
 
