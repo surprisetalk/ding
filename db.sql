@@ -9,7 +9,7 @@ language sql
 immutable
 returns null on null input
 return ''
-|| extract(epoch from ts)::bigint
+|| extract(epoch from ts)::bigint::text
 || ':'
 || md5(extract(epoch from ts)::bigint || ':TODO:' || email);
 
@@ -18,7 +18,7 @@ create table usr (
   email citext unique not null check (email ilike '%@%' and email ~ '^.{4,64}$'),
   password text check (password <> ''),
   bio text not null check (length(bio) between 1 and 1441),
-  email_verified_at timestamp,
+  email_verified_at timestamptz,
   invited_by citext not null references usr (name),
   orgs_r text[] not null default '{}',  -- orgs user can read
   orgs_w text[] not null default '{}',  -- orgs user can write
@@ -45,7 +45,7 @@ create table com (
   usrs text[] not null default '{}',  -- user mentions (e.g., 'john')
   body text not null check (length(body) between 0 and 1441),
   thumb text,  -- thumbnail URL (og:image or favicon fallback)
-  created_at timestamp default current_timestamp,
+  created_at timestamptz default current_timestamp,
   -- Denormalized counts for hot ranking (maintained by server)
   c_comments int not null default 0,    -- count of non-reaction replies
   c_reactions hstore not null default ''::hstore,  -- reaction counts (e.g., '▲=>5,👍=>3')
@@ -133,3 +133,15 @@ values
 (355, null, 'BugHunter42', 'This is a secret post only visible to users with secret tag.', '{humor}', '{secret}', '{}'),
 (356, null, 'DebuggerDiva', 'Internal team discussion about upcoming features.', '{coding}', '{internal}', '{}'),
 (357, null, 'BugHunter42', 'Direct message to BugHunter42 and DebuggerDiva.', '{general}', '{}', '{BugHunter42,DebuggerDiva}');
+
+-- Test seed data
+insert into usr (name, email, password, bio, email_verified_at, invited_by, orgs_r, orgs_w)
+values ('john_doe', 'john@example.com', 'hashed:password1!', 'sample bio', now(), 'john_doe', '{secret}', '{secret}')
+on conflict do nothing;
+
+insert into usr (name, email, password, bio, email_verified_at, invited_by, orgs_r, orgs_w)
+values ('jane_doe', 'jane@example.com', 'hashed:password1!', 'sample bio', now(), 'john_doe', '{}', '{}')
+on conflict do nothing;
+
+-- Sync sequences for tables with hardcoded IDs in seeds
+select setval('com_cid_seq', (select max(cid) from com));
