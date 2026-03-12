@@ -1,181 +1,113 @@
+// deno-lint-ignore-file no-explicit-any
 //// IMPORTS ///////////////////////////////////////////////////////////////////
 
-import { HTTPException } from "jsr:@hono/hono/http-exception";
-import { Context, Hono } from "jsr:@hono/hono";
-import { some } from "jsr:@hono/hono/combine";
-import { createMiddleware } from "jsr:@hono/hono/factory";
-import { logger } from "jsr:@hono/hono/logger";
-import { prettyJSON } from "jsr:@hono/hono/pretty-json";
-import { basicAuth } from "jsr:@hono/hono/basic-auth";
-import { html } from "jsr:@hono/hono/html";
-import { deleteCookie, getSignedCookie, setSignedCookie } from "jsr:@hono/hono/cookie";
-import { serveStatic } from "jsr:@hono/hono/deno";
+import { Context, Hono } from "@hono/hono";
+import { HTTPException } from "@hono/hono/http-exception";
+import { some } from "@hono/hono/combine";
+import { createMiddleware } from "@hono/hono/factory";
+import { logger } from "@hono/hono/logger";
+import { basicAuth } from "@hono/hono/basic-auth";
+import { html } from "@hono/hono/html";
+import { deleteCookie, getSignedCookie, setSignedCookie } from "@hono/hono/cookie";
+import { serveStatic } from "@hono/hono/deno";
+import pg from "postgres";
+import sg from "@sendgrid/mail";
+import Stripe from "stripe";
 
-import pg from "https://deno.land/x/postgresjs@v3.4.8/mod.js";
+//// CONSTANTS & HELPERS ///////////////////////////////////////////////////////
 
-import sg from "npm:@sendgrid/mail";
-import Stripe from "npm:stripe";
+const escapeXml = (s: string) =>
+  s.replace(/[&<>"']/g, (m) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&apos;" }[m]!));
+const extractFirstUrl = (b: string) => b.match(/https?:\/\/[^\s]+/)?.[0] || null;
+export const extractImageUrl = (b: string) =>
+  b.match(/https?:\/\/[^\s]+\.(?:jpe?g|png|gif|webp|svg)(?:\?[^\s]*)?/i)?.[0] || null;
 
-declare module "jsr:@hono/hono" {
-  interface ContextRenderer {
-    (content: string | Promise<string>, props?: { title?: string }): Response | Promise<Response>;
-  }
-}
-
-//// CONSTANTS /////////////////////////////////////////////////////////////////
-
-const MAX_POSTS_PER_DAY = 1000;
-
-//// HELPERS ///////////////////////////////////////////////////////////////////
-
-const TODO = (x: TemplateStringsArray) => {
-  throw new Error(`TODO: ${x.raw.join("")}`);
-};
-
-const escapeXml = (s: string): string =>
-  s.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;").replace(/"/g, "&quot;").replace(/'/g, "&apos;");
-
-const extractFirstUrl = (body: string): string | null => body.match(/https?:\/\/[^\s]+/)?.[0] || null;
-
-const IMAGE_URL_PATTERN = /https?:\/\/[^\s]+\.(?:jpe?g|png|gif|webp|svg)(?:\?[^\s]*)?/i;
-export const extractImageUrl = (body: string): string | null => body.match(IMAGE_URL_PATTERN)?.[0] || null;
-
-const resolveThumbnail = async (url: string): Promise<string> => {
-  // 1. Try og:image extraction
+const resolveThumbnail = async (url: string) => {
   try {
-    const res = await fetch(url, {
-      headers: { "User-Agent": "ding/1.0" },
-      signal: AbortSignal.timeout(3000),
-    });
-    const html = await res.text();
-    const og = html.match(/<meta[^>]+(?:property="og:image"|name="twitter:image")[^>]+content="([^"]+)"/i)?.[1];
+    const res = await fetch(url, { headers: { "User-Agent": "ding/1.0" }, signal: AbortSignal.timeout(3000) });
+    const og = (await res.text()).match(/<meta[^>]+(?:property="og:image"|name="twitter:image")[^>]+content="([^"]+)"/i)
+      ?.[1];
     if (og) return new URL(og, url).href;
-  } catch {
-    /* fall through to favicon */
-  }
-
-  // 2. Favicon fallback via Google's service
-  const domain = new URL(url).hostname;
-  return `https://www.google.com/s2/favicons?domain=${domain}&sz=128`;
+  } catch { /* ignore */ }
+  return `https://www.google.com/s2/favicons?domain=${new URL(url).hostname}&sz=128`;
 };
 
 //// LABEL PARSING /////////////////////////////////////////////////////////////
 
-export type Labels = {
-  tag: string[]; // from # (public labels)
-  org: string[]; // from * (org/private labels)
-  usr: string[]; // from @ (user labels)
-  www: string[]; // from ~ (domain filter, search only)
-  text: string; // remaining free text
-};
+export type Labels = { tag: string[]; org: string[]; usr: string[]; www: string[]; text: string };
 
-// Parse search input → Labels
+const PFX: Record<string, keyof Labels> = { "#": "tag", "*": "org", "@": "usr", "~": "www" };
+
 export const parseLabels = (input: string): Labels => {
-  const tokens = input.split(/\s+/).filter(Boolean);
-  return {
-    tag: tokens.filter((t) => t.startsWith("#")).map((t) => t.slice(1).toLowerCase()),
-    org: tokens.filter((t) => t.startsWith("*")).map((t) => t.slice(1).toLowerCase()),
-    usr: tokens.filter((t) => t.startsWith("@")).map((t) => t.slice(1)),
-    www: tokens.filter((t) => t.startsWith("~")).map((t) => t.slice(1).toLowerCase()),
-    text: tokens.filter((t) => !/^[#*@~]/.test(t)).join(" "),
-  };
+  const labels: Labels = { tag: [], org: [], usr: [], www: [], text: "" };
+  input.split(/\s+/).filter(Boolean).forEach((t) => {
+    const k = PFX[t[0]];
+    if (k) (labels[k] as string[]).push(t.slice(1).toLowerCase());
+    else labels.text = labels.text ? labels.text + " " + t : t;
+  });
+  return labels;
 };
 
-// Labels → URLSearchParams
-export const encodeLabels = (labels: Labels): URLSearchParams => {
-  const params = new URLSearchParams();
-  for (const tag of labels.tag) params.append("tag", tag);
-  for (const org of labels.org) params.append("org", org);
-  for (const usr of labels.usr) params.append("usr", usr);
-  for (const www of labels.www) params.append("www", www);
-  if (labels.text) params.set("q", labels.text);
-  return params;
+export const encodeLabels = (l: Labels) => {
+  const p = new URLSearchParams();
+  Object.entries(l).forEach(([k, v]) => (Array.isArray(v) ? v.forEach((x) => p.append(k, x)) : v && p.set("q", v)));
+  return p;
 };
 
-// URLSearchParams → search input string
-export const decodeLabels = (params: URLSearchParams): string => {
-  const parts: string[] = [];
-  for (const tag of params.getAll("tag")) parts.push(`#${tag}`);
-  for (const org of params.getAll("org")) parts.push(`*${org}`);
-  for (const usr of params.getAll("usr")) parts.push(`@${usr}`);
-  for (const www of params.getAll("www")) parts.push(`~${www}`);
-  for (const mention of params.getAll("mention")) parts.push(`mention:${mention}`);
-  if (params.get("replies_to")) parts.push(`replies_to:${params.get("replies_to")}`);
-  if (params.get("reactions") === "1") parts.push(`reactions`);
-  if (params.get("comments") === "1") parts.push(`comments`);
-  const q = params.get("q");
-  if (q) parts.push(q);
-  return parts.join(" ");
+export const decodeLabels = (p: URLSearchParams) => {
+  const res: string[] = [];
+  Object.entries(PFX).forEach(([sym, k]) => p.getAll(k).forEach((v) => res.push(sym + v)));
+  p.getAll("mention").forEach((v) => res.push(`mention:${v}`));
+  ["replies_to", "reactions", "comments", "q"].forEach((k) => {
+    const v = p.get(k);
+    if (v) res.push(k === "q" ? v : (k === "reactions" || k === "comments") ? (v === "1" ? k : "") : `${k}:${v}`);
+  });
+  return res.filter(Boolean).join(" ");
 };
 
-// Database record → display strings (for UI)
-export const formatLabels = (c: Record<string, any>): string[] => [
-  ...(c.tags ?? []).map((t: string) => `#${t}`),
-  ...(c.orgs ?? []).map((t: string) => `*${t}`),
-  ...(c.usrs ?? []).map((t: string) => `@${t}`),
+export const formatLabels = (c: any) => [
+  ...(c.tags || []).map((t: any) => `#${t}`),
+  ...(c.orgs || []).map((t: any) => `*${t}`),
+  ...(c.usrs || []).map((t: any) => `@${t}`),
 ];
 
-// Build page title from active filters (returns empty string if no filters)
-const buildFilterTitle = (params: URLSearchParams): string => {
-  const parts: string[] = [];
-  for (const tag of params.getAll("tag")) parts.push(`#${tag}`);
-  for (const org of params.getAll("org")) parts.push(`*${org}`);
-  for (const usr of params.getAll("usr")) parts.push(`@${usr}`);
-  return parts.join(" ");
-};
+const buildFilterTitle = (p: URLSearchParams) =>
+  Object.entries(PFX).filter(([_, k]) => k !== "www").flatMap(([sym, k]) => p.getAll(k).map((v) => sym + v)).join(" ");
 
-// Build additive filter link (adds param without replacing existing)
-const buildAdditiveLink = (params: URLSearchParams | undefined, paramName: string, value: string): string => {
-  const newParams = new URLSearchParams(params);
-  if (!newParams.getAll(paramName).includes(value)) newParams.append(paramName, value);
-  newParams.delete("p");
-  return `/?${newParams}`;
+const buildAdditiveLink = (p: URLSearchParams | undefined, k: string, v: string) => {
+  const n = new URLSearchParams(p);
+  if (!n.getAll(k).includes(v)) n.append(k, v);
+  n.delete("p");
+  return `/?${n}`;
 };
 
 //// EMAIL TOKEN ///////////////////////////////////////////////////////////////
 
-const EMAIL_TOKEN_SECRET = Deno.env.get("EMAIL_TOKEN_SECRET") ?? Math.random().toString();
+const SECRET = Deno.env.get("EMAIL_TOKEN_SECRET") ?? Math.random().toString();
 
-async function emailToken(ts: Date, email: string): Promise<string> {
+const emailToken = async (ts: Date, email: string) => {
   const epoch = Math.floor(ts.getTime() / 1000);
-  const encoder = new TextEncoder();
   const key = await crypto.subtle.importKey(
     "raw",
-    encoder.encode(EMAIL_TOKEN_SECRET),
+    new TextEncoder().encode(SECRET),
     { name: "HMAC", hash: "SHA-256" },
     false,
     ["sign"],
   );
-  const signature = await crypto.subtle.sign("HMAC", key, encoder.encode(`${epoch}:${email}`));
-  const hash = Array.from(new Uint8Array(signature))
-    .map((b) => b.toString(16).padStart(2, "0"))
-    .join("")
-    .slice(0, 32); // Match md5 length for compatibility
-  return `${epoch}:${hash}`;
-}
+  const sig = await crypto.subtle.sign("HMAC", key, new TextEncoder().encode(`${epoch}:${email}`));
+  return `${epoch}:${
+    Array.from(new Uint8Array(sig)).map((b) => b.toString(16).padStart(2, "0")).join("").slice(0, 32)
+  }`;
+};
 
-function parseTokenTimestamp(token: string): Date | null {
-  const epochStr = token.split(":")[0];
-  const epoch = parseInt(epochStr, 10);
-  if (isNaN(epoch)) return null;
-  return new Date(epoch * 1000);
-}
-
-async function validateEmailToken(
-  token: string,
-  email: string,
-  maxAgeMs: number = 2 * 24 * 60 * 60 * 1000,
-): Promise<boolean> {
-  const ts = parseTokenTimestamp(token);
-  if (!ts) return false;
-  if (Date.now() - ts.getTime() > maxAgeMs) return false;
-  const expected = await emailToken(ts, email);
-  return token === expected;
-}
+const validateEmailToken = async (token: string, email: string, maxAge = 172800000) => {
+  const [epoch] = token.split(":"), ts = parseInt(epoch) * 1000;
+  return ts && (Date.now() - ts < maxAge) && token === (await emailToken(new Date(ts), email));
+};
 
 //// POSTGRES //////////////////////////////////////////////////////////////////
 
-export let sql = pg(Deno.env.get(`DATABASE_URL`)?.replace(/flycast/, "internal")!, { database: "ding" });
+export let sql: any = pg(Deno.env.get(`DATABASE_URL`)?.replace(/flycast/, "internal")!, { database: "ding" });
 export const setSql = (s: typeof sql) => (sql = s);
 
 //// SENDGRID //////////////////////////////////////////////////////////////////
@@ -270,110 +202,96 @@ const SortToggle = ({ sort, baseHref, title }: { sort: string; baseHref: string;
 };
 
 const ActiveFilters = ({ params, basePath = "/c" }: { params: URLSearchParams; basePath?: string }) => {
-  const filters: { label: string; param: string; value: string }[] = [];
-  for (const tag of params.getAll("tag")) filters.push({ label: `#${tag}`, param: "tag", value: tag });
-  for (const org of params.getAll("org")) filters.push({ label: `*${org}`, param: "org", value: org });
-  for (const usr of params.getAll("usr")) filters.push({ label: `@${usr}`, param: "usr", value: usr });
-  for (const www of params.getAll("www")) filters.push({ label: `~${www}`, param: "www", value: www });
-  for (const mention of params.getAll("mention"))
-    filters.push({ label: `mention:${mention}`, param: "mention", value: mention });
-  if (params.get("replies_to")) {
-    filters.push({
-      label: `replies_to:${params.get("replies_to")}`,
-      param: "replies_to",
-      value: params.get("replies_to")!,
-    });
-  }
-  if (params.get("reactions") === "1") filters.push({ label: "reactions", param: "reactions", value: "1" });
-  if (params.get("comments") === "1") filters.push({ label: "comments", param: "comments", value: "1" });
+  const f: { label: string; param: string; value: string }[] = [];
+  ["tag", "org", "usr", "www", "mention"].forEach((k) =>
+    params.getAll(k).forEach((v) =>
+      f.push({
+        label: (k === "tag" ? "#" : k === "org" ? "*" : k === "usr" ? "@" : k === "www" ? "~" : `${k}:`) + v,
+        param: k,
+        value: v,
+      })
+    )
+  );
+  ["replies_to", "reactions", "comments"].forEach((k) =>
+    params.get(k) &&
+    f.push({
+      label: k === "reactions" || k === "comments" ? k : `${k}:${params.get(k)}`,
+      param: k,
+      value: params.get(k)!,
+    })
+  );
 
-  return filters.length > 0
+  return f.length > 0
     ? (
       <div class="active-filters">
-        {filters.map((f) => {
-          const newParams = new URLSearchParams(params);
-          const values = newParams.getAll(f.param).filter((v) => v !== f.value);
-          newParams.delete(f.param);
-          for (const v of values) newParams.append(f.param, v);
-          newParams.delete("p");
-          return (
-            <a href={`${basePath}?${newParams}`} class="filter-pill">
-              {f.label} x
-            </a>
-          );
+        {f.map((x) => {
+          const n = new URLSearchParams(params);
+          n.delete(x.param);
+          params.getAll(x.param).filter((v) => v !== x.value).forEach((v) => n.append(x.param, v));
+          n.delete("p");
+          return <a key={`${x.param}:${x.value}`} href={`${basePath}?${n}`} class="filter-pill">{x.label} x</a>;
         })}
       </div>
     )
-    : <div class="active-filters"></div>;
+    : <div class="active-filters" />;
 };
 
-const Reactions = (c: Record<string, any>) => {
-  const counts: Record<string, number> = { "▲": 0, "▼": 0, ...(c.reaction_counts ?? {}) };
-  const userReactions: string[] = c.user_reactions ?? [];
-  return Object.entries(counts).map(([char, count]) => (
-    <form method="post" action={`/c/${c.cid}`} class={`reaction${userReactions.includes(char) ? " reacted" : ""}`}>
-      <input type="hidden" name="body" value={char} />
-      <button type="submit">
-        {char} {count}
-      </button>
+const Reactions = (c: any) =>
+  Object.entries({ "▲": 0, "▼": 0, ...(c.reaction_counts || {}) }).map(([k, v]) => (
+    <form
+      key={k}
+      method="post"
+      action={`/c/${c.cid}`}
+      class={`reaction${(c.user_reactions || []).includes(k) ? " reacted" : ""}`}
+    >
+      <input type="hidden" name="body" value={k} />
+      <button type="submit">{k} {v}</button>
     </form>
   ));
-};
 
-const Comment = (c: Record<string, any>, viewerName?: string) => {
-  return (
-    <div class="comment" id={c.cid}>
-      <div>
-        {!c.created_at || <a href={`/c/${c.cid}`}>{new Date(c.created_at).toLocaleDateString()}</a>}
-        {!c.parent_cid || <a href={`/c/${c.parent_cid}`}>parent</a>}
-        <a href={`/u/${c.created_by}`}>@{c.created_by ?? "unknown"}</a>
-        {c.body !== "" && viewerName && c.created_by == viewerName && <a href={`/c/${c.cid}/delete`}>delete</a>}
-        <a href={`/c/${c.cid}`}>reply</a>
-        {formatLabels(c).map((label: string) => {
-          const prefix = label[0];
-          const labelName = label.slice(1);
-          const param = prefix === "*" ? "org" : prefix === "@" ? "usr" : "tag";
-          return <a href={`/c?${param}=${labelName}`}>{label}</a>;
-        })}
-        {Reactions(c)}
-      </div>
-      <pre>{c.body === "" ? "[deleted by author]" : c.body}</pre>
-      <div style="padding-left: 1rem;">
-        {c?.child_comments?.map((child: Record<string, any>) => Comment(child, viewerName))}
-      </div>
+const Comment = (c: any, user?: string) => (
+  <div key={c.cid} class="comment" id={c.cid}>
+    <div>
+      {c.created_at && <a href={`/c/${c.cid}`}>{new Date(c.created_at).toLocaleDateString()}</a>}
+      {c.parent_cid && <a href={`/c/${c.parent_cid}`}>parent</a>}
+      <a href={`/u/${c.created_by}`}>@{c.created_by || "unknown"}</a>
+      {c.body && user == c.created_by && <a href={`/c/${c.cid}/delete`}>delete</a>}
+      <a href={`/c/${c.cid}`}>reply</a>
+      {formatLabels(c).map((l) => (
+        <a key={l} href={`/c?${l[0] === "*" ? "org" : l[0] === "@" ? "usr" : "tag"}=${l.slice(1)}`}>{l}</a>
+      ))}
+      {Reactions(c)}
     </div>
-  );
-};
+    <pre>{c.body || "[deleted by author]"}</pre>
+    <div style="padding-left:1rem">{c?.child_comments?.map((ch: any) => Comment(ch, user))}</div>
+  </div>
+);
 
 const defaultThumb =
   "data:image/svg+xml,%3Csvg xmlns=%27http://www.w3.org/2000/svg%27 viewBox=%270 0 1 1%27%3E%3Crect fill=%27%23222%27 width=%271%27 height=%271%27/%3E%3C/svg%3E";
 
-const Post = (c: Record<string, any>, viewerName?: string, currentParams?: URLSearchParams) => (
+const Post = (c: any, user?: string, p?: URLSearchParams) => (
   <>
     <img src={c.thumb || defaultThumb} loading="lazy" onerror={`this.onerror=null;this.src='${defaultThumb}'`} />
     <div class="post-content">
       <span>
         <a href={`/c/${c.cid}`}>
-          {c.body === "" ? "[deleted by author]" : `${
-            c.body
-              .trim()
-              .replace(/[\r\n\t].+$/, "")
-              .slice(0, 60)
-          }${c.body.length > 60 ? "…" : ""}`.padEnd(40, " .")}
+          {c.body
+            ? (c.body.trim().split("\n")[0].slice(0, 60) + (c.body.length > 60 ? "…" : "")).padEnd(40, " .")
+            : "[deleted by author]"}
         </a>
       </span>
       <div>
         <a href={`/c/${c.cid}`}>{new Date(c.created_at).toLocaleDateString()}</a>
-        {!c.parent_cid || <a href={`/c/${c.parent_cid}`}>parent</a>}
+        {c.parent_cid && <a href={`/c/${c.parent_cid}`}>parent</a>}
         <a href={`/u/${c.created_by}`}>@{c.created_by}</a>
-        {c.body !== "" && viewerName && c.created_by == viewerName && <a href={`/c/${c.cid}/delete`}>delete</a>}
+        {c.body && user == c.created_by && <a href={`/c/${c.cid}/delete`}>delete</a>}
         <a href={`/c/${c.cid}`}>reply</a>
-        {formatLabels(c).map((label: string) => {
-          const prefix = label[0];
-          const labelName = label.slice(1);
-          const param = prefix === "*" ? "org" : prefix === "@" ? "usr" : "tag";
-          return <a href={buildAdditiveLink(currentParams, param, labelName)}>{label}</a>;
-        })}
+        {formatLabels(c).map((l) => (
+          <a key={l} href={buildAdditiveLink(p, l[0] === "*" ? "org" : l[0] === "@" ? "usr" : "tag", l.slice(1))}>
+            {l}
+          </a>
+        ))}
         {Reactions(c)}
       </div>
     </div>
@@ -383,47 +301,31 @@ const Post = (c: Record<string, any>, viewerName?: string, currentParams?: URLSe
 //// HONO //////////////////////////////////////////////////////////////////////
 
 const cookieSecret = Deno.env.get("COOKIE_SECRET") ?? Math.random().toString();
-
 const notFound = () => {
   throw new HTTPException(404, { message: "Not found." });
 };
-
-const form = async (c: Context): Promise<Record<string, string>> =>
+const form = async (c: Context) =>
   Object.fromEntries([...(await c.req.formData()).entries()].map(([k, v]) => [k, v.toString()]));
-
-const host = (c: Context): string | undefined => {
+const host = (c: Context) => {
   const h = c.req.header("host")?.match(/^(?:https?:\/\/)?(?:www\.)?([^\/]+)\.([^\/]+)\./)?.[1];
   if (h) return h;
-  if (c.req.header("accept")?.includes("application/json")) return "api";
-  if (c.req.header("accept")?.includes("text/html")) return;
-  if (c.req.header("accept")?.includes("application/xml")) return "rss";
-  if (c.req.header("content-type")?.includes("application/json")) return "api";
-  if (c.req.header("content-type")?.includes("multipart/form-data")) return;
+  const a = c.req.header("accept") || "", t = c.req.header("content-type") || "";
+  return a.includes("json") || t.includes("json") ? "api" : a.includes("xml") ? "rss" : undefined;
 };
-
-const ok = (c: Context) => {
-  switch (host(c)) {
-    case "api":
-      return c.json(null, 204);
-    default:
-      return c.redirect("/u");
-  }
-};
+const ok = (c: Context) => host(c) === "api" ? c.json(null, 204) : c.redirect("/u");
 
 const authed = some(
-  createMiddleware(async (c, next) => {
-    const name = await getSignedCookie(c, cookieSecret, "name");
-    if (!name) throw new HTTPException(401, { message: "Not authorized." });
-    c.set("name", name);
+  createMiddleware<{ Variables: { name: string } }>(async (c, next) => {
+    const n = await getSignedCookie(c, cookieSecret, "name");
+    if (!n) throw new HTTPException(401);
+    c.set("name", n);
     await next();
   }),
   basicAuth({
-    verifyUser: async (email, password, c) => {
-      const [usr] = await sql`
-        select *, password = crypt(${password}, password) AS is_password_correct
-        from usr where email = ${email} or name = ${email}
-      `;
-      if (!usr || !usr.is_password_correct) return false;
+    verifyUser: async (u, p, c) => {
+      const [usr] =
+        await sql`select name, (password = crypt(${p}, password)) as ok from usr where email=${u} or name=${u}`;
+      if (!usr?.ok) return false;
       await setSignedCookie(c, "name", usr.name, cookieSecret);
       c.set("name", usr.name);
       return true;
@@ -431,66 +333,26 @@ const authed = some(
   }),
 );
 
-// TODO: Add rate-limiting middleware everywhere.
-const app = new Hono<{ Variables: { name?: string } }>();
-
-app.use("*", async (c, next) => {
-  console.log(c.req.method, c.req.url);
-  await next();
-});
-
+const app = new Hono<{ Variables: { name: string } }>();
 app.use(logger());
-app.use(async function prettyJSON(c, next) {
-  await next();
-  if (c.res.headers.get("Content-Type")?.startsWith("application/json")) {
-    const obj = await c.res.json();
-    c.res = new Response(JSON.stringify(obj, null, 2), c.res);
-  }
-});
-
 app.notFound(notFound);
 
-// Block crawlers from query string URLs
-const botPattern =
-  /bot|crawl|spider|slurp|bingpreview|facebookexternalhit|mediapartners|google|yandex|baidu|duckduck|sogou|exabot|ia_archiver|semrush|ahref|mj12|dotbot|petalbot|bytespider/i;
-app.use("*", async (c, next) => {
-  const url = new URL(c.req.url);
-  const tags = url.searchParams.getAll("tag");
-  // Option A: Limit tag count
-  if (tags.length > 3) return c.text("Too many tags", 400);
-  // Option B: Block bots from query string URLs
-  const ua = c.req.header("User-Agent") || "";
-  if (url.search && botPattern.test(ua)) return c.text("Forbidden", 403);
-  await next();
-});
-
-app.get("/robots.txt", (c) =>
-  c.text(`User-agent: *
-Disallow: /*?*
-Crawl-delay: 1`));
-
-app.get("/sitemap.txt", (c) => c.text("https://ding.bar/"));
+const botRe = /bot|crawl|spider|slurp|bing|facebook|google|yandex|baidu|duck|sogou|semrush|ahref/i;
 
 app.use("*", async (c, next) => {
-  const name = await getSignedCookie(c, cookieSecret, "name");
-  if (name) c.set("name", name);
-  c.setRenderer((content, props) => {
-    return c.html(html`
+  const url = new URL(c.req.url), ua = c.req.header("User-Agent") || "";
+  if (url.searchParams.getAll("tag").length > 3) return c.text("Too many tags", 400);
+  if (url.search && botRe.test(ua)) return c.text("Forbidden", 403);
+  const n = await getSignedCookie(c, cookieSecret, "name");
+  if (n) c.set("name", n);
+  c.setRenderer((content: any, props?: any) =>
+    c.html(html`
       <!DOCTYPE html>
       <html>
         <head>
-          <title>${props?.title ? `ding | ${props?.title}` : "ding"}</title>
+          <title>${props?.title ? "ding | " + props.title : "ding"}</title>
           <meta charset="UTF-8" />
-          <meta name="color-scheme" content="light dark" />
-          <meta name="author" content="Taylor Troesh" />
           <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-          <link rel="icon" sizes="16x16" href="/favicon-16x16.png" />
-          <link rel="icon" sizes="32x32" href="/favicon-32x32.png" />
-          <link rel="icon" sizes="192x192" href="/android-chrome-192x192.png" />
-          <link rel="icon" sizes="512x512" href="/android-chrome-512x512.png" />
-          <link rel="icon" href="/favicon.ico" type="image/x-icon" />
-          <link rel="shortcut icon" href="/favicon.ico" type="image/x-icon" />
-          <link rel="apple-touch-icon" sizes="180x180" href="/apple-touch-icon.png" />
           <link rel="manifest" href="/manifest.json" />
           <link rel="stylesheet" href="/style.css" />
         </head>
@@ -499,364 +361,232 @@ app.use("*", async (c, next) => {
             <section>
               <a href="/" style="letter-spacing:10px;font-weight:700;width:100%;">▢ding</a>
               <a href="/org/new" style="letter-spacing:2px;font-size:0.875rem;opacity:0.8;"> +org </a>
-              <a href="/u" style="letter-spacing:2px;font-size:0.875rem;opacity:0.8;">
-                ${c.get("name") ? `@${c.get("name")}` : "account"}
-              </a>
+              <a href="/u" style="letter-spacing:2px;font-size:0.875rem;opacity:0.8;">${c.get("name")
+                ? "@" + c.get("name")
+                : "account"}</a>
               <a href="/c/496" style="letter-spacing:2px;font-size:0.875rem;opacity:0.8;"> help </a>
             </section>
           </header>
           <main>${content}</main>
-          <footer></footer>
           <script>
-          for (const x of document.querySelectorAll("pre")) {
-          x.innerHTML = x.innerHTML.replace(/(https?:\\/\\/\\S+)/g, url => {
-            const isImage =
-              /\\.(jpe?g|png|gif|webp|svg)(\\?.*)?$/i.test(url) ||
-              /^https?:\\/\\/(i\\.redd\\.it|i\\.imgur\\.com|pbs\\.twimg\\.com)\\//i.test(url);
-            return isImage
-              ? ${'`<a href="${url}">${url}</a><br><img src="${url}" loading="lazy" style="max-width:100%;max-height:400px;">`'}
-              : ${'`<a href="${url}">${url}</a>`'};
+          document.querySelectorAll("pre").forEach(x => {
+            x.innerHTML = x.innerHTML.replace(/(https?:\\/\\/\\S+)/g, u => {
+              const isImg = /\\.(jpe?g|png|gif|webp|svg)(\\?.*)?$/i.test(u) || /^https?:\\/\\/(i\\.redd\\.it|i\\.imgur\\.com|pbs\\.twimg\\.com)\\//i.test(u);
+              return isImg ? '<a href="'+u+'">'+u+'</a><br><img src="'+u+'" loading="lazy" style="max-width:100%;max-height:400px;">' : '<a href="'+u+'">'+u+'</a>';
             });
-          }
-          const searchForm = document.getElementById("search-form");
-          if (searchForm) {
-            searchForm.onsubmit = e => {
-              e.preventDefault();
-              const input = searchForm.querySelector('input[name="search"]');
-              const tokens = input.value.split(/\\s+/).filter(Boolean);
-              const params = new URLSearchParams();
-              for (const t of tokens) {
-                if (t.startsWith("#")) params.append("tag", t.slice(1).toLowerCase());
-                else if (t.startsWith("*")) params.append("org", t.slice(1).toLowerCase());
-                else if (t.startsWith("@")) params.append("usr", t.slice(1));
-                else if (t.startsWith("~")) params.append("www", t.slice(1).toLowerCase());
-                else {
-                  const q = params.get("q");
-                  params.set("q", q ? q + " " + t : t);
-                }
-              }
-              window.location.href = "/c?" + params.toString();
-            };
-          }
+          });
+          const fr = document.getElementById("search-form");
+          if (fr) fr.onsubmit = e => {
+            e.preventDefault();
+            const v = fr.querySelector('input[name="search"]').value, p = new URLSearchParams();
+            v.split(/\\s+/).filter(Boolean).forEach(t => {
+              const k = {"#":"tag","*":"org","@":"usr","~":"www"}[t[0]];
+              if (k) p.append(k, t.slice(1).toLowerCase()); else p.set("q", (p.get("q") ? p.get("q") + " " : "") + t);
+            });
+            window.location.href = "/c?" + p;
+          };
           </script>
         </body>
       </html>
-    `);
-  });
+    `)
+  );
   await next();
 });
 
+app.get("/robots.txt", (c) => c.text("User-agent: *\\nDisallow: /*?*\\nCrawl-delay: 1"));
+app.get("/sitemap.txt", (c) => c.text("https://ding.bar/"));
+
 app.onError((err, c) => {
-  if (err instanceof HTTPException) return err.getResponse();
-  if (err) console.error(err);
-  const message = "Sorry, this computer is мᎥｓβ𝕖𝓱𝐀𝓋𝓲𝓷g.";
-  switch (host(c)) {
-    case "api":
-      return c.json({ error: message }, 500);
-    case "rss":
-      return c.text(message, 500);
-    default:
-      c.status(500);
-      return c.render(
-        <section>
-          <p>{message}</p>
-        </section>,
-        { title: "error" },
-      );
-  }
+  if (err instanceof HTTPException) return (err as any).getResponse();
+  console.error(err);
+  const msg = "Sorry, this computer is мᎥｓβ𝕖𝓱𝐀𝓋𝓲𝓷g.", h = host(c);
+  return h === "api" ? c.json({ error: msg }, 500) : h === "rss" ? c.text(msg, 500) : (c as any).render(
+    <section>
+      <p>{msg}</p>
+    </section>,
+    { title: "error" },
+  );
 });
 
 app.get("/", async (c) => {
-  const p = parseInt(c.req.query("p") ?? "0");
-  const sortParam = c.req.query("sort");
-  const sort = sortParam === "new" ? "new" : sortParam === "top" ? "top" : "hot";
-  const name = c.get("name");
-  // Get user's private tag permissions (empty if not logged in)
+  const q = c.req.query(), p = +(q.p || 0), s = q.sort || "hot", name = c.get("name");
   const [viewer] = name ? await sql`select orgs_r, orgs_w from usr where name = ${name}` : [{ orgs_r: [], orgs_w: [] }];
-  const userOrgsR = viewer?.orgs_r ?? [];
-  // Extract filter params from query string
-  const filterTags = c.req.queries("tag") ?? [];
-  const filterOrgs = c.req.queries("org") ?? [];
-  const filterUsrs = c.req.queries("usr") ?? [];
-  // Get preset tags: user's writable private tags, then tags from their posts, then popular platform tags
-  const presetTags = await sql`
+  const rT = viewer?.orgs_r || [], wT = viewer?.orgs_w || [];
+  const tags = c.req.queries("tag") || [], orgs = c.req.queries("org") || [], usrs = c.req.queries("usr") || [];
+
+  const presets = await sql`
     select distinct on (tag) tag from (
-      select '*' || unnest(${viewer?.orgs_w ?? []}::text[]) as tag, 1 as pri
-      union all
-      select '#' || unnest(tags), 2 from com where created_by = ${name ?? ""} and parent_cid is null
-      union all
-      select '*' || unnest(orgs), 2 from com where created_by = ${name ?? ""} and parent_cid is null
-      union all
-      select '@' || unnest(usrs), 2 from com where created_by = ${name ?? ""} and parent_cid is null
-      union all
-      select '#' || unnest(tags), 3 from com where parent_cid is null
+      select '*' || unnest(${wT}::text[]) as tag, 1 as pri
+      union all select '#' || unnest(tags), 2 from com where created_by = ${name || ""} and parent_cid is null
+      union all select '*' || unnest(orgs), 2 from com where created_by = ${name || ""} and parent_cid is null
+      union all select '@' || unnest(usrs), 2 from com where created_by = ${name || ""} and parent_cid is null
+      union all select '#' || unnest(tags), 3 from com where parent_cid is null
     ) t order by tag, pri limit 20
   `;
-  const comments = await sql`
-    select
-      c.cid,
-      c.created_by,
-      c.body,
-      c.thumb,
-      c.tags,
-      c.orgs,
-      c.usrs,
-      c.created_at,
+
+  const items = await sql`
+    select c.*, 
       (select count(*) from com c_ where c_.parent_cid = c.cid) as comments,
       (select count(*) from com r where r.parent_cid = c.cid and char_length(r.body) = 1) as reaction_count,
-      (
-        select coalesce(jsonb_object_agg(body, cnt), '{}')
-        from (select body, count(*) as cnt from com where parent_cid = c.cid and char_length(body) = 1 group by body) r
-      ) as reaction_counts,
-      array(
-        select body from com where parent_cid = c.cid and char_length(body) = 1 and created_by = ${name ?? ""}
-      ) as user_reactions,
-      array(
-        select jsonb_build_object(
-          'body', c_.body,
-          'created_by', c_.created_by,
-          'cid', c_.cid,
-          'created_at', c_.created_at
-        )
-        from com c_
-        where c_.parent_cid = c.cid and char_length(c_.body) > 1
-        order by c_.created_at desc
-      ) as child_comments
-    from com c
-    where parent_cid is null
-      and c.orgs <@ ${userOrgsR}::text[]
-      and (c.usrs = '{}' or ${name ?? ""}::text = any(c.usrs))
-      ${filterTags.length > 0 ? sql`and c.tags @> ${filterTags}::text[]` : sql``}
-      ${filterOrgs.length > 0 ? sql`and c.orgs @> ${filterOrgs}::text[]` : sql``}
-      ${filterUsrs.length > 0 ? sql`and c.usrs @> ${filterUsrs}::text[]` : sql``}
-    ${
-    sort === "new"
-      ? sql`order by c.created_at desc`
-      : sort === "top"
-      ? sql`order by reaction_count desc, c.created_at desc`
-      : sql`order by (
-          c.created_at
-          + interval '2 hours' * ln(greatest(coalesce((c.c_reactions -> '▲')::int, 0) + 1, 1))
-          + interval '30 minutes' * ln(greatest(c.c_comments + 1, 1))
-          - c.c_flags * interval '6 hours'
-          - (c.tags @> ARRAY['bot'])::int * interval '4 hours'
-          + interval '1 second' * (hashtext(c.cid::text) % 120)
-        ) desc`
+      (select coalesce(jsonb_object_agg(body, cnt), '{}') from (select body, count(*) as cnt from com where parent_cid = c.cid and char_length(body) = 1 group by body) r) as reaction_counts,
+      array(select body from com where parent_cid = c.cid and char_length(body) = 1 and created_by = ${
+    name || ""
+  }) as user_reactions,
+      array(select jsonb_build_object('body', body, 'created_by', created_by, 'cid', cid, 'created_at', created_at) from com where parent_cid = c.cid and char_length(body) > 1 order by created_at desc) as child_comments
+    from com c where parent_cid is null and orgs <@ ${rT}::text[] and (usrs = '{}' or ${name || ""}::text = any(usrs))
+    ${tags.length ? sql`and tags @> ${tags}::text[]` : sql``}
+    ${orgs.length ? sql`and orgs @> ${orgs}::text[]` : sql``}
+    ${usrs.length ? sql`and usrs @> ${usrs}::text[]` : sql``}
+    order by ${
+    s === "new"
+      ? sql`created_at desc`
+      : s === "top"
+      ? sql`reaction_count desc, created_at desc`
+      : sql`created_at + interval '2 hours' * ln(greatest(coalesce((reaction_counts->>'▲')::int, 0)+1, 1)) desc`
   }
-    offset ${p * 25}
-    limit 25
+    offset ${p * 25} limit 25
   `;
-  // Prepopulate tags input from query params
-  const initialTags = [
-    ...(c.req.queries("tag") ?? []).map((t) => `#${t}`),
-    ...(c.req.queries("org") ?? []).map((t) => `*${t}`),
-    ...(c.req.queries("usr") ?? []).map((t) => `@${t}`),
-  ].join(" ");
-  const currentParams = new URL(c.req.url).searchParams;
-  return c.render(
+
+  const cur = new URL(c.req.url).searchParams, meta = buildFilterTitle(cur);
+  return (c as any).render(
     <>
       <section>
         <form method="post" action="/c">
           <textarea required name="body" rows={18} minlength={1} maxlength={1441}></textarea>
           <div style="display:flex;gap:0.5rem;justify-content:flex-end;align-items:center;">
-            <input
-              type="text"
-              name="tags"
-              value={initialTags}
-              placeholder="#linking #thinking *private @user"
-              style="flex:1;"
-            />
-            <button>create post</button>
+            <input type="text" name="tags" value={decodeLabels(cur)} placeholder="#link *org @user" style="flex:1;" />
+            <button type="submit">create post</button>
           </div>
-          {presetTags.length > 0 && (
+          {presets.length > 0 && (
             <div class="tag-presets">
-              {presetTags.map((t) => {
-                const prefix = (t.tag as string)[0];
-                const name = (t.tag as string).slice(1);
-                const param = prefix === "*" ? "org" : prefix === "@" ? "usr" : "tag";
-                return (
-                  <a href={buildAdditiveLink(currentParams, param, name)} class="tag-preset">
-                    {t.tag}
-                  </a>
-                );
-              })}
+              {presets.map((t: any) => (
+                <a
+                  key={t.tag}
+                  href={buildAdditiveLink(
+                    cur,
+                    (t.tag as string)[0] === "*" ? "org" : (t.tag as string)[0] === "@" ? "usr" : "tag",
+                    (t.tag as string).slice(1),
+                  )}
+                  class="tag-preset"
+                >
+                  {t.tag}
+                </a>
+              ))}
             </div>
           )}
         </form>
-        <ActiveFilters params={currentParams} basePath="/" />
-        {buildFilterTitle(currentParams) && <h2>{buildFilterTitle(currentParams)}</h2>}
+        <ActiveFilters params={cur} basePath="/" />
+        {meta && <h2>{meta}</h2>}
       </section>
       <section>
-        {!comments.length && (
-          <p>
-            no posts. <a href="/">go home.</a>
-          </p>
-        )}
-        <div class="posts">{comments.map((cm) => Post(cm, c.get("name"), currentParams))}</div>
+        {!items.length
+          ? (
+            <p>
+              no posts. <a href="/">go home.</a>
+            </p>
+          )
+          : <div class="posts">{items.map((i: any) => Post(i, name, cur))}</div>}
       </section>
       <section>
-        <div style="margin-top: 2rem;">
-          {!p || <a href={`/?${sort !== "hot" ? `sort=${sort}&` : ""}p=${p - 1}`}>prev</a>}
-          {!comments.length || <a href={`/?${sort !== "hot" ? `sort=${sort}&` : ""}p=${p + 1}`}>next</a>}
+        <div style="margin-top:2rem;">
+          {p > 0 && <a href={`/?${s !== "hot" ? `sort=${s}&` : ""}p=${p - 1}`}>prev</a>}
+          {items.length === 25 && <a href={`/?${s !== "hot" ? `sort=${s}&` : ""}p=${p + 1}`}>next</a>}
         </div>
       </section>
     </>,
-    { title: buildFilterTitle(currentParams) || undefined },
+    { title: meta || undefined },
   );
 });
 
 app.post("/login", async (c) => {
   const { email, password } = await form(c);
-  const [usr] = await sql`
-    select *, password = crypt(${password}, password) AS is_password_correct
-    from usr where email = ${email}
-  `;
-  if (!usr || !usr.is_password_correct) throw new HTTPException(401, { message: "Wrong credentials." });
-  if (!usr.email_verified_at && !(await getSignedCookie(c, cookieSecret, "name"))) {
-    const token = await emailToken(new Date(), usr.email);
-    await sendVerificationEmail(usr.email, token);
-  }
-  await setSignedCookie(c, "name", usr.name, cookieSecret);
-  const next = c.req.query("next");
-  if (next?.startsWith("/")) return c.redirect(next);
-  return c.redirect("/u");
+  const [u] =
+    await sql`select name, email, email_verified_at, (password = crypt(${password}, password)) as ok from usr where email=${email}`;
+  if (!u?.ok) throw new HTTPException(401);
+  if (!u.email_verified_at && !(await getSignedCookie(c, cookieSecret, "name")))
+    sendVerificationEmail(u.email, await emailToken(new Date(), u.email));
+  await setSignedCookie(c, "name", u.name, cookieSecret);
+  return c.redirect(c.req.query("next")?.startsWith("/") ? c.req.query("next")! : "/u");
 });
 
-app.get("/logout", (c) => {
-  deleteCookie(c, "name");
-  return c.redirect("/");
-});
-
-app.post("/logout", (c) => {
-  deleteCookie(c, "name");
-  return ok(c);
-});
+app.get("/logout", (c) => (deleteCookie(c, "name"), c.redirect("/")));
+app.post("/logout", (c) => (deleteCookie(c, "name"), ok(c)));
 
 app.get("/verify", async (c) => {
-  const email = c.req.query("email") ?? "";
-  const token = c.req.query("token") ?? "";
-  if (!(await validateEmailToken(token, email)))
-    throw new HTTPException(400, { message: "Invalid or expired token." });
-  await sql`
-    update usr
-    set email_verified_at = now()
-    where email_verified_at is null
-      and email = ${email}
-  `;
+  const e = c.req.query("email")!, t = c.req.query("token")!;
+  if (!(await validateEmailToken(t, e))) throw new HTTPException(400);
+  await sql`update usr set email_verified_at = now() where email_verified_at is null and email = ${e}`;
   return ok(c);
 });
 
-app.get("/forgot", (c) => {
-  return c.render(
+app.get("/forgot", (c) =>
+  (c as any).render(
     <section>
       <form method="post" action="/forgot">
-        <input required name="email" type="email" placeholder="hello@example.com" />
-        <p>
-          <button type="submit">send email</button>
-        </p>
+        <input required name="email" type="email" placeholder="email" />
+        <button type="submit">send</button>
       </form>
     </section>,
-    { title: "welcome" },
+    { title: "forgot" },
+  ));
+app.post("/forgot", async (c) => {
+  const { email } = await form(c), [u] = await sql`select email from usr where email = ${email}`;
+  if (u) sendVerificationEmail(u.email, await emailToken(new Date(), u.email));
+  return (c as any).render(
+    <section>
+      <p>Check your email for a link to set your password. (Wait 5m if it hasn't arrived.)</p>
+      <a href="/u">back</a>
+    </section>,
+    { title: "sent" },
   );
 });
 
-app.post("/forgot", async (c) => {
-  const { email } = await form(c);
-  const [usr] = await sql`select email from usr where email = ${email}`;
-  if (usr) {
-    const token = await emailToken(new Date(), usr.email);
-    Deno.env.get(`SENDGRID_API_KEY`) &&
-      (await sg
-        .send({
-          to: email,
-          from: "taylor@troe.sh",
-          subject: "Reset your password",
-          text: `` +
-            `Click here to reset your password: ` +
-            `https://ding.bar/password` +
-            `?email=${encodeURIComponent(email)}` +
-            `&token=${encodeURIComponent(token)}` +
-            `\n\n` +
-            `If you didn't request a password reset, please ignore this message.`,
-        })
-        .catch((err) => {
-          console.log(`/password?email=${email}&token=${token}`);
-          console.error(`Could not send password reset email to ${email}:`, err?.response?.body || err);
-        }));
-  }
-  return c.redirect("/");
-});
-
-app.get("/password", (c) => {
-  const email = c.req.query("email") ?? "";
-  const token = c.req.query("token") ?? "";
-  return c.render(
+app.get("/password", (c) =>
+  (c as any).render(
     <section>
       <form method="post" action="/password">
-        <input required name="token" value={token} type="hidden" readonly />
-        <input required name="email" value={email} readonly />
-        <input required name="password" type="password" placeholder="password1!" />
-        <p>
-          <button type="submit">set password</button>
-        </p>
+        <input name="token" value={c.req.query("token")} type="hidden" />
+        <input name="email" value={c.req.query("email")} readonly />
+        <input name="password" type="password" placeholder="new password" />
+        <button type="submit">set</button>
       </form>
     </section>,
-    { title: "welcome" },
-  );
-});
-
+    { title: "password" },
+  ));
 app.post("/password", async (c) => {
   const { email, token, password } = await form(c);
-  if (!(await validateEmailToken(token, email)))
-    throw new HTTPException(400, { message: "Invalid or expired token." });
-  const [usr] = await sql`
-    update usr
-    set password = crypt(${password}, gen_salt('bf', 8)), email_verified_at = coalesce(email_verified_at, now())
-    where email = ${email}
-    returning name
-  `;
-  if (usr) await setSignedCookie(c, "name", usr.name, cookieSecret);
+  if (!(await validateEmailToken(token, email))) throw new HTTPException(400);
+  const [u] =
+    await sql`update usr set password = crypt(${password}, gen_salt('bf', 8)), email_verified_at = coalesce(email_verified_at, now()) where email = ${email} returning name`;
+  if (u) await setSignedCookie(c, "name", u.name, cookieSecret);
   return ok(c);
 });
 
 app.post("/invite", authed, async (c) => {
-  const usr = {
-    name: Math.random().toString().slice(2),
-    email: (await form(c)).email,
-    bio: "coming soon",
-    password: null,
-    invited_by: c.get("name")!,
-  };
-  if ((await sql`select count(*) as "count" from usr where invited_by = ${c.get("name")!}`)?.[0]?.count >= 4)
-    throw new HTTPException(400, { message: "No more invites remaining." });
-  const [newUsr] = await sql`
-    with usr_ as (insert into usr ${sql(usr)} on conflict do nothing returning *)
-    select name, email from usr_
-  `;
-  if (newUsr?.email) {
-    const token = await emailToken(new Date(), newUsr.email);
-    await sendVerificationEmail(newUsr.email, token);
-  }
+  const e = (await form(c)).email, n = Math.random().toString(36).slice(2);
+  if ((await sql`select count(*) from usr where invited_by = ${c.get("name")!}`)[0].count >= 4)
+    throw new HTTPException(400);
+  const [u] = await sql`insert into usr (name, email, bio, invited_by) values (${n}, ${e}, '...', ${c.get(
+    "name",
+  )!}) on conflict do nothing returning email`;
+  if (u) sendVerificationEmail(u.email, await emailToken(new Date(), u.email));
   return ok(c);
 });
 
 // TODO: Remove this when we want to disallow self-signups.
-app.get("/signup", async (c) => {
-  const ok = c.req.query("ok") !== undefined;
-  const error = c.req.query("error");
-  return c.render(
+app.get("/signup", (c) =>
+  (c as any).render(
     <section>
-      {ok && <p style="color:green;">Check your email for a verification link.</p>}
-      {error === "conflict" && <p style="color:red;">Username or email already taken.</p>}
-      <form method="post" action="/signup" style="display:flex;flex-direction:row;">
-        <input type="text" name="name" placeholder="ivan_grease" />
-        <input type="email" name="email" placeholder="hello@example.com" />
-        <button>verify email</button>
+      <h2>sign up</h2>
+      {c.req.query("ok") !== undefined && <p>Check your email for a verification link.</p>}
+      <form method="post">
+        <input type="text" name="name" placeholder="username" required />
+        <input type="email" name="email" placeholder="email" required />
+        <button type="submit">create account</button>
       </form>
     </section>,
-    { title: "your account" },
-  );
-});
+    { title: "signup" },
+  ));
 
 // TODO: Remove this when we want to disallow self-signups.
 app.post("/signup", async (c) => {
@@ -897,7 +627,7 @@ app.get("/u", async (c) => {
         `;
         if (usr?.is_password_correct) {
           name = usr.name;
-          c.set("name", name);
+          c.set("name", name!);
         } else if (authHeader) {
           // Invalid Basic Auth credentials provided - reject
           throw new HTTPException(401, { message: "Invalid credentials." });
@@ -912,36 +642,31 @@ app.get("/u", async (c) => {
 
   if (!name) {
     const action = next ? `/login?next=${encodeURIComponent(next)}` : "/login";
-    return c.render(
+    return (c as any).render(
       <section>
         <h2>login</h2>
         <form method="post" action={action}>
           <input type="email" name="email" placeholder="email" required />
           <input type="password" name="password" placeholder="password" required />
-          <button>login</button>
+          <button type="submit">login</button>
         </form>
-        <p>
+        <p style="font-size:0.875rem;margin-top:1rem;">
           <a href="/forgot">forgot password?</a>
+          {" • "}
+          <a href="/signup">sign up</a>
         </p>
-
-        <h2>sign up</h2>
-        <form method="post" action="/signup">
-          <input type="text" name="name" placeholder="username" required />
-          <input type="email" name="email" placeholder="email" required />
-          <button>create account</button>
-        </form>
       </section>,
       { title: "login" },
     );
   }
 
   const [usr] = await sql`
-    select name, email, bio, invited_by, password is not null as password, orgs_r, orgs_w
+    select name, bio, invited_by, password, orgs_r, orgs_w
     from usr where name = ${name}
   `;
   if (!usr) return notFound();
   if (!usr.password) return c.redirect("/password");
-  return c.render(
+  return (c as any).render(
     <>
       <section>{User(usr, name)}</section>
       <section>
@@ -949,7 +674,7 @@ app.get("/u", async (c) => {
           <textarea name="bio" rows={6} placeholder="bio">
             {usr.bio}
           </textarea>
-          <button>save</button>
+          <button type="submit">save</button>
         </form>
       </section>
     </>,
@@ -977,12 +702,12 @@ app.get("/u/:name", async (c) => {
     case "api":
       return c.json(usr, 200);
     default:
-      return c.render(<section>{User(usr, viewerName)}</section>, { title: usr.name });
+      return (c as any).render(<section>{User(usr, viewerName)}</section>, { title: usr.name });
   }
 });
 
 app.get("/org/new", authed, (c) =>
-  c.render(
+  (c as any).render(
     <section>
       <h2>
         <span style="margin-right: 0.5rem;">▢</span>create an organization
@@ -1052,7 +777,7 @@ app.get("/org/success", authed, async (c) => {
   const { orgName, creatorName } = session.metadata!;
   const subId = session.subscription as string;
 
-  await sql.begin(async (sql) => {
+  await sql.begin(async (sql: any) => {
     // @ts-ignore: postgres.js transaction types
     await sql`
       insert into org (name, created_by, stripe_sub_id)
@@ -1072,15 +797,15 @@ app.get("/org/success", authed, async (c) => {
 
 app.get("/org/:name", async (c) => {
   const [org, viewerOrgs, members] = await Promise.all([
-    sql`select * from org where name = ${c.req.param("name")}`.then((r) => r[0]),
-    sql`select orgs_r from usr where name = ${c.get("name") ?? ""}`.then((r) => r[0]?.orgs_r ?? []),
+    sql`select * from org where name = ${c.req.param("name")}`.then((r: any) => r[0]),
+    sql`select orgs_r from usr where name = ${c.get("name") ?? ""}`.then((r: any) => r[0]?.orgs_r ?? []),
     sql`select name from usr where ${c.req.param("name")} = any(orgs_r)`,
   ]);
   if (!org) return notFound();
   if (!viewerOrgs.includes(org.name)) throw new HTTPException(403, { message: "Access denied" });
 
   const viewer = c.get("name") ?? "";
-  return c.render(
+  return (c as any).render(
     <section>
       <h2>*{org.name}</h2>
       <p style="font-size: 0.875rem; opacity: 0.5; margin: 0.5rem 0 1.5rem 0;">
@@ -1092,7 +817,7 @@ app.get("/org/:name", async (c) => {
             members ({members.length})
           </h3>
           <div style="display: flex; flex-direction: column; gap: 0.5rem;">
-            {members.map((m) => (
+            {members.map((m: any) => (
               <div style="display: flex; align-items: center; justify-content: space-between; font-size: 0.875rem;">
                 <a href={`/u/${m.name}`}>@{m.name}</a>
                 {org.created_by === viewer && m.name !== viewer && (
@@ -1142,7 +867,7 @@ app.get("/org/:name", async (c) => {
 
 app.post("/org/:name/invite", authed, async (c) => {
   const [org, { name: paramName }] = await Promise.all([
-    sql`select * from org where name = ${c.req.param("name")}`.then((r) => r[0]),
+    sql`select * from org where name = ${c.req.param("name")}`.then((r: any) => r[0]),
     form(c),
   ]);
   if (!org) return notFound();
@@ -1160,7 +885,7 @@ app.post("/org/:name/invite", authed, async (c) => {
 
 app.post("/org/:name/remove", authed, async (c) => {
   const [org, { name: paramName }] = await Promise.all([
-    sql`select * from org where name = ${c.req.param("name")}`.then((r) => r[0]),
+    sql`select * from org where name = ${c.req.param("name")}`.then((r: any) => r[0]),
     form(c),
   ]);
   if (!org) return notFound();
@@ -1185,7 +910,7 @@ app.post("/api/stripe-webhook", async (c) => {
   let event;
   try {
     event = await stripe.webhooks.constructEventAsync(body, sig!, Deno.env.get("STRIPE_WEBHOOK_SECRET")!);
-  } catch (err) {
+  } catch (_err) {
     throw new HTTPException(400, { message: `Webhook Error` });
   }
 
@@ -1193,7 +918,7 @@ app.post("/api/stripe-webhook", async (c) => {
     const sub = event.data.object;
     const [org] = await sql`select name from org where stripe_sub_id = ${sub.id}`;
     if (org) {
-      await sql.begin(async (sql) => {
+      await sql.begin(async (sql: any) => {
         // @ts-ignore: postgres.js transaction types
         await sql`update usr set orgs_r = array_remove(orgs_r, ${org.name}), orgs_w = array_remove(orgs_w, ${org.name})`;
         // @ts-ignore: postgres.js transaction types
@@ -1205,26 +930,14 @@ app.post("/api/stripe-webhook", async (c) => {
 });
 
 app.get("/c/:cid/delete", authed, async (c) => {
-  const cid = c.req.param("cid");
-  const [comment] = await sql`
-    select cid, body, parent_cid, created_by
-    from com
-    where cid = ${cid} and created_by = ${c.get("name")!}
-  `;
-  if (!comment) throw new HTTPException(404, { message: "Comment not found or not yours." });
-  if (comment.body === "") throw new HTTPException(400, { message: "Already deleted." });
-  return c.render(
+  const [cm] = await sql`select body from com where cid = ${c.req.param("cid")} and created_by = ${c.get("name")!}`;
+  if (!cm) return notFound();
+  return (c as any).render(
     <section>
-      <h2>Delete this post?</h2>
-      <pre style="margin: 1rem 0; padding: 1rem; background: #f5f5f5; color: #222;">
-        {comment.body.length > 200 ? comment.body.slice(0, 200) + "…" : comment.body}
-      </pre>
-      <p style="opacity: 0.8;">This will show "[deleted by author]" but preserve any replies.</p>
-      <form method="post" action={`/c/${cid}/delete`}>
-        <div style="display: flex; gap: 1rem;">
-          <button type="submit">confirm delete</button>
-          <a href={`/c/${cid}`}>cancel</a>
-        </div>
+      <h2>Delete?</h2>
+      <pre>{cm.body.slice(0, 200)}</pre>
+      <form method="post">
+        <button type="submit">confirm</button> <a href={`/c/${c.req.param("cid")}`}>cancel</a>
       </form>
     </section>,
     { title: "delete" },
@@ -1232,384 +945,173 @@ app.get("/c/:cid/delete", authed, async (c) => {
 });
 
 app.post("/c/:cid/delete", authed, async (c) => {
-  const cid = c.req.param("cid");
-  const [comment] = await sql`
-    update com
-    set body = ''
-    where cid = ${cid} and created_by = ${c.get("name")!} and body <> ''
-    returning parent_cid
-  `;
-  if (!comment) throw new HTTPException(404, { message: "Comment not found, not yours, or already deleted." });
-  return c.redirect(comment.parent_cid ? `/c/${comment.parent_cid}` : "/");
+  const [cm] = await sql`update com set body = '' where cid = ${c.req.param("cid")} and created_by = ${c.get(
+    "name",
+  )!} returning parent_cid`;
+  return c.redirect(cm?.parent_cid ? `/c/${cm.parent_cid}` : "/");
 });
 
-app.post("/c/:parent_cid?", async (c) => {
-  let name = c.get("name");
-
-  // Support Basic Auth for bots
-  if (!name) {
-    const authHeader = c.req.header("Authorization");
-    if (authHeader?.startsWith("Basic ")) {
-      const [email, password] = atob(authHeader.slice(6)).split(":");
-      const [user] = await sql`
-        SELECT name FROM usr
-        WHERE email = ${email}
-        AND password = crypt(${password}, password)
-      `;
-      if (user) name = user.name;
+app.post("/c/:p?", async (c) => {
+  const pid = c.req.param("p") || null;
+  let n = c.get("name");
+  if (!n) {
+    const a = c.req.header("Authorization");
+    if (a?.startsWith("Basic ")) {
+      const [u, p] = atob(a.slice(6)).split(":"),
+        [usr] = await sql`select name from usr where email=${u} and password=crypt(${p}, password)`;
+      if (usr) n = usr.name;
     }
   }
+  if (!n) return c.redirect(`/u?next=${encodeURIComponent(pid ? `/c/${pid}` : "/")}`);
 
-  if (!name) {
-    const parent_cid = c.req.param("parent_cid");
-    const returnUrl = parent_cid ? `/c/${parent_cid}` : "/";
-    return c.redirect(`/u?next=${encodeURIComponent(returnUrl)}`);
-  }
-
-  const formData = await c.req.formData();
-  const parent_cid = c.req.param("parent_cid") ?? null;
-
-  // Get user's write permissions
-  const [user] = await sql`select orgs_w from usr where name = ${name}`;
-  const userOrgsW = user?.orgs_w ?? [];
-
+  const f = await c.req.formData(),
+    b = f.get("body")?.toString() || "",
+    [usr] = await sql`select orgs_w, orgs_r from usr where name = ${n}`;
   let tags: string[], orgs: string[], usrs: string[];
 
-  if (parent_cid) {
-    // Child comment: inherit all tags from parent
-    const [parent] = await sql`select tags, orgs, usrs from com where cid = ${parent_cid}`;
-    if (!parent) throw new HTTPException(404, { message: "Parent comment not found." });
-    tags = parent.tags;
-    orgs = parent.orgs;
-    usrs = parent.usrs;
-
-    // Check user can read (and thus reply to) posts with these private tags
-    const [viewer] = await sql`select orgs_r from usr where name = ${name}`;
-    const userOrgsR = viewer?.orgs_r ?? [];
-    const canRead = orgs.every((t: string) => userOrgsR.includes(t));
-    const canSeeUsr = usrs.length === 0 || usrs.includes(name);
-    if (!canRead || !canSeeUsr) throw new HTTPException(403, { message: "Cannot reply to this post." });
+  if (pid) {
+    const [prm] = await sql`select tags, orgs, usrs from com where cid = ${pid}`;
+    if (!prm || !prm.orgs.every((t: any) => usr.orgs_r.includes(t)) || (prm.usrs.length && !prm.usrs.includes(n)))
+      throw new HTTPException(403);
+    tags = prm.tags;
+    orgs = prm.orgs;
+    usrs = prm.usrs;
   } else {
-    // Root post: parse labels from input
-    const labelsInput = formData.get("tags")?.toString() ?? "";
-    const parsed = parseLabels(labelsInput);
-    tags = parsed.tag;
-    orgs = parsed.org;
-    usrs = parsed.usr;
-
-    if (!tags.length) throw new HTTPException(400, { message: "Must include at least one #public tag." });
-
-    // Check user can write all specified private tags
-    const canWrite = orgs.every((t) => userOrgsW.includes(t));
-    if (!canWrite) throw new HTTPException(403, { message: "You don't have permission to use those private tags." });
+    const l = parseLabels(f.get("tags")?.toString() || "");
+    if (!l.tag.length || !l.org.every((t) => usr.orgs_w.includes(t))) throw new HTTPException(403);
+    tags = l.tag;
+    orgs = l.org;
+    usrs = l.usr;
   }
 
-  if (
-    (
-      await sql`select true from com where created_by = ${name} and created_at > now() - interval '1 day' having count(*) > ${MAX_POSTS_PER_DAY}`
-    ).length
-  ) {
-    throw new HTTPException(400, {
-      message: `You've reached your allotted limit of ${MAX_POSTS_PER_DAY} comments per 24 hours.`,
-    });
+  const thumb = pid
+    ? null
+    : (extractImageUrl(b) || (extractFirstUrl(b) ? await resolveThumbnail(extractFirstUrl(b)!) : null));
+  const [cm] =
+    await sql`insert into com (parent_cid, created_by, body, tags, orgs, usrs, thumb) values (${pid}, ${n}, ${b}, ${tags}, ${orgs}, ${usrs}, ${thumb}) returning cid`;
+
+  if (pid) {
+    if (isReaction(b))
+      await sql`update com set c_reactions = c_reactions || hstore(${b}, (coalesce((c_reactions->${b})::int,0)+1)::text) where cid = ${pid}`;
+    else {b === "flag"
+        ? await sql`update com set c_flags = c_flags + 1 where cid = ${pid}`
+        : await sql`update com set c_comments = c_comments + 1 where cid = ${pid}`;}
   }
 
-  const body = formData.get("body")?.toString() ?? "";
-
-  // Extract thumbnail for root posts only (not replies)
-  let thumb: string | null = null;
-  if (!parent_cid) {
-    const imageUrl = extractImageUrl(body);
-    if (imageUrl) thumb = imageUrl;
-    else {
-      const url = extractFirstUrl(body);
-      if (url) thumb = await resolveThumbnail(url);
-    }
-  }
-
-  const com = {
-    parent_cid,
-    created_by: name,
-    body,
-    tags,
-    orgs,
-    usrs,
-    thumb,
-  };
-
-  const [comment] = await sql`insert into com ${sql(com)} returning cid`;
-
-  // Update parent's denormalized counts
-  if (parent_cid) {
-    if (isReaction(body))
-      await sql`update com set c_reactions = c_reactions || hstore(${body}, (coalesce((c_reactions -> ${body})::int, 0) + 1)::text) where cid = ${parent_cid}`;
-    else if (body === "flag") await sql`update com set c_flags = c_flags + 1 where cid = ${parent_cid}`;
-    else await sql`update com set c_comments = c_comments + 1 where cid = ${parent_cid}`;
-  }
-
-  if (!parent_cid) return c.redirect(`/c/${comment.cid}`);
-  const [parent] = await sql`select parent_cid from com where cid = ${parent_cid}`;
-  // Show parent comment in grandparent context, or just the parent if it's top-level
-  return c.redirect(parent?.parent_cid ? `/c/${parent.parent_cid}#${parent_cid}` : `/c/${parent_cid}#${comment.cid}`);
+  const [pr] = pid ? await sql`select parent_cid from com where cid = ${pid}` : [null];
+  return c.redirect(pid ? (pr?.parent_cid ? `/c/${pr.parent_cid}#${pid}` : `/c/${pid}#${cm.cid}`) : `/c/${cm.cid}`);
 });
 
 app.get("/c/:cid?", async (c) => {
-  const p = parseInt(c.req.query("p") ?? "0");
-  const limit = Math.min(Math.max(parseInt(c.req.query("limit") ?? "25"), 1), 100);
-  const sortParam = c.req.query("sort");
-  const sort = sortParam === "new" ? "new" : sortParam === "top" ? "top" : "hot";
-  const cid = c.req.param("cid");
-  const name = c.get("name");
-  // Get user's private tag permissions (empty if not logged in)
-  const [viewer] = name ? await sql`select orgs_r from usr where name = ${name}` : [{ orgs_r: [] }];
-  const userOrgsR = viewer?.orgs_r ?? [];
-  // Label filters (multiple allowed)
-  const tagFilters: string[] = c.req.queries("tag") ?? [];
-  const orgFilters: string[] = c.req.queries("org") ?? [];
-  const usrFilters: string[] = c.req.queries("usr") ?? []; // Posts BY this author
-  const mentionFilters: string[] = c.req.queries("mention") ?? []; // Posts that @mention this user
-  const wwwFilters: string[] = c.req.queries("www") ?? [];
-  const repliesToFilter = c.req.query("replies_to");
-  const reactionsFilter = c.req.query("reactions");
-  const commentsFilter = c.req.query("comments");
-  const comments = await sql`
-    select
-      c.created_by,
-      c.cid,
-      c.parent_cid,
-      c.body,
-      c.thumb,
-      c.tags,
-      c.orgs,
-      c.usrs,
-      c.created_at,
-      (select count(*) from com c_ where c_.parent_cid = c.cid) as comments,
+  const q = c.req.query(),
+    cid = c.req.param("cid"),
+    n = c.get("name"),
+    s = q.sort || "hot",
+    p = +(q.p || 0),
+    lim = Math.min(+(q.limit || 25), 100);
+  const [viewer] = n ? await sql`select orgs_r from usr where name = ${n}` : [{ orgs_r: [] }];
+  const rT = viewer?.orgs_r || [],
+    tags = c.req.queries("tag") || [],
+    orgs = c.req.queries("org") || [],
+    usrs = c.req.queries("usr") || [],
+    mens = c.req.queries("mention") || [],
+    www = c.req.queries("www") || [];
+
+  const items = await sql`
+    select c.*, (select count(*) from com c_ where c_.parent_cid = c.cid) as comments,
       (select count(*) from com r where r.parent_cid = c.cid and char_length(r.body) = 1) as reaction_count,
-      (
-        select coalesce(jsonb_object_agg(body, cnt), '{}')
-        from (select body, count(*) as cnt from com where parent_cid = c.cid and char_length(body) = 1 group by body) r
-      ) as reaction_counts,
-      array(
-        select body from com where parent_cid = c.cid and char_length(body) = 1 and created_by = ${name ?? ""}
-      ) as user_reactions,
-      array(
-        select jsonb_build_object(
-          'body', c_.body,
-          'created_by', c_.created_by,
-          'cid', c_.cid,
-          'created_at', c_.created_at,
-          'tags', c_.tags,
-          'orgs', c_.orgs,
-          'usrs', c_.usrs,
-          'reaction_counts', (
-            select coalesce(jsonb_object_agg(body, cnt), '{}')
-            from (select body, count(*) as cnt from com where parent_cid = c_.cid and char_length(body) = 1 group by body) r
-          ),
-          'user_reactions', array(
-            select body from com where parent_cid = c_.cid and char_length(body) = 1 and created_by = ${name ?? ""}
-          ),
-          'child_comments', array(
-            select jsonb_build_object(
-              'body', c__.body,
-              'created_by', c__.created_by,
-              'cid', c__.cid,
-              'created_at', c__.created_at,
-              'tags', c__.tags,
-              'orgs', c__.orgs,
-              'usrs', c__.usrs,
-              'reaction_counts', (
-                select coalesce(jsonb_object_agg(body, cnt), '{}')
-                from (select body, count(*) as cnt from com where parent_cid = c__.cid and char_length(body) = 1 group by body) r
-              ),
-              'user_reactions', array(
-                select body from com where parent_cid = c__.cid and char_length(body) = 1 and created_by = ${name ?? ""}
-              ),
-              'child_comments_ids', array(
-                select c___.cid
-                from com c___
-                where c___.parent_cid = c__.cid
-                order by c___.created_at desc
-              )
-            )
-            from com c__
-            where c__.parent_cid = c_.cid and char_length(c__.body) > 1
-            order by c__.created_at desc
-          )
-        )
-        from com c_
-        where c_.parent_cid = c.cid and char_length(c_.body) > 1
-        order by c_.created_at desc
-      ) as child_comments
-    from com c
-    where ${
+      (select coalesce(jsonb_object_agg(body, cnt), '{}') from (select body, count(*) as cnt from com where parent_cid = c.cid and char_length(body) = 1 group by body) r) as reaction_counts,
+      array(select body from com where parent_cid = c.cid and char_length(body) = 1 and created_by = ${
+    n || ""
+  }) as user_reactions,
+      array(select jsonb_build_object('body', body, 'created_by', created_by, 'cid', cid, 'created_at', created_at, 'tags', tags, 'orgs', orgs, 'usrs', usrs) from com where parent_cid = c.cid and char_length(body) > 1 order by created_at desc) as child_comments
+    from com c where ${
     cid
-      ? sql`cid = ${cid ?? null}`
-      : reactionsFilter || repliesToFilter || commentsFilter
-      ? sql`c.parent_cid is not null`
-      : sql`c.parent_cid is null`
+      ? sql`cid = ${cid}`
+      : (q.reactions || q.replies_to || q.comments ? sql`parent_cid is not null` : sql`parent_cid is null`)
   }
-      ${usrFilters.length ? sql`and c.created_by = any(${usrFilters}::citext[])` : sql``}
-      and c.tags @> ${tagFilters}::text[]
-      and c.orgs <@ ${userOrgsR}::text[]
-      and (c.usrs = '{}' or ${name ?? ""}::text = any(c.usrs))
-    ${orgFilters.length ? sql`and c.orgs && ${orgFilters}::text[]` : sql``}
-    ${mentionFilters.length ? sql`and c.usrs && ${mentionFilters}::text[]` : sql``}
-    ${
-    wwwFilters.length
-      ? sql`and c.body ~* ${wwwFilters.map((d) => d.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")).join("|")}`
-      : sql``
+    ${usrs.length ? sql`and created_by = any(${usrs}::citext[])` : sql``}
+    and tags @> ${tags}::text[] and orgs <@ ${rT}::text[] and (usrs = '{}' or ${n || ""}::text = any(usrs))
+    ${orgs.length ? sql`and orgs && ${orgs}::text[]` : sql``}
+    ${mens.length ? sql`and usrs && ${mens}::text[]` : sql``}
+    ${www.length ? sql`and body ~* ${www.join("|")}` : sql``}
+    ${q.replies_to ? sql`and parent_cid in (select cid from com where created_by = ${q.replies_to})` : sql``}
+    ${q.reactions ? sql`and char_length(body) = 1` : sql``}
+    ${q.comments ? sql`and char_length(body) > 1` : sql``}
+    ${q.q ? sql`and to_tsvector('english', body) @@ plainto_tsquery('english', ${q.q})` : sql``}
+    order by ${
+    s === "new" ? sql`created_at desc` : s === "top" ? sql`reaction_count desc, created_at desc` : sql`created_at desc`
   }
-    ${
-    repliesToFilter
-      ? sql`and c.parent_cid in (select cid from com where created_by = ${repliesToFilter}) and char_length(c.body) > 1`
-      : sql``
-  }
-    ${reactionsFilter ? sql`and char_length(c.body) = 1` : sql``}
-    ${commentsFilter ? sql`and char_length(c.body) > 1` : sql``}
-    ${
-    c.req.query("q")
-      ? sql`and to_tsvector('english', body) @@ plainto_tsquery('english', ${c.req.query("q") ?? ""}::text)`
-      : sql``
-  }
-    ${
-    c.req.query("q")
-      ? sql`and to_tsvector('english', body) @@ plainto_tsquery('english', ${c.req.query("q") ?? ""}::text)`
-      : sql``
-  }
-    ${
-    sort === "new"
-      ? sql`order by c.created_at desc`
-      : sort === "top"
-      ? sql`order by reaction_count desc, c.created_at desc`
-      : sql`order by (
-          c.created_at
-          + interval '2 hours' * ln(greatest(coalesce((c.c_reactions -> '▲')::int, 0) + 1, 1))
-          + interval '30 minutes' * ln(greatest(c.c_comments + 1, 1))
-          - c.c_flags * interval '6 hours'
-          - (c.tags @> ARRAY['bot'])::int * interval '4 hours'
-          + interval '1 second' * (hashtext(c.cid::text) % 120)
-        ) desc`
-  }
-    offset ${p * limit}
-    limit ${limit}
+    offset ${p * lim} limit ${lim}
   `;
-  switch (host(c)) {
-    case "api":
-      return c.json(comments, 200);
-    case "rss":
-      return c.text(
-        `<?xml version="1.0" encoding="UTF-8"?>
-<rss version="2.0">
-  <channel>
-    <title>ding</title>
-    <link>https://ding.bar/</link>
-    <description>Simple social commenting</description>
-${
-          comments
-            .map(
-              (cm: Record<string, any>) =>
-                `    <item>
-      <title>${
-                  escapeXml(
-                    cm.body
-                      .trim()
-                      .replace(/[\r\n\t].+$/, "")
-                      .slice(0, 60),
-                  )
-                }</title>
-      <link>https://ding.bar/c/${cm.cid}</link>
-      <pubDate>${new Date(cm.created_at).toUTCString()}</pubDate>
-    </item>`,
-            )
-            .join("\n")
-        }
-  </channel>
-</rss>`,
-        200,
-        { "Content-Type": "application/rss+xml" },
-      );
-    default: {
-      if (!cid) {
-        const paginationParams = (page: number) => {
-          const params = new URLSearchParams();
-          if (c.req.query("q")) params.set("q", c.req.query("q")!);
-          for (const tag of c.req.queries("tag") ?? []) params.append("tag", tag);
-          for (const org of c.req.queries("org") ?? []) params.append("org", org);
-          for (const usr of c.req.queries("usr") ?? []) params.append("usr", usr);
-          for (const mention of c.req.queries("mention") ?? []) params.append("mention", mention);
-          for (const www of c.req.queries("www") ?? []) params.append("www", www);
-          if (c.req.query("replies_to")) params.set("replies_to", c.req.query("replies_to")!);
-          if (c.req.query("reactions")) params.set("reactions", c.req.query("reactions")!);
-          if (c.req.query("comments")) params.set("comments", c.req.query("comments")!);
-          if (c.req.query("sort")) params.set("sort", c.req.query("sort")!);
-          params.set("p", String(page));
-          return params.toString();
-        };
-        const currentParams = new URL(c.req.url).searchParams;
-        const searchValue = decodeLabels(currentParams);
-        return c.render(
-          <>
-            <section>
-              <form id="search-form" method="get" action="/c" style="display:flex;flex-direction:row;gap:0.5rem;">
-                <input
-                  name="search"
-                  value={searchValue}
-                  placeholder="#tag *org @user ~domain text"
-                  style="width:100%;"
-                />
-                <button>search</button>
-              </form>
-              <ActiveFilters params={currentParams} />
-              {buildFilterTitle(currentParams) && <h2>{buildFilterTitle(currentParams)}</h2>}
-              <SortToggle sort={sort} baseHref={`/c?${paginationParams(0).replace(/&?p=0/, "")}`} title="results" />
-            </section>
-            <section>
-              <div class="posts">{comments.map((cm) => Post(cm, c.get("name"), currentParams))}</div>
-            </section>
-            <section>
-              <div style="margin-top: 2rem;">
-                {!p || <a href={`/c?${paginationParams(p - 1)}`}>prev</a>}
-                {!comments.length || <a href={`/c?${paginationParams(p + 1)}`}>next</a>}
-              </div>
-            </section>
-          </>,
-          { title: buildFilterTitle(currentParams) || "search" },
-        );
-      } else {
-        const post = comments?.[0];
-        if (!post) return notFound();
-        const replies = post.child_comments?.filter((c: Record<string, any>) => !isReaction(c.body)) ?? [];
-        if (sort === "top") {
-          replies.sort((a: Record<string, any>, b: Record<string, any>) => {
-            const aReactions = (a.child_comments ?? []).filter((c: Record<string, any>) => isReaction(c.body)).length;
-            const bReactions = (b.child_comments ?? []).filter((c: Record<string, any>) => isReaction(c.body)).length;
-            return bReactions - aReactions || new Date(b.created_at).getTime() - new Date(a.created_at).getTime();
-          });
-        }
-        return c.render(
-          <>
-            <section>
-              {Comment({
-                ...post,
-                child_comments: (post.child_comments ?? []).filter((c: { body: string }) => isReaction(c.body)),
-              }, c.get("name"))}
-            </section>
-            <section>
-              <form method="post" action={`/c/${post.cid}`}>
-                <textarea required name="body" rows={18} minlength={1} maxlength={1441}></textarea>
-                <button>reply</button>
-              </form>
-              <SortToggle sort={sort} baseHref={`/c/${cid}`} title="comments" />
-            </section>
-            <section>{replies.map((cm: Record<string, any>) => Comment(cm, c.get("name")))}</section>
-          </>,
-          { title: post.body?.slice(0, 16) },
-        );
-      }
-    }
+
+  if (host(c) === "api") return c.json(items);
+  if (host(c) === "rss") {
+    return c.text(
+      `<?xml version="1.0"?><rss version="2.0"><channel><title>ding</title><link>https://ding.bar/</link>${
+        items.map((i: any) =>
+          `<item><title>${escapeXml(i.body.slice(0, 60))}</title><link>https://ding.bar/c/${i.cid}</link><pubDate>${
+            new Date(i.created_at).toUTCString()
+          }</pubDate></item>`
+        ).join("")
+      }</channel></rss>`,
+      200,
+      { "Content-Type": "application/rss+xml" },
+    );
   }
+
+  if (!cid) {
+    const cur = new URL(c.req.url).searchParams, meta = buildFilterTitle(cur);
+    return (c as any).render(
+      <>
+        <section>
+          <form id="search-form" method="get" action="/c" style="display:flex;gap:0.5rem;">
+            <input name="search" value={decodeLabels(cur)} style="width:100%;" />
+            <button type="submit">search</button>
+          </form>
+          <ActiveFilters params={cur} />
+          {meta && <h2>{meta}</h2>}
+          <SortToggle sort={s} baseHref={`/c?${cur}`} title="results" />
+        </section>
+        <section>
+          <div class="posts">{items.map((i: any) => Post(i, n, cur))}</div>
+        </section>
+        <section>
+          <div style="margin-top:2rem;">
+            {p > 0 && (
+              <a href={`/c?${new URLSearchParams({ ...Object.fromEntries(cur), p: (p - 1).toString() })}`}>prev</a>
+            )}
+            {items.length === lim && (
+              <a href={`/c?${new URLSearchParams({ ...Object.fromEntries(cur), p: (p + 1).toString() })}`}>next</a>
+            )}
+          </div>
+        </section>
+      </>,
+      { title: meta || "search" },
+    );
+  }
+
+  const post = items[0];
+  if (!post) return notFound();
+  return (c as any).render(
+    <>
+      <section>
+        {Comment({ ...post, child_comments: (post.child_comments || []).filter((r: any) => isReaction(r.body)) }, n)}
+      </section>
+      <section>
+        <form method="post" action={`/c/${post.cid}`}>
+          <textarea required name="body" rows={18}></textarea>
+          <button type="submit">reply</button>
+        </form>
+        <SortToggle sort={s} baseHref={`/c/${cid}`} title="comments" />
+      </section>
+      <section>
+        {(post.child_comments || []).filter((r: any) => !isReaction(r.body)).map((r: any) => Comment(r, n))}
+      </section>
+    </>,
+    { title: post.body.slice(0, 16) },
+  );
 });
 
 app.use("/*", serveStatic({ root: "./public" }));
-
 export default app;
