@@ -780,8 +780,7 @@ app.get("/org/success", authed, async (c) => {
   await sql.begin(async (sql: any) => {
     // @ts-ignore: postgres.js transaction types
     await sql`
-      insert into org (name, created_by, stripe_sub_id)
-      values (${orgName}, ${creatorName}, ${subId})
+      insert into org ${sql({ name: orgName, created_by: creatorName, stripe_sub_id: subId })}
     `;
     // @ts-ignore: postgres.js transaction types
     await sql`
