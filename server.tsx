@@ -42,7 +42,7 @@ export const parseLabels = (input: string): Labels => {
   const labels: Labels = { tag: [], org: [], usr: [], www: [], text: "" };
   input.split(/\s+/).filter(Boolean).forEach((t) => {
     const k = PFX[t[0]];
-    if (k) (labels[k] as string[]).push(t.slice(1).toLowerCase());
+    if (k) (labels[k] as string[]).push(k === "usr" ? t.slice(1) : t.slice(1).toLowerCase());
     else labels.text = labels.text ? labels.text + " " + t : t;
   });
   return labels;
@@ -522,23 +522,26 @@ app.get("/verify", async (c) => {
 app.get("/forgot", (c) =>
   (c as any).render(
     <section>
-      <form method="post" action="/forgot">
-        <input required name="email" type="email" placeholder="email" />
-        <button type="submit">send</button>
-      </form>
+      {c.req.query("sent") !== undefined
+        ? (
+          <>
+            <p>Check your email for a link to set your password. (Wait 5m if it hasn't arrived.)</p>
+            <a href="/u">back</a>
+          </>
+        )
+        : (
+          <form method="post" action="/forgot">
+            <input required name="email" type="email" placeholder="email" />
+            <button type="submit">send</button>
+          </form>
+        )}
     </section>,
     { title: "forgot" },
   ));
 app.post("/forgot", async (c) => {
   const { email } = await form(c), [u] = await sql`select email from usr where email = ${email}`;
   if (u) sendVerificationEmail(u.email, await emailToken(new Date(), u.email));
-  return (c as any).render(
-    <section>
-      <p>Check your email for a link to set your password. (Wait 5m if it hasn't arrived.)</p>
-      <a href="/u">back</a>
-    </section>,
-    { title: "sent" },
-  );
+  return c.redirect("/forgot?sent=1");
 });
 
 app.get("/password", (c) =>
@@ -777,19 +780,15 @@ app.get("/org/success", authed, async (c) => {
   const { orgName, creatorName } = session.metadata!;
   const subId = session.subscription as string;
 
-  await sql.begin(async (sql: any) => {
-    // @ts-ignore: postgres.js transaction types
-    await sql`
-      insert into org ${sql({ name: orgName, created_by: creatorName, stripe_sub_id: subId })}
-    `;
-    // @ts-ignore: postgres.js transaction types
-    await sql`
-      update usr
-      set orgs_r = array_append(orgs_r, ${orgName}),
-          orgs_w = array_append(orgs_w, ${orgName})
-      where name = ${creatorName}
-    `;
-  });
+  await sql`
+  with o as (
+    insert into org ${sql({ name: orgName, created_by: creatorName, stripe_sub_id: subId })}
+  )
+  update usr
+  set orgs_r = array_append(orgs_r, ${orgName}),
+      orgs_w = array_append(orgs_w, ${orgName})
+  where name = ${creatorName}
+`;
 
   return c.redirect(`/org/${orgName}`);
 });
