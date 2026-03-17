@@ -489,8 +489,10 @@ app.get("/", async (c) => {
       </section>
       <section>
         <div style="margin-top:2rem;">
-          {p > 0 && <a href={`/?${s !== "hot" ? `sort=${s}&` : ""}p=${p - 1}`}>prev</a>}
-          {items.length === 25 && <a href={`/?${s !== "hot" ? `sort=${s}&` : ""}p=${p + 1}`}>next</a>}
+          {p > 0 && <a href={`/?${new URLSearchParams([...cur.entries(), ["p", (p - 1).toString()]])}`}>prev</a>}
+          {items.length === 25 && (
+            <a href={`/?${new URLSearchParams([...cur.entries(), ["p", (p + 1).toString()]])}`}>next</a>
+          )}
         </div>
       </section>
     </>,
@@ -513,8 +515,8 @@ app.get("/logout", (c) => (deleteCookie(c, "name"), c.redirect("/")));
 app.post("/logout", (c) => (deleteCookie(c, "name"), ok(c)));
 
 app.get("/verify", async (c) => {
-  const e = c.req.query("email")!, t = c.req.query("token")!;
-  if (!(await validateEmailToken(t, e))) throw new HTTPException(400);
+  const e = c.req.query("email"), t = c.req.query("token");
+  if (!e || !t || !(await validateEmailToken(t, e))) throw new HTTPException(400);
   await sql`update usr set email_verified_at = now() where email_verified_at is null and email = ${e}`;
   return ok(c);
 });
@@ -621,20 +623,24 @@ app.get("/u", async (c) => {
   if (!name) {
     const authHeader = c.req.header("Authorization");
     if (authHeader?.startsWith("Basic ")) {
-      const decoded = atob(authHeader.slice(6));
-      const [email, password] = decoded.split(":");
-      if (email && password) {
-        const [usr] = await sql`
-          select *, password = crypt(${password}, password) AS is_password_correct
-          from usr where email = ${email} or name = ${email}
-        `;
-        if (usr?.is_password_correct) {
-          name = usr.name;
-          c.set("name", name!);
-        } else if (authHeader) {
-          // Invalid Basic Auth credentials provided - reject
-          throw new HTTPException(401, { message: "Invalid credentials." });
+      try {
+        const decoded = atob(authHeader.slice(6));
+        const [email, ...rest] = decoded.split(":");
+        const password = rest.join(":");
+        if (email && password) {
+          const [usr] = await sql`
+            select *, password = crypt(${password}, password) AS is_password_correct
+            from usr where email = ${email} or name = ${email}
+          `;
+          if (usr?.is_password_correct) {
+            name = usr.name;
+            c.set("name", name!);
+          } else {
+            throw new HTTPException(401, { message: "Invalid credentials." });
+          }
         }
+      } catch (_e) {
+        throw new HTTPException(401, { message: "Invalid auth header." });
       }
     }
   } else {
@@ -794,13 +800,14 @@ app.get("/org/success", authed, async (c) => {
 });
 
 app.get("/org/:name", async (c) => {
-  const [org, viewerOrgs, members] = await Promise.all([
+  const [org, hasAccess, members] = await Promise.all([
     sql`select * from org where name = ${c.req.param("name")}`.then((r: any) => r[0]),
-    sql`select orgs_r from usr where name = ${c.get("name") ?? ""}`.then((r: any) => r[0]?.orgs_r ?? []),
+    sql`select true from usr where true and name = ${c.get("name") ?? ""} and ${c.req.param("name")} = any(orgs_r)`
+      .then((r: any) => r[0]),
     sql`select name from usr where ${c.req.param("name")} = any(orgs_r)`,
   ]);
   if (!org) return notFound();
-  if (!viewerOrgs.includes(org.name)) throw new HTTPException(403, { message: "Access denied" });
+  if (!hasAccess) throw new HTTPException(403, { message: "Access denied" });
 
   const viewer = c.get("name") ?? "";
   return (c as any).render(
@@ -955,9 +962,14 @@ app.post("/c/:p?", async (c) => {
   if (!n) {
     const a = c.req.header("Authorization");
     if (a?.startsWith("Basic ")) {
-      const [u, p] = atob(a.slice(6)).split(":"),
-        [usr] = await sql`select name from usr where email=${u} and password=crypt(${p}, password)`;
-      if (usr) n = usr.name;
+      try {
+        const decoded = atob(a.slice(6));
+        const [u, ...rest] = decoded.split(":");
+        const p = rest.join(":");
+        const [usr] =
+          await sql`select name from usr where (email=${u} or name=${u}) and password=crypt(${p}, password)`;
+        if (usr) n = usr.name;
+      } catch { /* ignore invalid auth */ }
     }
   }
   if (!n) return c.redirect(`/u?next=${encodeURIComponent(pid ? `/c/${pid}` : "/")}`);
@@ -1076,11 +1088,9 @@ app.get("/c/:cid?", async (c) => {
         </section>
         <section>
           <div style="margin-top:2rem;">
-            {p > 0 && (
-              <a href={`/c?${new URLSearchParams({ ...Object.fromEntries(cur), p: (p - 1).toString() })}`}>prev</a>
-            )}
+            {p > 0 && <a href={`/c?${new URLSearchParams([...cur.entries(), ["p", (p - 1).toString()]])}`}>prev</a>}
             {items.length === lim && (
-              <a href={`/c?${new URLSearchParams({ ...Object.fromEntries(cur), p: (p + 1).toString() })}`}>next</a>
+              <a href={`/c?${new URLSearchParams([...cur.entries(), ["p", (p + 1).toString()]])}`}>next</a>
             )}
           </div>
         </section>
