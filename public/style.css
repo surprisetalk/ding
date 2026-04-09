@@ -1,3 +1,18 @@
+:root {
+  color-scheme: light dark;
+  --bg: #ffffff;
+  --fg: #111111;
+  --border: rgba(0, 0, 0, 0.2);
+}
+
+@media (prefers-color-scheme: dark) {
+  :root {
+    --bg: #0f0f0f;
+    --fg: #eaeaea;
+    --border: rgba(255, 255, 255, 0.2);
+  }
+}
+
 * {
   box-sizing: border-box;
 }
@@ -10,6 +25,8 @@ body {
   font-family: sans-serif;
   min-height: 100vh;
   margin: 0;
+  background: var(--bg);
+  color: var(--fg);
 }
 
 body > * {
@@ -17,9 +34,24 @@ body > * {
 }
 
 body > header {
-  background: black;
   padding: 0.5rem 1rem;
   margin-bottom: 0.5rem;
+}
+
+a {
+  color: var(--fg);
+}
+
+input, textarea {
+  background: var(--bg);
+  color: var(--fg);
+  border: 1px solid var(--border);
+}
+
+button {
+  background: var(--bg);
+  color: var(--fg);
+  border: 1px solid var(--border);
 }
 
 body > header > section {
