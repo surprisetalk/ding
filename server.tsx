@@ -312,7 +312,10 @@ const host = (c: Context) => {
   const h = c.req.header("host")?.match(/^(?:https?:\/\/)?(?:www\.)?([^\/]+)\.([^\/]+)\./)?.[1];
   if (h) return h;
   const a = c.req.header("accept") || "", t = c.req.header("content-type") || "";
-  return a.includes("json") || t.includes("json") ? "api" : a.includes("xml") ? "rss" : undefined;
+  if (a.includes("json") || t.includes("json")) return "api";
+  if (a.includes("html")) return undefined;
+  if (a.includes("xml")) return "rss";
+  return undefined;
 };
 const ok = (c: Context) => host(c) === "api" ? c.json(null, 204) : c.redirect("/u");
 

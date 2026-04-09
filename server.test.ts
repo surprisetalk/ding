@@ -352,6 +352,24 @@ Deno.test(
       assertEquals(data.length > 0, true);
     });
 
+    await t.step("GET /c with browser Accept header returns HTML, not RSS", async () => {
+      const res = await app.request("/c", {
+        headers: { Accept: "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8" },
+      });
+      assertEquals(res.status, 200);
+      assertEquals(res.headers.get("content-type")?.includes("text/html"), true);
+      const body = await res.text();
+      assertEquals(body.startsWith("<?xml"), false);
+    });
+
+    await t.step("GET /c with feed-reader Accept returns RSS", async () => {
+      const res = await app.request("/c", { headers: { Accept: "application/rss+xml" } });
+      assertEquals(res.status, 200);
+      assertEquals(res.headers.get("content-type")?.includes("xml"), true);
+      const body = await res.text();
+      assertEquals(body.startsWith("<?xml"), true);
+    });
+
     await t.step("GET /c/:cid with Accept: application/json returns JSON", async () => {
       const res = await app.request("/c/301", { headers: { Accept: "application/json" } });
       assertEquals(res.status, 200);
