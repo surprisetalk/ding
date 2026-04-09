@@ -1132,15 +1132,19 @@ app.get("/c/:cid?", async (c) => {
     const onlyFilter = !mens.length && !www.length && !q.q && !q.reactions && !q.replies_to && !q.comments;
     const singleTag = onlyFilter && tags.length === 1 && !orgs.length && !usrs.length ? tags[0] : null;
     const singleOrg = onlyFilter && orgs.length === 1 && !tags.length && !usrs.length ? orgs[0] : null;
+    const singleUsr = onlyFilter && usrs.length === 1 && !tags.length && !orgs.length ? usrs[0] : null;
     const tagCount = singleTag
       ? ((await sql`select count(*)::int as count from com where ${singleTag} = any(tags) and orgs <@ ${rT}::text[] and (usrs = '{}' or ${n || ""}::text = any(usrs))`)[0].count)
       : null;
-    const [orgRow, orgMembers] = singleOrg
-      ? await Promise.all([
-        sql`select * from org where name = ${singleOrg}`.then((r: any) => r[0]),
-        sql`select count(*)::int as count from usr where ${singleOrg} = any(orgs_r)`.then((r: any) => r[0].count),
-      ])
-      : [null, null];
+    const orgInfo = singleOrg
+      ? (await sql`select (select count(*)::int from usr where ${singleOrg} = any(orgs_r)) as member_count, (select created_by from org where name = ${singleOrg}) as created_by`)[0]
+      : null;
+    const orgMembers = orgInfo?.member_count ?? null;
+    const orgCreatedBy = orgInfo?.created_by ?? null;
+    const usrRow = singleUsr
+      ? (await sql`select u.name, u.bio, (select count(*)::int from com where created_by = ${singleUsr} and parent_cid is null and orgs <@ ${rT}::text[]) as post_count from usr u where u.name = ${singleUsr}`)[0]
+      : null;
+    const usrPostCount = usrRow?.post_count ?? null;
     return (c as any).render(
       <>
         <section>
@@ -1153,19 +1157,41 @@ app.get("/c/:cid?", async (c) => {
             <div style="margin:1rem 0;">
               <h2 style="margin:0;">#{singleTag}</h2>
               <p style="font-size:0.875rem;opacity:0.6;margin:0.25rem 0;">{tagCount} post{tagCount === 1 ? "" : "s"}</p>
-            </div>
-          )}
-          {singleOrg && orgRow && (
-            <div style="margin:1rem 0;">
-              <h2 style="margin:0;">*{singleOrg}</h2>
-              <p style="font-size:0.875rem;opacity:0.6;margin:0.25rem 0;">
-                {orgMembers} member{orgMembers === 1 ? "" : "s"}{" · "}
-                created by <a href={`/u/${orgRow.created_by}`}>@{orgRow.created_by}</a>{" · "}
-                <a href={`/org/${singleOrg}`}>settings</a>
+              <p style="font-size:0.75rem;opacity:0.5;margin:0.25rem 0 0 0;">
+                <a href={`/?tag=${singleTag}`}>post to #{singleTag}</a>
               </p>
             </div>
           )}
-          {!singleTag && !singleOrg && meta && <h2>{meta}</h2>}
+          {singleOrg && (
+            <div style="margin:1rem 0;">
+              <h2 style="margin:0;">*{singleOrg}</h2>
+              <p style="font-size:0.875rem;opacity:0.6;margin:0.25rem 0;">
+                {orgMembers} member{orgMembers === 1 ? "" : "s"}
+                {orgCreatedBy && (
+                  <>
+                    {" · "}created by <a href={`/u/${orgCreatedBy}`}>@{orgCreatedBy}</a>
+                    {" · "}<a href={`/org/${singleOrg}`}>settings</a>
+                  </>
+                )}
+              </p>
+              <p style="font-size:0.75rem;opacity:0.5;margin:0.25rem 0 0 0;">
+                <a href={`/?org=${singleOrg}`}>post to *{singleOrg}</a>
+              </p>
+            </div>
+          )}
+          {singleUsr && usrRow && (
+            <div style="margin:1rem 0;">
+              <h2 style="margin:0;">@{singleUsr}</h2>
+              <p style="font-size:0.875rem;opacity:0.6;margin:0.25rem 0;">
+                {usrPostCount} post{usrPostCount === 1 ? "" : "s"}{" · "}
+                <a href={`/u/${singleUsr}`}>profile</a>
+              </p>
+              <p style="font-size:0.75rem;opacity:0.5;margin:0.25rem 0 0 0;">
+                <a href={`/?usr=${singleUsr}`}>post to @{singleUsr}</a>
+              </p>
+            </div>
+          )}
+          {!singleTag && !singleOrg && !singleUsr && meta && <h2>{meta}</h2>}
           <SortToggle sort={s} baseHref={`/c?${cur}`} title="results" />
         </section>
         <section>
@@ -1200,18 +1226,17 @@ app.get("/c/:cid?", async (c) => {
             </form>
           )
           : (
-            <form
-              method="post"
-              action={`/login?next=${encodeURIComponent(`/c/${post.cid}`)}`}
-              style="display:flex;flex-direction:column;gap:0.5rem;"
-            >
-              <p style="margin:0 0 0.25rem 0;font-size:0.875rem;opacity:0.8;">
-                log in or <a href="/signup">sign up</a> to reply
+            <div style="display:flex;flex-direction:column;gap:0.5rem;">
+              <p style="margin:0;font-size:0.875rem;opacity:0.8;">create an account to reply</p>
+              <form method="post" action="/signup" style="display:flex;flex-direction:column;gap:0.5rem;">
+                <input required name="name" type="text" pattern="^[0-9a-zA-Z_]{4,32}$" placeholder="username" />
+                <input required name="email" type="email" placeholder="email" />
+                <button type="submit">sign up</button>
+              </form>
+              <p style="margin:0;font-size:0.75rem;opacity:0.6;">
+                already have an account? <a href={`/u?next=${encodeURIComponent(`/c/${post.cid}`)}`}>log in</a>
               </p>
-              <input required name="email" type="email" placeholder="email" />
-              <input required name="password" type="password" placeholder="password" />
-              <button type="submit">log in</button>
-            </form>
+            </div>
           )}
         <SortToggle sort={s} baseHref={`/c/${cid}`} title="comments" />
       </section>

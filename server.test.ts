@@ -298,6 +298,92 @@ Deno.test(
       const res = await app.request("/c/999999");
       assertEquals(res.status, 404);
     });
+
+    await t.step("GET /c/:cid logged out shows signup form", async () => {
+      const res = await app.request("/c/301");
+      assertEquals(res.status, 200);
+      const html = await res.text();
+      assertEquals(html.includes("create an account to reply"), true);
+      assertEquals(html.includes(`action="/signup"`), true);
+      assertEquals(html.includes(`pattern="^[0-9a-zA-Z_]{4,32}$"`), true);
+      assertEquals(html.includes(`/u?next=%2Fc%2F301`), true);
+    });
+
+    await t.step("GET /c?tag=humor renders single-tag header and 'post to' action", async () => {
+      const res = await app.request("/c?tag=humor");
+      const html = await res.text();
+      assertEquals(html.includes(`<h2 style="margin:0;">#humor</h2>`), true);
+      assertEquals(html.includes("post to #humor"), true);
+      assertEquals(html.includes(`href="/?tag=humor"`), true);
+    });
+
+    await t.step("GET /c?tag=humor&tag=bugs does not render single-tag header", async () => {
+      const res = await app.request("/c?tag=humor&tag=bugs");
+      const html = await res.text();
+      assertEquals(html.includes("post to #humor"), false);
+      assertEquals(html.includes("post to #bugs"), false);
+    });
+
+    await t.step("GET /c?usr=BugHunter42 renders single-user header and 'post to' action", async () => {
+      const res = await app.request("/c?usr=BugHunter42");
+      const html = await res.text();
+      assertEquals(html.includes(`<h2 style="margin:0;">@BugHunter42</h2>`), true);
+      assertEquals(html.includes(`href="/u/BugHunter42"`), true);
+      assertEquals(html.includes("post to @BugHunter42"), true);
+    });
+
+    await t.step("GET /c?org=secret renders single-org header for member", async () => {
+      const loginBody = new FormData();
+      loginBody.append("email", "john@example.com");
+      loginBody.append("password", "password1!");
+      const boot = await app.request("/login", { method: "POST", body: loginBody });
+      const cookie = boot.headers.get("set-cookie")!.split(";")[0];
+      const res = await app.request("/c?org=secret", { headers: { cookie } });
+      const html = await res.text();
+      assertEquals(html.includes(`<h2 style="margin:0;">*secret</h2>`), true);
+      assertEquals(html.includes("post to *secret"), true);
+    });
+
+    await t.step("GET /c with Accept: application/json returns JSON array", async () => {
+      const res = await app.request("/c", { headers: { Accept: "application/json" } });
+      assertEquals(res.status, 200);
+      const data = await res.json();
+      assertEquals(Array.isArray(data), true);
+      assertEquals(data.length > 0, true);
+    });
+
+    await t.step("GET /c/:cid with Accept: application/json returns JSON", async () => {
+      const res = await app.request("/c/301", { headers: { Accept: "application/json" } });
+      assertEquals(res.status, 200);
+      const data = await res.json();
+      assertEquals(Array.isArray(data), true);
+      assertEquals(data[0].cid, 301);
+      assertEquals(data[0].created_by, "BugHunter42");
+    });
+
+    await t.step("GET /u/:name JSON as non-owner hides orgs_r/orgs_w", async () => {
+      const res = await app.request("/u/john_doe", { headers: { Accept: "application/json" } });
+      assertEquals(res.status, 200);
+      const body = await res.json();
+      assertEquals(body.name, "john_doe");
+      assertEquals("orgs_r" in body, false);
+      assertEquals("orgs_w" in body, false);
+    });
+
+    await t.step("GET /u/:name JSON as owner exposes orgs_r/orgs_w", async () => {
+      const loginBody = new FormData();
+      loginBody.append("email", "john@example.com");
+      loginBody.append("password", "password1!");
+      const boot = await app.request("/login", { method: "POST", body: loginBody });
+      const cookie = boot.headers.get("set-cookie")!.split(";")[0];
+      const res = await app.request("/u/john_doe", {
+        headers: { Accept: "application/json", cookie },
+      });
+      assertEquals(res.status, 200);
+      const body = await res.json();
+      assertEquals(body.orgs_r, ["secret"]);
+      assertEquals(body.orgs_w, ["secret"]);
+    });
   }),
 );
 

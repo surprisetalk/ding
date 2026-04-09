@@ -1,5 +1,5 @@
-- [-] if you hit "reply" and you're not logged in it should prompt to create new account
-- [-] show better titles for search pages, e.g. "#foo" if just searching the foo tag. add actions like "add to
+- [x] if you hit "reply" and you're not logged in it should prompt to create new account
+- [x] show better titles for search pages, e.g. "#foo" if just searching the foo tag. add actions like "add to
   homepage". "*foo" should also show special info
 - [ ] clicking the thumbnail should take directly to the linked page, while clicking title takes you to the comments
       page
