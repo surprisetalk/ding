@@ -263,6 +263,21 @@ Deno.test(
       assertEquals(text.includes("/login?next=%2Fc%2F123"), true);
     });
 
+    await t.step("GET / (default hot sort)", async () => {
+      const res = await app.request("/");
+      assertEquals(res.status, 200);
+    });
+
+    await t.step("GET /?sort=new", async () => {
+      const res = await app.request("/?sort=new");
+      assertEquals(res.status, 200);
+    });
+
+    await t.step("GET /?sort=top", async () => {
+      const res = await app.request("/?sort=top");
+      assertEquals(res.status, 200);
+    });
+
     await t.step("GET /c with tag filter", async () => {
       const res = await app.request("/c?tag=humor");
       assertEquals(res.status, 200);

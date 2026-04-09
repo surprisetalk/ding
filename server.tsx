@@ -457,7 +457,7 @@ app.get("/", async (c) => {
       ? sql`created_at desc`
       : s === "top"
       ? sql`reaction_count desc, created_at desc`
-      : sql`created_at + interval '2 hours' * ln(greatest(coalesce((reaction_counts->>'▲')::int, 0)+1, 1)) desc`
+      : sql`created_at + interval '2 hours' * ln(greatest(coalesce((c_reactions->'▲')::int, 0)+1, 1)) desc`
   }
     offset ${p * 25} limit 25
   `;
