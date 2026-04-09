@@ -272,7 +272,9 @@ const defaultThumb =
 
 const Post = (c: any, user?: string, p?: URLSearchParams) => (
   <>
-    <img src={c.thumb || defaultThumb} loading="lazy" onerror={`this.onerror=null;this.src='${defaultThumb}'`} />
+    <a href={(c.body && extractFirstUrl(c.body)) || `/c/${c.cid}`}>
+      <img src={c.thumb || defaultThumb} loading="lazy" onerror={`this.onerror=null;this.src='${defaultThumb}'`} />
+    </a>
     <div class="post-content">
       <span>
         <a href={`/c/${c.cid}`}>
@@ -746,6 +748,9 @@ app.post("/org/new", authed, async (c) => {
   const { name } = await form(c);
   if (!name.match(/^[0-9a-zA-Z_]{4,32}$/)) throw new HTTPException(400, { message: "Invalid name" });
 
+  const [existing] = await sql`select name from org where name = ${name}`;
+  if (existing) throw new HTTPException(409, { message: `Org name "${name}" is already taken.` });
+
   const session = await stripe.checkout.sessions.create({
     line_items: [
       {
@@ -774,6 +779,30 @@ app.post("/org/new", authed, async (c) => {
   return c.redirect(session.url!);
 });
 
+const createOrg = async (orgName: string, creatorName: string, subId: string) => {
+  const inserted = await sql`
+    insert into org ${sql({ name: orgName, created_by: creatorName, stripe_sub_id: subId })}
+    on conflict (name) do nothing
+    returning name
+  `;
+  if (!inserted.length) {
+    const [existing] = await sql`select created_by, stripe_sub_id from org where name = ${orgName}`;
+    if (existing?.stripe_sub_id === subId) return; // idempotent retry, already created
+    console.error(
+      `createOrg collision: wanted "${orgName}" for ${creatorName} (sub=${subId}) but exists for ${existing?.created_by} (sub=${existing?.stripe_sub_id}). Manual reconciliation required.`,
+    );
+    throw new HTTPException(409, {
+      message: `Org "${orgName}" already exists. Your subscription ${subId} needs manual reconciliation.`,
+    });
+  }
+  await sql`
+    update usr
+    set orgs_r = array_append(orgs_r, ${orgName}),
+        orgs_w = array_append(orgs_w, ${orgName})
+    where name = ${creatorName}
+  `;
+};
+
 app.get("/org/success", authed, async (c) => {
   const sessionId = c.req.query("session_id");
   if (!sessionId) throw new HTTPException(400);
@@ -782,17 +811,7 @@ app.get("/org/success", authed, async (c) => {
   if (session.status !== "complete") throw new HTTPException(400, { message: "Payment not complete" });
 
   const { orgName, creatorName } = session.metadata!;
-  const subId = session.subscription as string;
-
-  await sql`
-  with o as (
-    insert into org ${sql({ name: orgName, created_by: creatorName, stripe_sub_id: subId })}
-  )
-  update usr
-  set orgs_r = array_append(orgs_r, ${orgName}),
-      orgs_w = array_append(orgs_w, ${orgName})
-  where name = ${creatorName}
-`;
+  await createOrg(orgName, creatorName, session.subscription as string);
 
   return c.redirect(`/org/${orgName}`);
 });
@@ -876,13 +895,24 @@ app.post("/org/:name/invite", authed, async (c) => {
   if (!org) return notFound();
   if (org.created_by !== c.get("name")) throw new HTTPException(403, { message: "Only owner can invite" });
 
+  const [invitee] = await sql`select name, orgs_r from usr where name = ${paramName}`;
+  if (!invitee) throw new HTTPException(404, { message: `User "${paramName}" not found` });
+  if (invitee.orgs_r.includes(org.name)) return c.redirect(`/org/${org.name}`);
+
   const sub = await stripe.subscriptions.retrieve(org.stripe_sub_id);
-  await Promise.all([
-    stripe.subscriptions.update(org.stripe_sub_id, {
-      items: [{ id: sub.items.data[0].id, quantity: sub.items.data[0].quantity! + 1 }],
-    }),
-    sql`update usr set orgs_r = array_append(orgs_r, ${org.name}), orgs_w = array_append(orgs_w, ${org.name}) where name = ${paramName}`,
-  ]);
+  const newQty = sub.items.data[0].quantity! + 1;
+  await stripe.subscriptions.update(org.stripe_sub_id, {
+    items: [{ id: sub.items.data[0].id, quantity: newQty }],
+  });
+  try {
+    await sql`update usr set orgs_r = array_append(orgs_r, ${org.name}), orgs_w = array_append(orgs_w, ${org.name}) where name = ${paramName}`;
+  } catch (err) {
+    console.error(
+      `DRIFT invite: bumped ${org.stripe_sub_id} to qty=${newQty} but SQL update for ${paramName} in ${org.name} failed.`,
+      err,
+    );
+    throw err;
+  }
   return c.redirect(`/org/${org.name}`);
 });
 
@@ -894,16 +924,25 @@ app.post("/org/:name/remove", authed, async (c) => {
   if (!org) return notFound();
   if (org.created_by !== c.get("name")) throw new HTTPException(403, { message: "Only owner can remove" });
 
+  const [member] = await sql`select name from usr where name = ${paramName} and ${org.name} = any(orgs_r)`;
+  if (!member) throw new HTTPException(404, { message: `${paramName} is not a member of ${org.name}` });
+
   const sub = await stripe.subscriptions.retrieve(org.stripe_sub_id);
   const qty = sub.items.data[0].quantity!;
-  await Promise.all([
-    qty > 1
-      ? stripe.subscriptions.update(org.stripe_sub_id, {
-        items: [{ id: sub.items.data[0].id, quantity: qty - 1 }],
-      })
-      : Promise.resolve(),
-    sql`update usr set orgs_r = array_remove(orgs_r, ${org.name}), orgs_w = array_remove(orgs_w, ${org.name}) where name = ${paramName}`,
-  ]);
+  if (qty > 1) {
+    await stripe.subscriptions.update(org.stripe_sub_id, {
+      items: [{ id: sub.items.data[0].id, quantity: qty - 1 }],
+    });
+  }
+  try {
+    await sql`update usr set orgs_r = array_remove(orgs_r, ${org.name}), orgs_w = array_remove(orgs_w, ${org.name}) where name = ${paramName}`;
+  } catch (err) {
+    console.error(
+      `DRIFT remove: decremented ${org.stripe_sub_id} to qty=${qty - 1} but SQL update for ${paramName} in ${org.name} failed.`,
+      err,
+    );
+    throw err;
+  }
   return c.redirect(`/org/${org.name}`);
 });
 
@@ -917,7 +956,13 @@ app.post("/api/stripe-webhook", async (c) => {
     throw new HTTPException(400, { message: `Webhook Error` });
   }
 
-  if (event.type === "customer.subscription.deleted") {
+  if (event.type === "checkout.session.completed") {
+    const session = event.data.object;
+    const { orgName, creatorName } = session.metadata ?? {};
+    if (!orgName || !creatorName || !session.subscription)
+      throw new HTTPException(400, { message: "checkout.session.completed missing orgName/creatorName/subscription" });
+    await createOrg(orgName, creatorName, session.subscription as string);
+  } else if (event.type === "customer.subscription.deleted") {
     const sub = event.data.object;
     const [org] = await sql`select name from org where stripe_sub_id = ${sub.id}`;
     if (org) {
@@ -976,7 +1021,12 @@ app.post("/c/:p?", async (c) => {
   if (!n) return c.redirect(`/u?next=${encodeURIComponent(pid ? `/c/${pid}` : "/")}`);
 
   const now = Date.now();
-  const times = (postRate.get(n) || []).filter((t) => now - t < POST_RATE_MS);
+  for (const [k, ts] of postRate) {
+    const fresh = ts.filter((t) => now - t < POST_RATE_MS);
+    if (fresh.length) postRate.set(k, fresh);
+    else postRate.delete(k);
+  }
+  const times = postRate.get(n) ?? [];
   if (times.length >= POST_RATE_MAX) throw new HTTPException(429, { message: "Slow down" });
   times.push(now);
   postRate.set(n, times);
@@ -1079,6 +1129,18 @@ app.get("/c/:cid?", async (c) => {
 
   if (!cid) {
     const cur = new URL(c.req.url).searchParams, meta = buildFilterTitle(cur);
+    const onlyFilter = !mens.length && !www.length && !q.q && !q.reactions && !q.replies_to && !q.comments;
+    const singleTag = onlyFilter && tags.length === 1 && !orgs.length && !usrs.length ? tags[0] : null;
+    const singleOrg = onlyFilter && orgs.length === 1 && !tags.length && !usrs.length ? orgs[0] : null;
+    const tagCount = singleTag
+      ? ((await sql`select count(*)::int as count from com where ${singleTag} = any(tags) and orgs <@ ${rT}::text[] and (usrs = '{}' or ${n || ""}::text = any(usrs))`)[0].count)
+      : null;
+    const [orgRow, orgMembers] = singleOrg
+      ? await Promise.all([
+        sql`select * from org where name = ${singleOrg}`.then((r: any) => r[0]),
+        sql`select count(*)::int as count from usr where ${singleOrg} = any(orgs_r)`.then((r: any) => r[0].count),
+      ])
+      : [null, null];
     return (c as any).render(
       <>
         <section>
@@ -1087,7 +1149,23 @@ app.get("/c/:cid?", async (c) => {
             <button type="submit">search</button>
           </form>
           <ActiveFilters params={cur} />
-          {meta && <h2>{meta}</h2>}
+          {singleTag && (
+            <div style="margin:1rem 0;">
+              <h2 style="margin:0;">#{singleTag}</h2>
+              <p style="font-size:0.875rem;opacity:0.6;margin:0.25rem 0;">{tagCount} post{tagCount === 1 ? "" : "s"}</p>
+            </div>
+          )}
+          {singleOrg && orgRow && (
+            <div style="margin:1rem 0;">
+              <h2 style="margin:0;">*{singleOrg}</h2>
+              <p style="font-size:0.875rem;opacity:0.6;margin:0.25rem 0;">
+                {orgMembers} member{orgMembers === 1 ? "" : "s"}{" · "}
+                created by <a href={`/u/${orgRow.created_by}`}>@{orgRow.created_by}</a>{" · "}
+                <a href={`/org/${singleOrg}`}>settings</a>
+              </p>
+            </div>
+          )}
+          {!singleTag && !singleOrg && meta && <h2>{meta}</h2>}
           <SortToggle sort={s} baseHref={`/c?${cur}`} title="results" />
         </section>
         <section>
@@ -1114,10 +1192,27 @@ app.get("/c/:cid?", async (c) => {
         {Comment({ ...post, child_comments: (post.child_comments || []).filter((r: any) => isReaction(r.body)) }, n)}
       </section>
       <section>
-        <form method="post" action={`/c/${post.cid}`}>
-          <textarea required name="body" rows={18}></textarea>
-          <button type="submit">reply</button>
-        </form>
+        {n
+          ? (
+            <form method="post" action={`/c/${post.cid}`}>
+              <textarea required name="body" rows={18}></textarea>
+              <button type="submit">reply</button>
+            </form>
+          )
+          : (
+            <form
+              method="post"
+              action={`/login?next=${encodeURIComponent(`/c/${post.cid}`)}`}
+              style="display:flex;flex-direction:column;gap:0.5rem;"
+            >
+              <p style="margin:0 0 0.25rem 0;font-size:0.875rem;opacity:0.8;">
+                log in or <a href="/signup">sign up</a> to reply
+              </p>
+              <input required name="email" type="email" placeholder="email" />
+              <input required name="password" type="password" placeholder="password" />
+              <button type="submit">log in</button>
+            </form>
+          )}
         <SortToggle sort={s} baseHref={`/c/${cid}`} title="comments" />
       </section>
       <section>
