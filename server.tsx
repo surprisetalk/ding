@@ -414,10 +414,18 @@ app.get("/sitemap.txt", (c) => c.text("https://ding.bar/"));
 app.onError((err, c) => {
   if (err instanceof HTTPException) return (err as any).getResponse();
   console.error(err);
-  const msg = "Sorry, this computer is мᎥｓβ𝕖𝓱𝐀𝓋𝓲𝓷g.", h = host(c);
-  return h === "api" ? c.json({ error: msg }, 500) : h === "rss" ? c.text(msg, 500) : (c as any).render(
+  const msg = "Sorry, this computer is мᎥｓβ𝕖𝓱𝐀𝓋𝓲𝓷g.",
+    detail = (err as any)?.message || String(err),
+    stack = (err as any)?.stack || "",
+    h = host(c);
+  if (h === "api") return c.json({ error: msg, detail, stack }, 500);
+  if (h === "rss") return c.text(`${msg}\n\n${detail}\n\n${stack}`, 500);
+  c.status(500);
+  return (c as any).render(
     <section>
       <p>{msg}</p>
+      <pre style="white-space:pre-wrap;font-size:0.875rem;opacity:0.8;">{detail}</pre>
+      {stack && <pre style="white-space:pre-wrap;font-size:0.75rem;opacity:0.5;">{stack}</pre>}
     </section>,
     { title: "error" },
   );
