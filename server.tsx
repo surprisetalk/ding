@@ -316,6 +316,19 @@ const host = (c: Context) => {
 };
 const ok = (c: Context) => host(c) === "api" ? c.json(null, 204) : c.redirect("/u");
 
+const basicAuthName = async (c: Context): Promise<string | null> => {
+  const a = c.req.header("Authorization");
+  if (!a?.startsWith("Basic ")) return null;
+  try {
+    const [u, ...rest] = atob(a.slice(6)).split(":");
+    const [usr] =
+      await sql`select name from usr where (email=${u} or name=${u}) and password=crypt(${rest.join(":")}, password)`;
+    return usr?.name ?? null;
+  } catch {
+    return null;
+  }
+};
+
 const authed = some(
   createMiddleware<{ Variables: { name: string } }>(async (c, next) => {
     const n = await getSignedCookie(c, cookieSecret, "name");
@@ -699,7 +712,8 @@ app.post("/u", authed, async (c) => {
 
 app.get("/u/:name", async (c) => {
   const profileName = c.req.param("name");
-  const viewerName = c.get("name");
+  const viewerName = c.get("name") ?? (await basicAuthName(c)) ?? undefined;
+  if (viewerName) c.set("name", viewerName);
   const isOwner = viewerName && viewerName == profileName;
   const [usr] = await sql`
     select name, bio, invited_by

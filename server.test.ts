@@ -263,21 +263,6 @@ Deno.test(
       assertEquals(text.includes("/login?next=%2Fc%2F123"), true);
     });
 
-    await t.step("GET /u (api) with valid credentials", async () => {
-      const res = await app.request("/u/john_doe", {
-        headers: {
-          Accept: "application/json",
-          Authorization: "Basic " + btoa("john@example.com:password1!"),
-        },
-      });
-      assertEquals(res.status, 200);
-      assertEquals(await res.json(), {
-        invited_by: "john_doe",
-        name: "john_doe",
-        bio: "sample bio",
-      });
-    });
-
     await t.step("GET /c with tag filter", async () => {
       const res = await app.request("/c?tag=humor");
       assertEquals(res.status, 200);
@@ -370,19 +355,34 @@ Deno.test(
       assertEquals("orgs_w" in body, false);
     });
 
-    await t.step("GET /u/:name JSON as owner exposes orgs_r/orgs_w", async () => {
-      const loginBody = new FormData();
-      loginBody.append("email", "john@example.com");
-      loginBody.append("password", "password1!");
-      const boot = await app.request("/login", { method: "POST", body: loginBody });
-      const cookie = boot.headers.get("set-cookie")!.split(";")[0];
+    await t.step("GET /u/:name JSON as owner via Basic Auth exposes orgs_r/orgs_w", async () => {
       const res = await app.request("/u/john_doe", {
-        headers: { Accept: "application/json", cookie },
+        headers: {
+          Accept: "application/json",
+          Authorization: "Basic " + btoa("john@example.com:password1!"),
+        },
       });
       assertEquals(res.status, 200);
       const body = await res.json();
+      assertEquals(body.name, "john_doe");
+      assertEquals(body.bio, "sample bio");
+      assertEquals(body.invited_by, "john_doe");
       assertEquals(body.orgs_r, ["secret"]);
       assertEquals(body.orgs_w, ["secret"]);
+    });
+
+    await t.step("GET /u/:name JSON with invalid Basic Auth hides owner fields (non-owner view)", async () => {
+      const res = await app.request("/u/john_doe", {
+        headers: {
+          Accept: "application/json",
+          Authorization: "Basic " + btoa("john@example.com:wrong!"),
+        },
+      });
+      assertEquals(res.status, 200);
+      const body = await res.json();
+      assertEquals(body.name, "john_doe");
+      assertEquals("orgs_r" in body, false);
+      assertEquals("orgs_w" in body, false);
     });
   }),
 );
