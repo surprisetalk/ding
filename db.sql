@@ -4,15 +4,6 @@ create extension if not exists citext;
 
 create extension if not exists hstore;
 
-create function email_token(ts timestamptz, email text) returns text
-language sql
-immutable
-returns null on null input
-return ''
-|| extract(epoch from ts)::bigint::text
-|| ':'
-|| md5(extract(epoch from ts)::bigint || ':TODO:' || email);
-
 create table usr (
   name citext primary key check (name ~ '^[0-9a-zA-Z_]{4,32}$'),
   email citext unique not null check (email ilike '%@%' and email ~ '^.{4,64}$'),

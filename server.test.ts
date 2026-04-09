@@ -9,6 +9,7 @@ import { PostgresConnection } from "pg-gateway";
 import dbSql from "./db.sql" with { type: "text" };
 import app, {
   decodeLabels,
+  emailToken,
   encodeLabels,
   extractImageUrl,
   formatLabels,
@@ -86,6 +87,10 @@ const pglite = (f: (sql: pg.Sql) => (t: Deno.TestContext) => Promise<void>) => a
   (stripe as any).subscriptions = {
     retrieve: () => Promise.resolve({ items: { data: [{ id: "si_123", quantity: 1 }] } }),
     update: () => Promise.resolve({}),
+  };
+  (stripe as any).webhooks = {
+    constructEventAsync: (body: string, sig: string) =>
+      sig === "valid" ? Promise.resolve(JSON.parse(body)) : Promise.reject(new Error("bad sig")),
   };
 
   setSql(testSql);
@@ -292,6 +297,181 @@ Deno.test(
 
       const [usr] = await sql`select orgs_r from usr where name = 'jane_doe'`;
       assertEquals(usr.orgs_r.includes("TestOrg"), false);
+    });
+  }),
+);
+
+//// WRITE PATH TESTS //////////////////////////////////////////////////////////
+
+Deno.test(
+  "write paths",
+  pglite((sql) => async (t) => {
+    const jAuth = { Authorization: "Basic " + btoa("john@example.com:password1!") };
+    const janeAuth = { Authorization: "Basic " + btoa("jane@example.com:password1!") };
+    const fd = (o: Record<string, string>) => {
+      const f = new FormData();
+      for (const [k, v] of Object.entries(o)) f.append(k, v);
+      return f;
+    };
+    const cidFromLocation = (loc: string) => {
+      const m = loc.match(/^\/c\/(\d+)/);
+      if (!m) throw new Error(`bad location: ${loc}`);
+      return +m[1];
+    };
+
+    await t.step("POST /c root happy path", async () => {
+      const res = await app.request("/c", { method: "POST", body: fd({ body: "hello world", tags: "#pub" }), headers: jAuth });
+      assertEquals(res.status, 302);
+      const cid = cidFromLocation(res.headers.get("location")!);
+      const [row] = await sql`select body, tags, orgs, thumb from com where cid = ${cid}`;
+      assertEquals(row.body, "hello world");
+      assertEquals(row.tags, ["pub"]);
+      assertEquals(row.orgs, []);
+      assertEquals(row.thumb, null);
+    });
+
+    await t.step("POST /c root 403 when no tag", async () => {
+      const res = await app.request("/c", { method: "POST", body: fd({ body: "no tag", tags: "" }), headers: jAuth });
+      assertEquals(res.status, 403);
+    });
+
+    await t.step("POST /c root 403 when *org not in orgs_w", async () => {
+      const res = await app.request("/c", { method: "POST", body: fd({ body: "x", tags: "#pub *nonmember" }), headers: jAuth });
+      assertEquals(res.status, 403);
+    });
+
+    await t.step("POST /c root 302 when *org IS in orgs_w", async () => {
+      const res = await app.request("/c", { method: "POST", body: fd({ body: "y", tags: "#pub *secret" }), headers: jAuth });
+      assertEquals(res.status, 302);
+      const cid = cidFromLocation(res.headers.get("location")!);
+      const [row] = await sql`select orgs from com where cid = ${cid}`;
+      assertEquals(row.orgs, ["secret"]);
+    });
+
+    await t.step("POST /c root unauthed redirects to /u?next=", async () => {
+      const res = await app.request("/c", { method: "POST", body: fd({ body: "x", tags: "#pub" }) });
+      assertEquals(res.status, 302);
+      assertEquals(res.headers.get("location")?.startsWith("/u?next="), true);
+    });
+
+    await t.step("POST /c root extracts thumbnail from image URL", async () => {
+      const res = await app.request("/c", { method: "POST", body: fd({ body: "look https://example.com/pic.jpg", tags: "#pub" }), headers: jAuth });
+      assertEquals(res.status, 302);
+      const cid = cidFromLocation(res.headers.get("location")!);
+      const [row] = await sql`select thumb from com where cid = ${cid}`;
+      assertEquals(row.thumb, "https://example.com/pic.jpg");
+    });
+
+    await t.step("POST /c/:p reply happy path + c_comments increments", async () => {
+      const [before] = await sql`select c_comments from com where cid = 301`;
+      const res = await app.request("/c/301", { method: "POST", body: fd({ body: "reply text" }), headers: jAuth });
+      assertEquals(res.status, 302);
+      assertEquals(res.headers.get("location")?.startsWith("/c/301#"), true);
+      const [after] = await sql`select c_comments from com where cid = 301`;
+      assertEquals(+after.c_comments, +before.c_comments + 1);
+    });
+
+    await t.step("POST /c/:p reaction updates c_reactions", async () => {
+      const [before] = await sql`select (c_reactions->'▲') as r from com where cid = 301`;
+      const res = await app.request("/c/301", { method: "POST", body: fd({ body: "▲" }), headers: jAuth });
+      assertEquals(res.status, 302);
+      const [after] = await sql`select (c_reactions->'▲') as r from com where cid = 301`;
+      assertEquals(+after.r, +(before.r ?? 0) + 1);
+    });
+
+    await t.step("POST /c/:p flag updates c_flags not c_comments or c_reactions", async () => {
+      const [before] = await sql`select c_flags, c_comments, c_reactions from com where cid = 301`;
+      const res = await app.request("/c/301", { method: "POST", body: fd({ body: "flag" }), headers: jAuth });
+      assertEquals(res.status, 302);
+      const [after] = await sql`select c_flags, c_comments, c_reactions from com where cid = 301`;
+      assertEquals(+after.c_flags, +before.c_flags + 1);
+      assertEquals(+after.c_comments, +before.c_comments);
+      assertEquals(after.c_reactions, before.c_reactions);
+    });
+
+    await t.step("POST /c/:p reply 403 on private parent from non-member", async () => {
+      const res = await app.request("/c/355", { method: "POST", body: fd({ body: "sneaky" }), headers: janeAuth });
+      assertEquals(res.status, 403);
+    });
+
+    await t.step("POST /c/:cid/delete owner soft-deletes", async () => {
+      const [seed] = await sql`insert into com (created_by, body, tags) values ('john_doe', 'to delete', '{humor}') returning cid`;
+      const res = await app.request(`/c/${seed.cid}/delete`, { method: "POST", body: new FormData(), headers: jAuth });
+      assertEquals(res.status, 302);
+      assertEquals(res.headers.get("location"), "/");
+      const [row] = await sql`select body from com where cid = ${seed.cid}`;
+      assertEquals(row.body, "");
+    });
+
+    await t.step("POST /c/:cid/delete non-owner no-op", async () => {
+      const [before] = await sql`select body from com where cid = 301`;
+      const res = await app.request("/c/301/delete", { method: "POST", body: new FormData(), headers: jAuth });
+      assertEquals(res.status, 302);
+      const [after] = await sql`select body from com where cid = 301`;
+      assertEquals(after.body, before.body);
+    });
+
+    await t.step("GET /c/355 returns 200 for member (positive private access)", async () => {
+      const boot = await app.request("/login", { method: "POST", body: fd({ email: "john@example.com", password: "password1!" }) });
+      const setCookie = boot.headers.get("set-cookie");
+      if (!setCookie) throw new Error("no set-cookie on login");
+      const cookie = setCookie.split(";")[0];
+      const res = await app.request("/c/355", { headers: { cookie } });
+      assertEquals(res.status, 200);
+    });
+
+    await t.step("POST /api/stripe-webhook customer.subscription.deleted cleans up", async () => {
+      await sql`insert into org (name, created_by, stripe_sub_id) values ('WipeMe', 'john_doe', 'sub_wipe')`;
+      await sql`update usr set orgs_r = array_append(orgs_r, 'WipeMe'), orgs_w = array_append(orgs_w, 'WipeMe') where name = 'john_doe'`;
+      const body = JSON.stringify({ type: "customer.subscription.deleted", data: { object: { id: "sub_wipe" } } });
+      const res = await app.request("/api/stripe-webhook", { method: "POST", body, headers: { "stripe-signature": "valid" } });
+      assertEquals(res.status, 200);
+      assertEquals(await res.text(), "Received");
+      const [{ count }] = await sql`select count(*)::int as count from org where name = 'WipeMe'`;
+      assertEquals(count, 0);
+      const [usr] = await sql`select orgs_r, orgs_w from usr where name = 'john_doe'`;
+      assertEquals(usr.orgs_r.includes("WipeMe"), false);
+      assertEquals(usr.orgs_w.includes("WipeMe"), false);
+      assertEquals(usr.orgs_r.includes("secret"), true);
+      assertEquals(usr.orgs_w.includes("secret"), true);
+    });
+
+    await t.step("POST /api/stripe-webhook invalid signature returns 400", async () => {
+      const body = JSON.stringify({ type: "customer.subscription.deleted", data: { object: { id: "whatever" } } });
+      const res = await app.request("/api/stripe-webhook", { method: "POST", body, headers: { "stripe-signature": "bad" } });
+      assertEquals(res.status, 400);
+    });
+
+    await t.step("GET /verify valid token sets email_verified_at only on matching email", async () => {
+      await sql`insert into usr (name, email, bio, invited_by, email_verified_at) values ('verify_me', 'verify@example.com', 'bio', 'john_doe', null)`;
+      await sql`insert into usr (name, email, bio, invited_by, email_verified_at) values ('canary_me', 'canary@example.com', 'bio', 'john_doe', null)`;
+      const tok = await emailToken(new Date(), "verify@example.com");
+      const res = await app.request(`/verify?email=${encodeURIComponent("verify@example.com")}&token=${encodeURIComponent(tok)}`);
+      assertEquals(res.status, 302);
+      assertEquals(res.headers.get("location"), "/u");
+      const [row] = await sql`select email_verified_at from usr where name = 'verify_me'`;
+      assertEquals(row.email_verified_at !== null, true);
+      const [canary] = await sql`select email_verified_at from usr where name = 'canary_me'`;
+      assertEquals(canary.email_verified_at, null);
+    });
+
+    await t.step("GET /verify rejects valid token with wrong email", async () => {
+      const tok = await emailToken(new Date(), "verify@example.com");
+      const res = await app.request(`/verify?email=${encodeURIComponent("canary@example.com")}&token=${encodeURIComponent(tok)}`);
+      assertEquals(res.status, 400);
+      const [canary] = await sql`select email_verified_at from usr where name = 'canary_me'`;
+      assertEquals(canary.email_verified_at, null);
+    });
+
+    await t.step("POST /c rate-limits after 10 posts per 60s", async () => {
+      await sql`insert into usr (name, email, password, bio, invited_by, email_verified_at) values ('rate_tester', 'rate@example.com', 'hashed:rate!', 'bio', 'john_doe', now())`;
+      const auth = { Authorization: "Basic " + btoa("rate@example.com:rate!") };
+      for (let i = 0; i < 10; i++) {
+        const res = await app.request("/c", { method: "POST", body: fd({ body: `post ${i}`, tags: "#pub" }), headers: auth });
+        assertEquals(res.status, 302);
+      }
+      const res = await app.request("/c", { method: "POST", body: fd({ body: "overflow", tags: "#pub" }), headers: auth });
+      assertEquals(res.status, 429);
     });
   }),
 );

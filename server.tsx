@@ -85,7 +85,7 @@ const buildAdditiveLink = (p: URLSearchParams | undefined, k: string, v: string)
 
 const SECRET = Deno.env.get("EMAIL_TOKEN_SECRET") ?? Math.random().toString();
 
-const emailToken = async (ts: Date, email: string) => {
+export const emailToken = async (ts: Date, email: string) => {
   const epoch = Math.floor(ts.getTime() / 1000);
   const key = await crypto.subtle.importKey(
     "raw",
@@ -578,7 +578,6 @@ app.post("/invite", authed, async (c) => {
   return ok(c);
 });
 
-// TODO: Remove this when we want to disallow self-signups.
 app.get("/signup", (c) =>
   (c as any).render(
     <section>
@@ -593,7 +592,6 @@ app.get("/signup", (c) =>
     { title: "signup" },
   ));
 
-// TODO: Remove this when we want to disallow self-signups.
 app.post("/signup", async (c) => {
   const formData = await form(c);
   const usr = {
@@ -956,6 +954,9 @@ app.post("/c/:cid/delete", authed, async (c) => {
   return c.redirect(cm?.parent_cid ? `/c/${cm.parent_cid}` : "/");
 });
 
+const postRate = new Map<string, number[]>();
+const POST_RATE_MAX = 10, POST_RATE_MS = 60_000;
+
 app.post("/c/:p?", async (c) => {
   const pid = c.req.param("p") || null;
   let n = c.get("name");
@@ -973,6 +974,12 @@ app.post("/c/:p?", async (c) => {
     }
   }
   if (!n) return c.redirect(`/u?next=${encodeURIComponent(pid ? `/c/${pid}` : "/")}`);
+
+  const now = Date.now();
+  const times = (postRate.get(n) || []).filter((t) => now - t < POST_RATE_MS);
+  if (times.length >= POST_RATE_MAX) throw new HTTPException(429, { message: "Slow down" });
+  times.push(now);
+  postRate.set(n, times);
 
   const f = await c.req.formData(),
     b = f.get("body")?.toString() || "",
