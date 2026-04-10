@@ -22,7 +22,10 @@ const extractFirstUrl = (b: string) => b.match(/https?:\/\/[^\s]+/)?.[0] || null
 export const extractImageUrl = (b: string) =>
   b.match(/https?:\/\/[^\s]+\.(?:jpe?g|png|gif|webp|svg)(?:\?[^\s]*)?/i)?.[0] || null;
 
+const isImageUrl = (u: string) => /\.(?:jpe?g|png|gif|webp|svg)(?:\?|$)/i.test(u);
+
 const resolveThumbnail = async (url: string) => {
+  if (isImageUrl(url)) return url;
   try {
     const res = await fetch(url, { headers: { "User-Agent": "ding/1.0" }, signal: AbortSignal.timeout(3000) });
     const og = (await res.text()).match(/<meta[^>]+(?:property="og:image"|name="twitter:image")[^>]+content="([^"]+)"/i)
@@ -268,12 +271,12 @@ const Comment = (c: any, user?: string) => (
 );
 
 const defaultThumb =
-  "data:image/svg+xml,%3Csvg xmlns=%27http://www.w3.org/2000/svg%27 viewBox=%270 0 1 1%27%3E%3Crect fill=%27%23222%27 width=%271%27 height=%271%27/%3E%3C/svg%3E";
+  "data:image/svg+xml,%3Csvg xmlns=%27http://www.w3.org/2000/svg%27 viewBox=%270 0 1 1%27%3E%3Crect fill=%27%23333%27 width=%271%27 height=%271%27/%3E%3C/svg%3E";
 
 const Post = (c: any, user?: string, p?: URLSearchParams) => (
   <>
     <a href={(c.body && extractFirstUrl(c.body)) || `/c/${c.cid}`}>
-      <img src={c.thumb || defaultThumb} loading="lazy" onerror={`this.onerror=null;this.src='${defaultThumb}'`} />
+      <img src={c.thumb ? `/img?url=${encodeURIComponent(c.thumb)}` : defaultThumb} loading="lazy" onerror={`this.onerror=null;this.src='${defaultThumb}'`} />
     </a>
     <div class="post-content">
       <span>
@@ -1298,6 +1301,17 @@ app.get("/c/:cid?", async (c) => {
     </>,
     { title: post.body.slice(0, 16) },
   );
+});
+
+app.get("/img", async (c) => {
+  const url = c.req.query("url");
+  if (!url) throw new HTTPException(400, { message: "missing ?url=" });
+  if (!/^https?:\/\//.test(url)) throw new HTTPException(400, { message: "invalid url" });
+  const res = await fetch(url, { headers: { "User-Agent": "ding/1.0" }, signal: AbortSignal.timeout(5000) });
+  if (!res.ok) throw new HTTPException(502, { message: `upstream ${res.status}` });
+  const ct = res.headers.get("content-type") || "image/png";
+  if (!ct.startsWith("image/")) throw new HTTPException(400, { message: "not an image" });
+  return new Response(res.body, { headers: { "Content-Type": ct, "Cache-Control": "public, max-age=604800, immutable" } });
 });
 
 app.use("/*", serveStatic({ root: "./public" }));
