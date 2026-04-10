@@ -17,7 +17,7 @@ async function getBotPosts(tag?: string, limit = 10): Promise<any[]> {
   return await res.json();
 }
 
-async function post(body: string, tags: string): Promise<number | null> {
+async function post(body: string, tags: string): Promise<boolean> {
   const formData = new FormData();
   formData.append("body", body);
   formData.append("tags", tags);
@@ -29,11 +29,9 @@ async function post(body: string, tags: string): Promise<number | null> {
   });
   if (!res.ok) {
     console.error(`Failed to post: HTTP ${res.status}`);
-    return null;
+    return false;
   }
-  const loc = res.headers.get("location") || "";
-  const m = loc.match(/\/c\/(\d+)/);
-  return m ? +m[1] : null;
+  return true;
 }
 
 async function reply(parentCid: number, body: string): Promise<boolean> {
