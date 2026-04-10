@@ -724,6 +724,49 @@ Deno.test(
       assertEquals(canary.email_verified_at, null);
     });
 
+    await t.step("POST /c/:p reaction toggle removes on second click", async () => {
+      const [seed] = await sql`insert into com (created_by, body, tags) values ('BugHunter42', 'toggle test', '{humor}') returning cid`;
+      const res1 = await app.request(`/c/${seed.cid}`, { method: "POST", body: fd({ body: "👍" }), headers: janeAuth });
+      assertEquals(res1.status, 302);
+      const [after1] = await sql`select (c_reactions->'👍') as r from com where cid = ${seed.cid}`;
+      assertEquals(after1.r, "1");
+      const res2 = await app.request(`/c/${seed.cid}`, { method: "POST", body: fd({ body: "👍" }), headers: janeAuth });
+      assertEquals(res2.status, 302);
+      const [after2] = await sql`select (c_reactions->'👍') as r from com where cid = ${seed.cid}`;
+      assertEquals(after2.r, "0");
+      const [gone] = await sql`select count(*)::int as c from com where parent_cid = ${seed.cid} and body = '👍' and created_by = 'jane_doe'`;
+      assertEquals(gone.c, 0);
+    });
+
+    await t.step("POST /c/:p self-reaction blocked with error feedback", async () => {
+      const [seed] = await sql`insert into com (created_by, body, tags) values ('jane_doe', 'jane own post', '{humor}') returning cid`;
+      const res = await app.request(`/c/${seed.cid}`, { method: "POST", body: fd({ body: "▲" }), headers: janeAuth });
+      assertEquals(res.status, 302);
+      assertEquals(res.headers.get("location")?.includes("err=self-react"), true);
+      const [cnt] = await sql`select count(*)::int as c from com where parent_cid = ${seed.cid} and body = '▲'`;
+      assertEquals(cnt.c, 0);
+      const [row] = await sql`select (c_reactions->'▲') as r from com where cid = ${seed.cid}`;
+      assertEquals(row.r, null);
+    });
+
+    await t.step("GET /c/:cid shows backlinks for shared tags", async () => {
+      const [p1] = await sql`insert into com (created_by, body, tags) values ('john_doe', 'backlink post A', '{backtest}') returning cid`;
+      const [p2] = await sql`insert into com (created_by, body, tags) values ('john_doe', 'backlink post B', '{backtest}') returning cid`;
+      const res = await app.request(`/c/${p1.cid}`);
+      assertEquals(res.status, 200);
+      const text = await res.text();
+      assertEquals(text.includes("backlinks"), true);
+      assertEquals(text.includes("backlink post B"), true);
+    });
+
+    await t.step("GET /c/:cid no backlinks when tags have no matches", async () => {
+      const [p] = await sql`insert into com (created_by, body, tags) values ('john_doe', 'lonely post', '{uniquetag_xyz}') returning cid`;
+      const res = await app.request(`/c/${p.cid}`);
+      assertEquals(res.status, 200);
+      const text = await res.text();
+      assertEquals(text.includes("backlinks"), false);
+    });
+
     await t.step("POST /c rate-limits after 10 posts per 60s", async () => {
       await sql`insert into usr (name, email, password, bio, invited_by, email_verified_at) values ('rate_tester', 'rate@example.com', 'hashed:rate!', 'bio', 'john_doe', now())`;
       const auth = { Authorization: "Basic " + btoa("rate@example.com:rate!") };

@@ -1062,12 +1062,25 @@ app.post("/c/:p?", async (c) => {
   let tags: string[], orgs: string[], usrs: string[];
 
   if (pid) {
-    const [prm] = await sql`select tags, orgs, usrs from com where cid = ${pid}`;
+    const [prm] = await sql`select tags, orgs, usrs, created_by, parent_cid as prm_parent from com where cid = ${pid}`;
     if (!prm || !prm.orgs.every((t: any) => usr.orgs_r.includes(t)) || (prm.usrs.length && !prm.usrs.includes(n)))
       throw new HTTPException(403);
     tags = prm.tags;
     orgs = prm.orgs;
     usrs = prm.usrs;
+
+    if (isReaction(b)) {
+      if (prm.created_by === n)
+        return c.redirect((prm.prm_parent ? `/c/${prm.prm_parent}#${pid}` : `/c/${pid}`) + "?err=self-react");
+      const [existing] = await sql`select cid from com where parent_cid = ${pid} and created_by = ${n} and body = ${b} and char_length(body) = 1 limit 1`;
+      if (existing) {
+        await sql.begin((tx: any) => Promise.all([
+          tx`delete from com where cid = ${existing.cid}`,
+          tx`update com set c_reactions = c_reactions || hstore(${b}, greatest(coalesce((c_reactions->${b})::int,0)-1, 0)::text) where cid = ${pid}`,
+        ]));
+        return c.redirect(prm.prm_parent ? `/c/${prm.prm_parent}#${pid}` : `/c/${pid}`);
+      }
+    }
   } else {
     const l = parseLabels(f.get("tags")?.toString() || "");
     if (!l.tag.length || !l.org.every((t) => usr.orgs_w.includes(t))) throw new HTTPException(403);
@@ -1237,8 +1250,12 @@ app.get("/c/:cid?", async (c) => {
 
   const post = items[0];
   if (!post) return notFound();
+  const backlinks = post.tags?.length
+    ? await sql`select cid, body, created_at from com where parent_cid is null and cid != ${post.cid} and tags && ${post.tags}::text[] and orgs <@ ${rT}::text[] and (usrs = '{}' or ${n || ""}::text = any(usrs)) order by created_at desc limit 5`
+    : [];
   return (c as any).render(
     <>
+      {q.err === "self-react" && <section><p style="color:#c44;margin:0;">you cannot react to your own post</p></section>}
       <section>
         {Comment({ ...post, child_comments: (post.child_comments || []).filter((r: any) => isReaction(r.body)) }, n)}
       </section>
@@ -1268,6 +1285,16 @@ app.get("/c/:cid?", async (c) => {
       <section>
         {(post.child_comments || []).filter((r: any) => !isReaction(r.body)).map((r: any) => Comment(r, n))}
       </section>
+      {backlinks.length > 0 && (
+        <section>
+          <h3 style="margin:0 0 0.5rem 0;font-size:0.875rem;opacity:0.6;">backlinks</h3>
+          {backlinks.map((bl: any) => (
+            <div key={bl.cid} style="margin:0.25rem 0;">
+              <a href={`/c/${bl.cid}`}>{bl.body.trim().split("\n")[0].slice(0, 60)}</a>
+            </div>
+          ))}
+        </section>
+      )}
     </>,
     { title: post.body.slice(0, 16) },
   );
