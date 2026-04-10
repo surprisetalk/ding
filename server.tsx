@@ -320,7 +320,7 @@ const host = (c: Context) => {
   if (a.includes("xml")) return "rss";
   return undefined;
 };
-const ok = (c: Context) => host(c) === "api" ? c.json(null, 204) : c.redirect("/u");
+const ok = (c: Context) => host(c) === "api" ? c.body(null, 204) : c.redirect("/u");
 
 const basicAuthName = async (c: Context): Promise<string | null> => {
   const a = c.req.header("Authorization");
@@ -374,7 +374,7 @@ app.use("*", async (c, next) => {
           <title>${props?.title ? "ding | " + props.title : "ding"}</title>
           <meta charset="UTF-8" />
           <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-          <link rel="manifest" href="/manifest.json" />
+
           <link rel="stylesheet" href="/style.css" />
         </head>
         <body>
