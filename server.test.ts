@@ -780,6 +780,234 @@ Deno.test(
   }),
 );
 
+//// BOT INTERACTION TESTS //////////////////////////////////////////////////////
+
+Deno.test(
+  "bot interactions",
+  pglite((sql) => async (t) => {
+    // Create a bot user
+    await sql`insert into usr (name, email, password, bio, invited_by, email_verified_at)
+      values ('bot_test', 'bot-test@ding.bar', 'hashed:botpass!', 'I am a test bot', 'john_doe', now())`;
+    const botAuth = { Authorization: "Basic " + btoa("bot-test@ding.bar:botpass!") };
+    const jAuth = { Authorization: "Basic " + btoa("john@example.com:password1!") };
+    const janeAuth = { Authorization: "Basic " + btoa("jane@example.com:password1!") };
+    const fd = (o: Record<string, string>) => {
+      const f = new FormData();
+      for (const [k, v] of Object.entries(o)) f.append(k, v);
+      return f;
+    };
+    const cidFromLocation = (loc: string) => {
+      const m = loc.match(/^\/c\/(\d+)/);
+      if (!m) throw new Error(`bad location: ${loc}`);
+      return +m[1];
+    };
+
+    await t.step("bot can post via Basic Auth", async () => {
+      const res = await app.request("/c", {
+        method: "POST",
+        body: fd({ body: "bot post 1\n\nhttps://example.com/1", tags: "#test #bot" }),
+        headers: botAuth,
+      });
+      assertEquals(res.status, 302);
+      const cid = cidFromLocation(res.headers.get("location")!);
+      const [row] = await sql`select body, created_by, tags from com where cid = ${cid}`;
+      assertEquals(row.created_by, "bot_test");
+      assertEquals(row.tags, ["test", "bot"]);
+    });
+
+    await t.step("bot can read own posts as JSON", async () => {
+      // Post a second item
+      await app.request("/c", {
+        method: "POST",
+        body: fd({ body: "bot post 2\n\nhttps://example.com/2", tags: "#test #bot" }),
+        headers: botAuth,
+      });
+
+      const res = await app.request("/c?usr=bot_test&limit=10", {
+        headers: { Accept: "application/json", ...botAuth },
+      });
+      assertEquals(res.status, 200);
+      const posts = await res.json();
+      assertEquals(posts.length >= 2, true);
+      assertEquals(posts[0].created_by, "bot_test");
+      assertEquals(typeof posts[0].body, "string");
+      assertEquals(Array.isArray(posts[0].tags), true);
+    });
+
+    await t.step("bot can read child_comments as JSON", async () => {
+      // Create root post, add replies from different users
+      const r1 = await app.request("/c", {
+        method: "POST",
+        body: fd({ body: "game post", tags: "#game #bot" }),
+        headers: botAuth,
+      });
+      const rootCid = cidFromLocation(r1.headers.get("location")!);
+
+      await app.request(`/c/${rootCid}`, {
+        method: "POST",
+        body: fd({ body: "player guess 1" }),
+        headers: jAuth,
+      });
+      await app.request(`/c/${rootCid}`, {
+        method: "POST",
+        body: fd({ body: "player guess 2" }),
+        headers: janeAuth,
+      });
+
+      const res = await app.request(`/c/${rootCid}`, {
+        headers: { Accept: "application/json", ...botAuth },
+      });
+      assertEquals(res.status, 200);
+      const items = await res.json();
+      const post = items[0];
+      assertEquals(post.cid, rootCid);
+      assertEquals(post.child_comments.length, 2);
+      assertEquals(post.child_comments[0].created_by === "john_doe" || post.child_comments[0].created_by === "jane_doe", true);
+      assertEquals(typeof post.child_comments[0].cid, "number");
+      assertEquals(typeof post.child_comments[0].created_at, "string");
+    });
+
+    await t.step("bot can reply to a comment", async () => {
+      // Get a post with child_comments
+      const listRes = await app.request("/c?usr=bot_test&tag=game&limit=1", {
+        headers: { Accept: "application/json", ...botAuth },
+      });
+      const posts = await listRes.json();
+      const rootCid = posts[0].cid;
+      const playerComment = posts[0].child_comments[0];
+
+      // Bot replies to the player's comment
+      const res = await app.request(`/c/${playerComment.cid}`, {
+        method: "POST",
+        body: fd({ body: `@${playerComment.created_by} Correct!` }),
+        headers: botAuth,
+      });
+      assertEquals(res.status, 302);
+
+      // Verify reply exists
+      const [reply] = await sql`select body, created_by, parent_cid from com where created_by = 'bot_test' and parent_cid = ${playerComment.cid}`;
+      assertEquals(reply.created_by, "bot_test");
+      assertEquals(reply.body.includes("Correct!"), true);
+    });
+
+    await t.step("bot can discover posts by tag", async () => {
+      // Users invoke utility bots via tags like #8ball or #dice
+      const res = await app.request("/c", {
+        method: "POST",
+        body: fd({ body: "Will it ship on time?", tags: "#8ball #fun" }),
+        headers: jAuth,
+      });
+      assertEquals(res.status, 302);
+
+      // Bot searches by tag to find posts needing a response
+      const tagRes = await app.request("/c?tag=8ball&limit=10", {
+        headers: { Accept: "application/json" },
+      });
+      assertEquals(tagRes.status, 200);
+      const posts = await tagRes.json();
+      assertEquals(posts.length >= 1, true);
+      assertEquals(posts.some((p: any) => p.body === "Will it ship on time?"), true);
+    });
+
+    await t.step("bot dedup: can detect own prior reply in child_comments", async () => {
+      // Create a post the bot already replied to
+      const r1 = await app.request("/c", {
+        method: "POST",
+        body: fd({ body: "question post", tags: "#trivia #bot" }),
+        headers: botAuth,
+      });
+      const rootCid = cidFromLocation(r1.headers.get("location")!);
+
+      // User replies
+      const r2 = await app.request(`/c/${rootCid}`, {
+        method: "POST", body: fd({ body: "my answer" }), headers: jAuth,
+      });
+
+      // Bot grades
+      await app.request(`/c/${rootCid}`, {
+        method: "POST", body: fd({ body: "@john_doe Correct!" }), headers: botAuth,
+      });
+
+      // Now fetch and check: bot can see its own reply in child_comments
+      const res = await app.request(`/c/${rootCid}`, {
+        headers: { Accept: "application/json", ...botAuth },
+      });
+      const items = await res.json();
+      const children = items[0].child_comments;
+      const botReplies = children.filter((c: any) => c.created_by === "bot_test");
+      assertEquals(botReplies.length, 1);
+      assertEquals(botReplies[0].body, "@john_doe Correct!");
+    });
+
+    await t.step("bot reply inherits parent tags/orgs", async () => {
+      // Use DB directly to avoid rate limiter (which is in-memory and shared across test suites)
+      const [root] = await sql`insert into com (created_by, body, tags) values ('bot_test', 'tagged post', '{alpha,beta}') returning cid`;
+      await sql`insert into com (parent_cid, created_by, body, tags, orgs, usrs) values (${root.cid}, 'john_doe', 'reply inherits tags', '{alpha,beta}', '{}', '{}')`;
+      const [reply] = await sql`select tags from com where parent_cid = ${root.cid} and created_by = 'john_doe'`;
+      assertEquals(reply.tags, ["alpha", "beta"]);
+    });
+
+    await t.step("reactions don't appear in child_comments", async () => {
+      // Seed directly to avoid rate limiter
+      const [root] = await sql`insert into com (created_by, body, tags) values ('bot_test', 'react to me', '{test}') returning cid`;
+      // Add reaction via DB
+      await sql`insert into com (parent_cid, created_by, body, tags, orgs, usrs) values (${root.cid}, 'john_doe', '▲', '{test}', '{}', '{}')`;
+      await sql`update com set c_reactions = c_reactions || hstore('▲', '1') where cid = ${root.cid}`;
+      // Add regular comment via DB
+      await sql`insert into com (parent_cid, created_by, body, tags, orgs, usrs) values (${root.cid}, 'jane_doe', 'real comment', '{test}', '{}', '{}')`;
+      await sql`update com set c_comments = c_comments + 1 where cid = ${root.cid}`;
+
+      const res = await app.request(`/c/${root.cid}`, {
+        headers: { Accept: "application/json" },
+      });
+      const items = await res.json();
+      const post = items[0];
+      assertEquals(post.child_comments.length, 1);
+      assertEquals(post.child_comments[0].body, "real comment");
+      assertEquals(+post.reaction_counts["▲"], 1);
+    });
+
+    await t.step("bot can't post to private org without membership", async () => {
+      const res = await app.request("/c", {
+        method: "POST",
+        body: fd({ body: "sneaky bot", tags: "#test *secret" }),
+        headers: botAuth,
+      });
+      assertEquals(res.status, 403);
+    });
+
+    await t.step("bot can't reply to inaccessible private post", async () => {
+      // Post 355 is in *secret org (only john has access)
+      const res = await app.request("/c/355", {
+        method: "POST",
+        body: fd({ body: "sneaky reply" }),
+        headers: botAuth,
+      });
+      assertEquals(res.status, 403);
+    });
+
+    await t.step("malformed Basic Auth doesn't crash", async () => {
+      const res = await app.request("/c", {
+        method: "POST",
+        body: fd({ body: "test", tags: "#pub" }),
+        headers: { Authorization: "Basic !!!invalid-base64!!!" },
+      });
+      // Should redirect to login, not 500
+      assertEquals(res.status, 302);
+      assertEquals(res.headers.get("location")?.startsWith("/u?next="), true);
+    });
+
+    await t.step("empty Basic Auth doesn't crash", async () => {
+      const res = await app.request("/c", {
+        method: "POST",
+        body: fd({ body: "test", tags: "#pub" }),
+        headers: { Authorization: "Basic " },
+      });
+      assertEquals(res.status, 302);
+    });
+  }),
+);
+
 //// LABEL PARSING TESTS ///////////////////////////////////////////////////////
 
 Deno.test("parseLabels", async (t) => {

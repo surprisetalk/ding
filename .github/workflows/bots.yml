@@ -49,3 +49,52 @@ jobs:
           BOT_HMMM_EMAIL: ${{ secrets.BOT_HMMM_EMAIL }}
           BOT_HMMM_PASSWORD: ${{ secrets.BOT_HMMM_PASSWORD }}
         run: deno run -A bots/hmmm.ts
+
+      - name: Run Tildes bot
+        env:
+          DING_API_URL: ${{ secrets.DING_API_URL }}
+          BOT_TILDES_EMAIL: ${{ secrets.BOT_TILDES_EMAIL }}
+          BOT_TILDES_PASSWORD: ${{ secrets.BOT_TILDES_PASSWORD }}
+        run: deno run -A bots/tildes.ts
+
+      - name: Run 8ball bot
+        env:
+          DING_API_URL: ${{ secrets.DING_API_URL }}
+          BOT_8BALL_EMAIL: ${{ secrets.BOT_8BALL_EMAIL }}
+          BOT_8BALL_PASSWORD: ${{ secrets.BOT_8BALL_PASSWORD }}
+        run: deno run -A bots/8ball.ts
+
+      - name: Run Dice bot
+        env:
+          DING_API_URL: ${{ secrets.DING_API_URL }}
+          BOT_DICE_EMAIL: ${{ secrets.BOT_DICE_EMAIL }}
+          BOT_DICE_PASSWORD: ${{ secrets.BOT_DICE_PASSWORD }}
+        run: deno run -A bots/dice.ts
+
+      - name: Run CodeGolf bot
+        env:
+          DING_API_URL: ${{ secrets.DING_API_URL }}
+          BOT_CODEGOLF_EMAIL: ${{ secrets.BOT_CODEGOLF_EMAIL }}
+          BOT_CODEGOLF_PASSWORD: ${{ secrets.BOT_CODEGOLF_PASSWORD }}
+        run: deno run -A bots/codegolf.ts
+
+      - name: Run Estimation bot
+        env:
+          DING_API_URL: ${{ secrets.DING_API_URL }}
+          BOT_ESTIMATION_EMAIL: ${{ secrets.BOT_ESTIMATION_EMAIL }}
+          BOT_ESTIMATION_PASSWORD: ${{ secrets.BOT_ESTIMATION_PASSWORD }}
+        run: deno run -A bots/estimation.ts
+
+      - name: Run Remind bot
+        env:
+          DING_API_URL: ${{ secrets.DING_API_URL }}
+          BOT_REMIND_EMAIL: ${{ secrets.BOT_REMIND_EMAIL }}
+          BOT_REMIND_PASSWORD: ${{ secrets.BOT_REMIND_PASSWORD }}
+        run: deno run -A bots/remind.ts
+
+      - name: Run BestOf bot
+        env:
+          DING_API_URL: ${{ secrets.DING_API_URL }}
+          BOT_BESTOF_EMAIL: ${{ secrets.BOT_BESTOF_EMAIL }}
+          BOT_BESTOF_PASSWORD: ${{ secrets.BOT_BESTOF_PASSWORD }}
+        run: deno run -A bots/bestof.ts
