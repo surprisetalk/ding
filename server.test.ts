@@ -12,6 +12,7 @@ import app, {
   emailToken,
   encodeLabels,
   extractImageUrl,
+  extractLinks,
   formatLabels,
   parseLabels,
   setSql,
@@ -749,19 +750,29 @@ Deno.test(
       assertEquals(row.r, null);
     });
 
-    await t.step("GET /c/:cid shows backlinks for shared tags", async () => {
-      const [p1] = await sql`insert into com (created_by, body, tags) values ('john_doe', 'backlink post A', '{backtest}') returning cid`;
-      const [p2] = await sql`insert into com (created_by, body, tags) values ('john_doe', 'backlink post B', '{backtest}') returning cid`;
+    await t.step("GET /c/:cid shows backlinks from posts linking to it", async () => {
+      const [p1] = await sql`insert into com (created_by, body, tags) values ('john_doe', 'target post', '{backtest}') returning cid`;
+      const [p2] = await sql`insert into com (created_by, body, tags, links) values ('john_doe', ${"check out https://ding.bar/c/" + p1.cid + " cool"}, '{backtest}', ${[p1.cid]}) returning cid`;
       const res = await app.request(`/c/${p1.cid}`);
       assertEquals(res.status, 200);
       const text = await res.text();
       assertEquals(text.includes("backlinks"), true);
-      assertEquals(text.includes("backlink post B"), true);
+      assertEquals(text.includes(`check out https://ding.bar/c/${p1.cid}`), true);
     });
 
-    await t.step("GET /c/:cid no backlinks when tags have no matches", async () => {
+    await t.step("GET /c/:cid no backlinks when no posts link to it", async () => {
       const [p] = await sql`insert into com (created_by, body, tags) values ('john_doe', 'lonely post', '{uniquetag_xyz}') returning cid`;
       const res = await app.request(`/c/${p.cid}`);
+      assertEquals(res.status, 200);
+      const text = await res.text();
+      assertEquals(text.includes("backlinks"), false);
+    });
+
+    await t.step("GET /c/:cid no false backlink match on similar cid", async () => {
+      const [p1] = await sql`insert into com (created_by, body, tags) values ('john_doe', 'post A', '{advtest}') returning cid`;
+      const fakeCid = p1.cid * 10 + 9;
+      const [p2] = await sql`insert into com (created_by, body, tags, links) values ('john_doe', ${"see https://ding.bar/c/" + fakeCid}, '{advtest}', ${[fakeCid]}) returning cid`;
+      const res = await app.request(`/c/${p1.cid}`);
       assertEquals(res.status, 200);
       const text = await res.text();
       assertEquals(text.includes("backlinks"), false);
@@ -1157,5 +1168,29 @@ https://i.redd.it/xyz123.jpg
 
 via /u/someone`;
     assertEquals(extractImageUrl(body), "https://i.redd.it/xyz123.jpg");
+  });
+});
+
+//// EXTRACT LINKS TESTS ///////////////////////////////////////////////////////
+
+Deno.test("extractLinks", async (t) => {
+  await t.step("extracts cid from ding.bar URL", () => {
+    assertEquals(extractLinks("see https://ding.bar/c/42 cool"), [42]);
+  });
+
+  await t.step("extracts multiple links", () => {
+    assertEquals(extractLinks("https://ding.bar/c/1 and https://ding.bar/c/2"), [1, 2]);
+  });
+
+  await t.step("returns empty for no links", () => {
+    assertEquals(extractLinks("no links here"), []);
+  });
+
+  await t.step("ignores non-ding.bar URLs", () => {
+    assertEquals(extractLinks("https://example.com/c/42"), []);
+  });
+
+  await t.step("ignores relative /c/ paths", () => {
+    assertEquals(extractLinks("see /c/42"), []);
   });
 });

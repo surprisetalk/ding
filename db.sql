@@ -35,6 +35,7 @@ create table com (
   orgs text[] not null default '{}',  -- org/private tags (e.g., 'secret')
   usrs text[] not null default '{}',  -- user mentions (e.g., 'john')
   body text not null check (length(body) between 0 and 1441),
+  links int[] not null default '{}',
   thumb text,  -- thumbnail URL (og:image or favicon fallback)
   created_at timestamptz default current_timestamp,
   -- Denormalized counts for hot ranking (maintained by server)
@@ -49,6 +50,7 @@ create index com_body_idx on com using gin (to_tsvector('english', body));
 create index com_tags_idx on com using gin (tags);
 create index com_orgs_idx on com using gin (orgs);
 create index com_usrs_idx on com using gin (usrs);
+create index com_links_idx on com using gin (links);
 create index com_parent_cid_idx on com (parent_cid);
 create index com_created_by_idx on com (created_by);
 

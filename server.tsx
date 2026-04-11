@@ -19,6 +19,8 @@ import Stripe from "stripe";
 const escapeXml = (s: string) =>
   s.replace(/[&<>"']/g, (m) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&apos;" }[m]!));
 const extractFirstUrl = (b: string) => b.match(/https?:\/\/[^\s]+/)?.[0] || null;
+export const extractLinks = (b: string) =>
+  [...b.matchAll(/https:\/\/ding\.bar\/c\/(\d+)/g)].map(m => parseInt(m[1]));
 export const extractImageUrl = (b: string) =>
   b.match(/https?:\/\/[^\s]+\.(?:jpe?g|png|gif|webp|svg)(?:\?[^\s]*)?/i)?.[0] || null;
 
@@ -1092,11 +1094,12 @@ app.post("/c/:p?", async (c) => {
     usrs = l.usr;
   }
 
+  const links = extractLinks(b);
   const thumb = pid
     ? null
     : (extractImageUrl(b) || (extractFirstUrl(b) ? await resolveThumbnail(extractFirstUrl(b)!) : null));
   const [cm] =
-    await sql`insert into com (parent_cid, created_by, body, tags, orgs, usrs, thumb) values (${pid}, ${n}, ${b}, ${tags}, ${orgs}, ${usrs}, ${thumb}) returning cid`;
+    await sql`insert into com (parent_cid, created_by, body, tags, orgs, usrs, links, thumb) values (${pid}, ${n}, ${b}, ${tags}, ${orgs}, ${usrs}, ${links}, ${thumb}) returning cid`;
 
   if (pid) {
     if (isReaction(b))
@@ -1253,9 +1256,7 @@ app.get("/c/:cid?", async (c) => {
 
   const post = items[0];
   if (!post) return notFound();
-  const backlinks = post.tags?.length
-    ? await sql`select cid, body, created_at from com where parent_cid is null and cid != ${post.cid} and tags && ${post.tags}::text[] and orgs <@ ${rT}::text[] and (usrs = '{}' or ${n || ""}::text = any(usrs)) order by created_at desc limit 5`
-    : [];
+  const backlinks = await sql`select cid, body, created_at from com where parent_cid is null and ${post.cid} = any(links) and orgs <@ ${rT}::text[] and (usrs = '{}' or ${n || ""}::text = any(usrs)) order by created_at desc limit 5`;
   return (c as any).render(
     <>
       {q.err === "self-react" && <section><p style="color:#c44;margin:0;">you cannot react to your own post</p></section>}
