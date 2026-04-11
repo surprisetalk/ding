@@ -29,12 +29,12 @@ jobs:
           BOT_LOBSTERS_PASSWORD: ${{ secrets.BOT_LOBSTERS_PASSWORD }}
         run: deno run -A bots/lobsters.ts
 
-      # - name: Run arXiv bot
-      #   env:
-      #     DING_API_URL: ${{ secrets.DING_API_URL }}
-      #     BOT_ARXIV_EMAIL: ${{ secrets.BOT_ARXIV_EMAIL }}
-      #     BOT_ARXIV_PASSWORD: ${{ secrets.BOT_ARXIV_PASSWORD }}
-      #   run: deno run -A bots/arxiv.ts
+      - name: Run arXiv bot
+        env:
+          DING_API_URL: ${{ secrets.DING_API_URL }}
+          BOT_ARXIV_EMAIL: ${{ secrets.BOT_ARXIV_EMAIL }}
+          BOT_ARXIV_PASSWORD: ${{ secrets.BOT_ARXIV_PASSWORD }}
+        run: deno run -A bots/arxiv.ts
 
       - name: Run SmallWeb bot
         env:
@@ -98,3 +98,140 @@ jobs:
           BOT_BESTOF_EMAIL: ${{ secrets.BOT_BESTOF_EMAIL }}
           BOT_BESTOF_PASSWORD: ${{ secrets.BOT_BESTOF_PASSWORD }}
         run: deno run -A bots/bestof.ts
+
+      - name: Run Haiku bot
+        env:
+          DING_API_URL: ${{ secrets.DING_API_URL }}
+          BOT_HAIKU_EMAIL: ${{ secrets.BOT_HAIKU_EMAIL }}
+          BOT_HAIKU_PASSWORD: ${{ secrets.BOT_HAIKU_PASSWORD }}
+        run: deno run -A bots/haiku.ts
+
+      - name: Run Pentameter bot
+        env:
+          DING_API_URL: ${{ secrets.DING_API_URL }}
+          BOT_PENTAMETER_EMAIL: ${{ secrets.BOT_PENTAMETER_EMAIL }}
+          BOT_PENTAMETER_PASSWORD: ${{ secrets.BOT_PENTAMETER_PASSWORD }}
+        run: deno run -A bots/pentameter.ts
+
+      - name: Run Museum bot
+        env:
+          DING_API_URL: ${{ secrets.DING_API_URL }}
+          BOT_MUSEUM_EMAIL: ${{ secrets.BOT_MUSEUM_EMAIL }}
+          BOT_MUSEUM_PASSWORD: ${{ secrets.BOT_MUSEUM_PASSWORD }}
+        run: deno run -A bots/museum.ts
+
+      - name: Run Album bot
+        env:
+          DING_API_URL: ${{ secrets.DING_API_URL }}
+          BOT_ALBUM_EMAIL: ${{ secrets.BOT_ALBUM_EMAIL }}
+          BOT_ALBUM_PASSWORD: ${{ secrets.BOT_ALBUM_PASSWORD }}
+        run: deno run -A bots/album.ts
+
+      - name: Run MathGIF bot
+        env:
+          DING_API_URL: ${{ secrets.DING_API_URL }}
+          BOT_MATHGIF_EMAIL: ${{ secrets.BOT_MATHGIF_EMAIL }}
+          BOT_MATHGIF_PASSWORD: ${{ secrets.BOT_MATHGIF_PASSWORD }}
+        run: deno run -A bots/mathgif.ts
+
+      - name: Run Clipart bot
+        env:
+          DING_API_URL: ${{ secrets.DING_API_URL }}
+          BOT_CLIPART_EMAIL: ${{ secrets.BOT_CLIPART_EMAIL }}
+          BOT_CLIPART_PASSWORD: ${{ secrets.BOT_CLIPART_PASSWORD }}
+          R2_ENDPOINT: ${{ secrets.R2_ENDPOINT }}
+          R2_ACCESS_KEY_ID: ${{ secrets.R2_ACCESS_KEY_ID }}
+          R2_SECRET_ACCESS_KEY: ${{ secrets.R2_SECRET_ACCESS_KEY }}
+          R2_BUCKET: ${{ secrets.R2_BUCKET }}
+          R2_PUBLIC_URL: ${{ secrets.R2_PUBLIC_URL }}
+        run: deno run -A bots/clipart.ts
+
+      - name: Run Geometry bot
+        env:
+          DING_API_URL: ${{ secrets.DING_API_URL }}
+          BOT_GEOMETRY_EMAIL: ${{ secrets.BOT_GEOMETRY_EMAIL }}
+          BOT_GEOMETRY_PASSWORD: ${{ secrets.BOT_GEOMETRY_PASSWORD }}
+          R2_ENDPOINT: ${{ secrets.R2_ENDPOINT }}
+          R2_ACCESS_KEY_ID: ${{ secrets.R2_ACCESS_KEY_ID }}
+          R2_SECRET_ACCESS_KEY: ${{ secrets.R2_SECRET_ACCESS_KEY }}
+          R2_BUCKET: ${{ secrets.R2_BUCKET }}
+          R2_PUBLIC_URL: ${{ secrets.R2_PUBLIC_URL }}
+        run: deno run -A bots/geometry.ts
+
+      - name: Run EmojiGlitch bot
+        env:
+          DING_API_URL: ${{ secrets.DING_API_URL }}
+          BOT_EMOJIGLITCH_EMAIL: ${{ secrets.BOT_EMOJIGLITCH_EMAIL }}
+          BOT_EMOJIGLITCH_PASSWORD: ${{ secrets.BOT_EMOJIGLITCH_PASSWORD }}
+          R2_ENDPOINT: ${{ secrets.R2_ENDPOINT }}
+          R2_ACCESS_KEY_ID: ${{ secrets.R2_ACCESS_KEY_ID }}
+          R2_SECRET_ACCESS_KEY: ${{ secrets.R2_SECRET_ACCESS_KEY }}
+          R2_BUCKET: ${{ secrets.R2_BUCKET }}
+          R2_PUBLIC_URL: ${{ secrets.R2_PUBLIC_URL }}
+        run: deno run -A bots/emojiglitch.ts
+
+      - name: Run Lowpoly bot
+        env:
+          DING_API_URL: ${{ secrets.DING_API_URL }}
+          BOT_LOWPOLY_EMAIL: ${{ secrets.BOT_LOWPOLY_EMAIL }}
+          BOT_LOWPOLY_PASSWORD: ${{ secrets.BOT_LOWPOLY_PASSWORD }}
+          R2_ENDPOINT: ${{ secrets.R2_ENDPOINT }}
+          R2_ACCESS_KEY_ID: ${{ secrets.R2_ACCESS_KEY_ID }}
+          R2_SECRET_ACCESS_KEY: ${{ secrets.R2_SECRET_ACCESS_KEY }}
+          R2_BUCKET: ${{ secrets.R2_BUCKET }}
+          R2_PUBLIC_URL: ${{ secrets.R2_PUBLIC_URL }}
+        run: deno run -A bots/lowpoly.ts
+
+      - name: Run PixelSort bot
+        env:
+          DING_API_URL: ${{ secrets.DING_API_URL }}
+          BOT_PIXELSORT_EMAIL: ${{ secrets.BOT_PIXELSORT_EMAIL }}
+          BOT_PIXELSORT_PASSWORD: ${{ secrets.BOT_PIXELSORT_PASSWORD }}
+          R2_ENDPOINT: ${{ secrets.R2_ENDPOINT }}
+          R2_ACCESS_KEY_ID: ${{ secrets.R2_ACCESS_KEY_ID }}
+          R2_SECRET_ACCESS_KEY: ${{ secrets.R2_SECRET_ACCESS_KEY }}
+          R2_BUCKET: ${{ secrets.R2_BUCKET }}
+          R2_PUBLIC_URL: ${{ secrets.R2_PUBLIC_URL }}
+        run: deno run -A bots/pixelsort.ts
+
+      - name: Run Dither bot
+        env:
+          DING_API_URL: ${{ secrets.DING_API_URL }}
+          BOT_DITHER_EMAIL: ${{ secrets.BOT_DITHER_EMAIL }}
+          BOT_DITHER_PASSWORD: ${{ secrets.BOT_DITHER_PASSWORD }}
+        run: deno run -A bots/dither.ts
+
+      - name: Run Aquarium bot
+        env:
+          DING_API_URL: ${{ secrets.DING_API_URL }}
+          BOT_AQUARIUM_EMAIL: ${{ secrets.BOT_AQUARIUM_EMAIL }}
+          BOT_AQUARIUM_PASSWORD: ${{ secrets.BOT_AQUARIUM_PASSWORD }}
+        run: deno run -A bots/aquarium.ts
+
+      - name: Run Stars bot
+        env:
+          DING_API_URL: ${{ secrets.DING_API_URL }}
+          BOT_STARS_EMAIL: ${{ secrets.BOT_STARS_EMAIL }}
+          BOT_STARS_PASSWORD: ${{ secrets.BOT_STARS_PASSWORD }}
+        run: deno run -A bots/stars.ts
+
+      - name: Run Cowsay bot
+        env:
+          DING_API_URL: ${{ secrets.DING_API_URL }}
+          BOT_COWSAY_EMAIL: ${{ secrets.BOT_COWSAY_EMAIL }}
+          BOT_COWSAY_PASSWORD: ${{ secrets.BOT_COWSAY_PASSWORD }}
+        run: deno run -A bots/cowsay.ts
+
+      - name: Run SortingHat bot
+        env:
+          DING_API_URL: ${{ secrets.DING_API_URL }}
+          BOT_SORTINGHAT_EMAIL: ${{ secrets.BOT_SORTINGHAT_EMAIL }}
+          BOT_SORTINGHAT_PASSWORD: ${{ secrets.BOT_SORTINGHAT_PASSWORD }}
+        run: deno run -A bots/sortinghat.ts
+
+      - name: Run Summoner bot
+        env:
+          DING_API_URL: ${{ secrets.DING_API_URL }}
+          BOT_SUMMONER_EMAIL: ${{ secrets.BOT_SUMMONER_EMAIL }}
+          BOT_SUMMONER_PASSWORD: ${{ secrets.BOT_SUMMONER_PASSWORD }}
+        run: deno run -A bots/summoner.ts
