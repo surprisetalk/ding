@@ -74,7 +74,12 @@ async function main() {
 
   const dayIndex = Math.floor(Date.now() / 86_400_000) % ALBUMS.length;
   const album = ALBUMS[dayIndex];
-  const coverUrl = `https://coverartarchive.org/release/${album.mbid}/front-500`;
+  let coverUrl = `https://coverartarchive.org/release/${album.mbid}/front-500`;
+  try {
+    const r = await fetch(coverUrl, { redirect: "manual" });
+    const loc = r.headers.get("location");
+    if (loc) coverUrl = loc;
+  } catch { /* fall back to original URL */ }
   const body = `${album.title} (${album.year})\n\n${album.artist}\n\n${coverUrl}`;
 
   console.log(`Posting: ${album.title} by ${album.artist}`);

@@ -1,4 +1,4 @@
-import { botInit, getLastPostAge, getAnsweredCids, reply, extractImageUrl } from "../bots.ts";
+import { botInit, getAnsweredCids, reply, extractImageUrl } from "../bots.ts";
 
 const { apiUrl, auth, botUsername } = botInit("SUMMONER");
 
@@ -24,7 +24,13 @@ function pick<T>(arr: T[]): T {
 }
 
 async function main() {
-  const age = await getLastPostAge(auth, botUsername, apiUrl);
+  // Summoner only posts replies, so check reply age (not top-level post age)
+  const ageRes = await fetch(`${apiUrl}/c?usr=${botUsername}&comments=1&limit=1`, {
+    headers: { Accept: "application/json", Authorization: `Basic ${auth}` },
+  });
+  if (!ageRes.ok) throw new Error(`Failed to check age: ${ageRes.status}`);
+  const recent: { created_at: string }[] = await ageRes.json();
+  const age = recent.length ? Date.now() - new Date(recent[0].created_at).getTime() : Infinity;
   if (age < 7200000) {
     console.log(`Last post ${Math.round(age / 60000)}m ago, skipping`);
     return;
@@ -39,7 +45,7 @@ async function main() {
   const answeredCids = await getAnsweredCids(auth, botUsername, apiUrl);
 
   const eligible = posts.filter((p) =>
-    !p.created_by.startsWith("bot_") &&
+    p.created_by !== botUsername &&
     !answeredCids.has(p.cid) &&
     !hasBotMention(p)
   );

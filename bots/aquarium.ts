@@ -2,9 +2,10 @@ import { botInit, getLastPostAge, post, seededRng, todaySeed } from "../bots.ts"
 
 const { apiUrl, auth, botUsername } = botInit("AQUARIUM");
 
-const FISH = ["🐟", "🐠", "🐡", "🐙", "🦑", "🦈"];
+const SWIMMERS = ["🐟", "🐠", "🐡", "🦈", "🦑", "🐡"];
+const BOTTOM_DWELLERS = ["🐌", "🦀", "🐙"];
 const PLANTS = ["🌿", "🪸", "🌱"];
-const GROUND = ["🐚", "🪨", "💎", "🏴‍☠️"];
+const GROUND = ["🪨", "🪸", "🌿", "🌱"];
 const BUBBLES = ["🫧", "○"];
 
 function generateAquarium(): string {
@@ -14,24 +15,17 @@ function generateAquarium(): string {
 
   for (let r = 0; r < rows; r++) {
     const row: string[] = [];
+    const isBottom = r >= 4;
     for (let c = 0; c < cols; c++) {
       const roll = rng();
-      const isBottom = r === rows - 1;
-      const isTop = r <= 1;
-
       if (isBottom) {
-        if (roll < 0.25) row.push(GROUND[Math.floor(rng() * GROUND.length)]);
-        else if (roll < 0.4) row.push(PLANTS[Math.floor(rng() * PLANTS.length)]);
-        else row.push("🌊");
-      } else if (isTop) {
-        if (roll < 0.08) row.push(FISH[Math.floor(rng() * FISH.length)]);
-        else if (roll < 0.15) row.push(BUBBLES[Math.floor(rng() * BUBBLES.length)]);
-        else row.push(roll < 0.5 ? "🌊" : "  ");
+        if (roll < 0.3) row.push(GROUND[Math.floor(rng() * GROUND.length)]);
+        else if (roll < 0.45) row.push(BOTTOM_DWELLERS[Math.floor(rng() * BOTTOM_DWELLERS.length)]);
+        else row.push("  ");
       } else {
-        if (roll < 0.12) row.push(FISH[Math.floor(rng() * FISH.length)]);
-        else if (roll < 0.18) row.push(BUBBLES[Math.floor(rng() * BUBBLES.length)]);
-        else if (roll < 0.22) row.push(PLANTS[Math.floor(rng() * PLANTS.length)]);
-        else row.push(roll < 0.6 ? "🌊" : "  ");
+        if (roll < 0.15) row.push(SWIMMERS[Math.floor(rng() * SWIMMERS.length)]);
+        else if (roll < 0.22) row.push(BUBBLES[Math.floor(rng() * BUBBLES.length)]);
+        else row.push("  ");
       }
     }
     grid.push(row);

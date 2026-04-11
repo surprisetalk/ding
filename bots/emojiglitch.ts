@@ -20,16 +20,16 @@ function glitchSvg(svg: string, rng: () => number): string {
 
   out = out.replace(/\bd="([^"]+)"/g, (_match, d: string) => {
     const glitched = d.replace(/-?\d+\.?\d*/g, (n: string) => {
-      if (rng() < 0.5) return String(parseFloat(n) + (rng() - 0.5) * 40);
+      if (rng() < 0.2) return String(parseFloat(n) + (rng() - 0.5) * 16);
       return n;
     });
     return `d="${glitched}"`;
   });
 
   out = out.replace(/#([0-9a-fA-F]{6})/g, (_match, hex: string) => {
-    if (rng() < 0.6) {
+    if (rng() < 0.3) {
       const chars = hex.split("").map((c: string) => {
-        const v = (parseInt(c, 16) + Math.floor(rng() * 12)) % 16;
+        const v = (parseInt(c, 16) + Math.floor(rng() * 5)) % 16;
         return v.toString(16);
       }).join("");
       return `#${chars}`;
@@ -43,22 +43,22 @@ function glitchSvg(svg: string, rng: () => number): string {
 
   let extras = "";
 
-  const scanLines = 5 + Math.floor(rng() * 10);
+  const scanLines = 2 + Math.floor(rng() * 3);
   for (let i = 0; i < scanLines; i++) {
     const y = Math.floor(rng() * 36);
     const r = Math.floor(rng() * 256);
     const g = Math.floor(rng() * 256);
     const b = Math.floor(rng() * 256);
-    extras += `<rect x="0" y="${y}" width="36" height="${1 + Math.floor(rng() * 2)}" fill="rgb(${r},${g},${b})" opacity="${(0.05 + rng() * 0.2).toFixed(2)}"/>`;
+    extras += `<rect x="0" y="${y}" width="36" height="1" fill="rgb(${r},${g},${b})" opacity="${(0.03 + rng() * 0.1).toFixed(2)}"/>`;
   }
 
-  const layers = 2 + Math.floor(rng() * 3);
+  const layers = 1 + Math.floor(rng() * 2);
   for (let i = 0; i < layers; i++) {
-    const tx = (rng() - 0.5) * 50;
-    const ty = (rng() - 0.5) * 50;
-    const rot = Math.floor(rng() * 360);
-    const scale = 0.5 + rng() * 0.8;
-    extras += `<g transform="translate(${tx.toFixed(1)},${ty.toFixed(1)}) rotate(${rot}) scale(${scale.toFixed(2)})" opacity="${(0.15 + rng() * 0.35).toFixed(2)}">`;
+    const tx = (rng() - 0.5) * 20;
+    const ty = (rng() - 0.5) * 20;
+    const rot = Math.floor(rng() * 30 - 15);
+    const scale = 0.8 + rng() * 0.3;
+    extras += `<g transform="translate(${tx.toFixed(1)},${ty.toFixed(1)}) rotate(${rot}) scale(${scale.toFixed(2)})" opacity="${(0.1 + rng() * 0.2).toFixed(2)}">`;
     const pathMatch = out.match(/<path[^>]*\/>/);
     if (pathMatch) extras += pathMatch[0];
     extras += `</g>`;

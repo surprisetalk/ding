@@ -17,16 +17,16 @@ function glitchSvg(svg: string, rng: () => number): string {
 
   out = out.replace(/\bd="([^"]+)"/g, (_match, d: string) => {
     const glitched = d.replace(/-?\d+\.?\d*/g, (n: string) => {
-      if (rng() < 0.3) return String(parseFloat(n) + (rng() - 0.5) * 20);
+      if (rng() < 0.12) return String(parseFloat(n) + (rng() - 0.5) * 8);
       return n;
     });
     return `d="${glitched}"`;
   });
 
   out = out.replace(/#([0-9a-fA-F]{6})/g, (_match, hex: string) => {
-    if (rng() < 0.4) {
+    if (rng() < 0.2) {
       const scrambled = hex.split("").map((c: string) => {
-        const v = (parseInt(c, 16) + Math.floor(rng() * 8)) % 16;
+        const v = (parseInt(c, 16) + Math.floor(rng() * 4)) % 16;
         return v.toString(16);
       }).join("");
       return `#${scrambled}`;
@@ -38,26 +38,26 @@ function glitchSvg(svg: string, rng: () => number): string {
   const insertIdx = out.lastIndexOf(closingTag);
   if (insertIdx !== -1) {
     let extras = "";
-    const dupeCount = 1 + Math.floor(rng() * 3);
+    const dupeCount = Math.floor(rng() * 2);
     for (let i = 0; i < dupeCount; i++) {
-      const tx = (rng() - 0.5) * 30;
-      const ty = (rng() - 0.5) * 30;
-      const rot = Math.floor(rng() * 360);
-      extras += `<g transform="translate(${tx.toFixed(1)},${ty.toFixed(1)}) rotate(${rot})" opacity="${(0.2 + rng() * 0.4).toFixed(2)}">`;
+      const tx = (rng() - 0.5) * 12;
+      const ty = (rng() - 0.5) * 12;
+      const rot = Math.floor(rng() * 20 - 10);
+      extras += `<g transform="translate(${tx.toFixed(1)},${ty.toFixed(1)}) rotate(${rot})" opacity="${(0.1 + rng() * 0.2).toFixed(2)}">`;
       const pathMatch = out.match(/<path[^>]*\/>/);
       if (pathMatch) extras += pathMatch[0];
       extras += `</g>`;
     }
-    const rectCount = 3 + Math.floor(rng() * 5);
+    const rectCount = 1 + Math.floor(rng() * 2);
     for (let i = 0; i < rectCount; i++) {
       const x = Math.floor(rng() * 36);
       const y = Math.floor(rng() * 36);
-      const w = 2 + Math.floor(rng() * 20);
-      const h = 1 + Math.floor(rng() * 4);
+      const w = 2 + Math.floor(rng() * 8);
+      const h = 1 + Math.floor(rng() * 2);
       const r = Math.floor(rng() * 256);
       const g = Math.floor(rng() * 256);
       const b = Math.floor(rng() * 256);
-      extras += `<rect x="${x}" y="${y}" width="${w}" height="${h}" fill="rgb(${r},${g},${b})" opacity="${(0.1 + rng() * 0.5).toFixed(2)}"/>`;
+      extras += `<rect x="${x}" y="${y}" width="${w}" height="${h}" fill="rgb(${r},${g},${b})" opacity="${(0.05 + rng() * 0.15).toFixed(2)}"/>`;
     }
     out = out.slice(0, insertIdx) + extras + out.slice(insertIdx);
   }
