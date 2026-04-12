@@ -17,14 +17,14 @@ function glitchSvg(svg: string, rng: () => number): string {
 
   out = out.replace(/\bd="([^"]+)"/g, (_match, d: string) => {
     const glitched = d.replace(/-?\d+\.?\d*/g, (n: string) => {
-      if (rng() < 0.12) return String(parseFloat(n) + (rng() - 0.5) * 8);
+      if (rng() < 0.05) return String(parseFloat(n) + (rng() - 0.5) * 4);
       return n;
     });
     return `d="${glitched}"`;
   });
 
   out = out.replace(/#([0-9a-fA-F]{6})/g, (_match, hex: string) => {
-    if (rng() < 0.2) {
+    if (rng() < 0.1) {
       const scrambled = hex.split("").map((c: string) => {
         const v = (parseInt(c, 16) + Math.floor(rng() * 4)) % 16;
         return v.toString(16);
@@ -40,15 +40,15 @@ function glitchSvg(svg: string, rng: () => number): string {
     let extras = "";
     const dupeCount = Math.floor(rng() * 2);
     for (let i = 0; i < dupeCount; i++) {
-      const tx = (rng() - 0.5) * 12;
-      const ty = (rng() - 0.5) * 12;
-      const rot = Math.floor(rng() * 20 - 10);
+      const tx = (rng() - 0.5) * 6;
+      const ty = (rng() - 0.5) * 6;
+      const rot = Math.floor(rng() * 10 - 5);
       extras += `<g transform="translate(${tx.toFixed(1)},${ty.toFixed(1)}) rotate(${rot})" opacity="${(0.1 + rng() * 0.2).toFixed(2)}">`;
       const pathMatch = out.match(/<path[^>]*\/>/);
       if (pathMatch) extras += pathMatch[0];
       extras += `</g>`;
     }
-    const rectCount = 1 + Math.floor(rng() * 2);
+    const rectCount = Math.floor(rng() * 2);
     for (let i = 0; i < rectCount; i++) {
       const x = Math.floor(rng() * 36);
       const y = Math.floor(rng() * 36);
@@ -85,7 +85,8 @@ async function main() {
   const r2Url = await uploadToR2(data, `clipart-${date}.svg`, "image/svg+xml");
 
   console.log(`Posting: ${r2Url}`);
-  const ok = await post(auth, apiUrl, `${r2Url}\n\nglitched clipart`, "#art #glitch #bot");
+  const src = `https://github.com/twitter/twemoji/blob/master/assets/svg/${cp}.svg`;
+  const ok = await post(auth, apiUrl, `${r2Url}\n\nglitched clipart\n\nsource: ${src}`, "#art #glitch #bot");
   if (!ok) Deno.exit(1);
   console.log("Posted!");
 }

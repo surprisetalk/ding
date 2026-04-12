@@ -20,16 +20,16 @@ function glitchSvg(svg: string, rng: () => number): string {
 
   out = out.replace(/\bd="([^"]+)"/g, (_match, d: string) => {
     const glitched = d.replace(/-?\d+\.?\d*/g, (n: string) => {
-      if (rng() < 0.2) return String(parseFloat(n) + (rng() - 0.5) * 16);
+      if (rng() < 0.08) return String(parseFloat(n) + (rng() - 0.5) * 6);
       return n;
     });
     return `d="${glitched}"`;
   });
 
   out = out.replace(/#([0-9a-fA-F]{6})/g, (_match, hex: string) => {
-    if (rng() < 0.3) {
+    if (rng() < 0.15) {
       const chars = hex.split("").map((c: string) => {
-        const v = (parseInt(c, 16) + Math.floor(rng() * 5)) % 16;
+        const v = (parseInt(c, 16) + Math.floor(rng() * 3)) % 16;
         return v.toString(16);
       }).join("");
       return `#${chars}`;
@@ -43,7 +43,7 @@ function glitchSvg(svg: string, rng: () => number): string {
 
   let extras = "";
 
-  const scanLines = 2 + Math.floor(rng() * 3);
+  const scanLines = 1 + Math.floor(rng() * 2);
   for (let i = 0; i < scanLines; i++) {
     const y = Math.floor(rng() * 36);
     const r = Math.floor(rng() * 256);
@@ -52,11 +52,11 @@ function glitchSvg(svg: string, rng: () => number): string {
     extras += `<rect x="0" y="${y}" width="36" height="1" fill="rgb(${r},${g},${b})" opacity="${(0.03 + rng() * 0.1).toFixed(2)}"/>`;
   }
 
-  const layers = 1 + Math.floor(rng() * 2);
+  const layers = Math.floor(rng() * 2);
   for (let i = 0; i < layers; i++) {
-    const tx = (rng() - 0.5) * 20;
-    const ty = (rng() - 0.5) * 20;
-    const rot = Math.floor(rng() * 30 - 15);
+    const tx = (rng() - 0.5) * 10;
+    const ty = (rng() - 0.5) * 10;
+    const rot = Math.floor(rng() * 14 - 7);
     const scale = 0.8 + rng() * 0.3;
     extras += `<g transform="translate(${tx.toFixed(1)},${ty.toFixed(1)}) rotate(${rot}) scale(${scale.toFixed(2)})" opacity="${(0.1 + rng() * 0.2).toFixed(2)}">`;
     const pathMatch = out.match(/<path[^>]*\/>/);
@@ -87,7 +87,8 @@ async function main() {
   const r2Url = await uploadToR2(data, `emojiglitch-${date}.svg`, "image/svg+xml");
 
   console.log(`Posting: ${emoji} -> ${r2Url}`);
-  const ok = await post(auth, apiUrl, `${emoji}\n\n${r2Url}`, "#emoji #glitch #bot");
+  const src = `https://github.com/twitter/twemoji/blob/master/assets/svg/${cp}.svg`;
+  const ok = await post(auth, apiUrl, `${emoji}\n\n${r2Url}\n\nsource: ${src}`, "#emoji #glitch #bot");
   if (!ok) Deno.exit(1);
   console.log("Posted!");
 }

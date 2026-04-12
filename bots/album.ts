@@ -74,12 +74,10 @@ async function main() {
 
   const dayIndex = Math.floor(Date.now() / 86_400_000) % ALBUMS.length;
   const album = ALBUMS[dayIndex];
-  let coverUrl = `https://coverartarchive.org/release/${album.mbid}/front-500`;
-  try {
-    const r = await fetch(coverUrl, { redirect: "manual" });
-    const loc = r.headers.get("location");
-    if (loc) coverUrl = loc;
-  } catch { /* fall back to original URL */ }
+  const caaUrl = `https://coverartarchive.org/release-group/${album.mbid}/front-500`;
+  const r = await fetch(caaUrl, { redirect: "manual" });
+  const coverUrl = r.headers.get("location");
+  if (!coverUrl) throw new Error(`No cover art for ${album.title} (${album.mbid}): ${r.status}`);
   const body = `${album.title} (${album.year})\n\n${album.artist}\n\n${coverUrl}`;
 
   console.log(`Posting: ${album.title} by ${album.artist}`);
