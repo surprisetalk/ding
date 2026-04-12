@@ -903,9 +903,10 @@ app.get("/org/:name", async (c) => {
             >
               <input
                 required
-                name="name"
-                placeholder="username"
-                style="flex: 1; max-width: 200px; padding: 0.25rem 0.5rem; border-radius: 5px; border: 1px solid currentColor;"
+                type="email"
+                name="email"
+                placeholder="email"
+                style="flex: 1; max-width: 240px; padding: 0.25rem 0.5rem; border-radius: 5px; border: 1px solid currentColor;"
               />
               <button type="submit">invite ($1/mo)</button>
             </form>
@@ -918,16 +919,17 @@ app.get("/org/:name", async (c) => {
 });
 
 app.post("/org/:name/invite", authed, async (c) => {
-  const [org, { name: paramName }] = await Promise.all([
+  const [org, { email }] = await Promise.all([
     sql`select * from org where name = ${c.req.param("name")}`.then((r: any) => r[0]),
     form(c),
   ]);
   if (!org) return notFound();
   if (org.created_by !== c.get("name")) throw new HTTPException(403, { message: "Only owner can invite" });
+  if (!email || !email.includes("@") || email.length < 4 || email.length > 64)
+    throw new HTTPException(400, { message: "Invalid email" });
 
-  const [invitee] = await sql`select name, orgs_r from usr where name = ${paramName}`;
-  if (!invitee) throw new HTTPException(404, { message: `User "${paramName}" not found` });
-  if (invitee.orgs_r.includes(org.name)) return c.redirect(`/org/${org.name}`);
+  const [existing] = await sql`select name, orgs_r from usr where email = ${email}`;
+  if (existing?.orgs_r.includes(org.name)) return c.redirect(`/org/${org.name}`);
 
   const sub = await stripe.subscriptions.retrieve(org.stripe_sub_id);
   const newQty = sub.items.data[0].quantity! + 1;
@@ -935,10 +937,18 @@ app.post("/org/:name/invite", authed, async (c) => {
     items: [{ id: sub.items.data[0].id, quantity: newQty }],
   });
   try {
-    await sql`update usr set orgs_r = array_append(orgs_r, ${org.name}), orgs_w = array_append(orgs_w, ${org.name}) where name = ${paramName}`;
+    if (existing) {
+      await sql`update usr set orgs_r = array_append(orgs_r, ${org.name}), orgs_w = array_append(orgs_w, ${org.name}) where name = ${existing.name}`;
+    } else {
+      const newName = crypto.randomUUID().replace(/-/g, "").slice(0, 12);
+      await sql`insert into usr (name, email, bio, invited_by, orgs_r, orgs_w) values (${newName}, ${email}, '...', ${c.get(
+        "name",
+      )!}, ${[org.name]}, ${[org.name]})`;
+      sendVerificationEmail(email, await emailToken(new Date(), email));
+    }
   } catch (err) {
     console.error(
-      `DRIFT invite: bumped ${org.stripe_sub_id} to qty=${newQty} but SQL update for ${paramName} in ${org.name} failed.`,
+      `DRIFT invite: bumped ${org.stripe_sub_id} to qty=${newQty} but SQL write for ${email} in ${org.name} failed.`,
       err,
     );
     throw err;

@@ -480,10 +480,10 @@ Deno.test(
       assertEquals(usr.orgs_w.includes("TestOrg"), true);
     });
 
-    await t.step("POST /org/:name/invite adds member and bumps Stripe quantity", async () => {
+    await t.step("POST /org/:name/invite by email adds existing member and bumps Stripe quantity", async () => {
       (stripe as any).__updateCalls.length = 0;
       const body = new FormData();
-      body.append("name", "jane_doe");
+      body.append("email", "jane@example.com");
       const res = await app.request("/org/TestOrg/invite", { method: "POST", body, headers: authHeaders });
       assertEquals(res.status, 302);
 
@@ -496,19 +496,42 @@ Deno.test(
       assertEquals(calls[0].args.items[0].quantity, 2);
     });
 
-    await t.step("POST /org/:name/invite 404 for missing user, no Stripe call", async () => {
+    await t.step("POST /org/:name/invite matches email case-insensitively", async () => {
+      // jane is already a member from the prior step; mixed case should be idempotent, not create a placeholder
       (stripe as any).__updateCalls.length = 0;
       const body = new FormData();
-      body.append("name", "ghost_user");
+      body.append("email", "JANE@Example.com");
       const res = await app.request("/org/TestOrg/invite", { method: "POST", body, headers: authHeaders });
-      assertEquals(res.status, 404);
+      assertEquals(res.status, 302);
       assertEquals((stripe as any).__updateCalls.length, 0);
+      const users = await sql`select name from usr where email = 'jane@example.com'`;
+      assertEquals(users.length, 1);
     });
 
-    await t.step("POST /org/:name/invite duplicate is no-op, no Stripe call, no duped array entry", async () => {
+    await t.step("POST /org/:name/invite new email creates placeholder user with org membership", async () => {
       (stripe as any).__updateCalls.length = 0;
       const body = new FormData();
-      body.append("name", "jane_doe");
+      body.append("email", "newbie@example.com");
+      const res = await app.request("/org/TestOrg/invite", { method: "POST", body, headers: authHeaders });
+      assertEquals(res.status, 302);
+
+      const [usr] = await sql`select name, password, email_verified_at, orgs_r, orgs_w, invited_by from usr where email = 'newbie@example.com'`;
+      assertEquals(typeof usr.name, "string");
+      assertEquals(usr.password, null);
+      assertEquals(usr.email_verified_at, null);
+      assertEquals(usr.invited_by, "john_doe");
+      assertEquals(usr.orgs_r.includes("TestOrg"), true);
+      assertEquals(usr.orgs_w.includes("TestOrg"), true);
+
+      const calls = (stripe as any).__updateCalls;
+      assertEquals(calls.length, 1);
+      assertEquals(calls[0].args.items[0].quantity, 2);
+    });
+
+    await t.step("POST /org/:name/invite duplicate email is no-op, no Stripe call, no duped array entry", async () => {
+      (stripe as any).__updateCalls.length = 0;
+      const body = new FormData();
+      body.append("email", "jane@example.com");
       const res = await app.request("/org/TestOrg/invite", { method: "POST", body, headers: authHeaders });
       assertEquals(res.status, 302);
       assertEquals((stripe as any).__updateCalls.length, 0);
@@ -516,11 +539,20 @@ Deno.test(
       assertEquals(usr.orgs_r.filter((o: string) => o === "TestOrg").length, 1);
     });
 
+    await t.step("POST /org/:name/invite 400 for missing/invalid email, no Stripe call", async () => {
+      (stripe as any).__updateCalls.length = 0;
+      const body = new FormData();
+      body.append("email", "not-an-email");
+      const res = await app.request("/org/TestOrg/invite", { method: "POST", body, headers: authHeaders });
+      assertEquals(res.status, 400);
+      assertEquals((stripe as any).__updateCalls.length, 0);
+    });
+
     await t.step("POST /org/:name/invite 403 for non-owner", async () => {
       const janeAuth = { Authorization: "Basic " + btoa("jane@example.com:password1!") };
       (stripe as any).__updateCalls.length = 0;
       const body = new FormData();
-      body.append("name", "john_doe");
+      body.append("email", "john@example.com");
       const res = await app.request("/org/TestOrg/invite", { method: "POST", body, headers: janeAuth });
       assertEquals(res.status, 403);
       assertEquals((stripe as any).__updateCalls.length, 0);
