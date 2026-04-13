@@ -3,8 +3,8 @@
 - [x] clicking the thumbnail should take directly to the linked page, while clicking title takes you to the comments page
 - [x] figure out adding/managing orgs. /o for creating org? /o for editing/moderating the org and adding users?
 - [x] add related tags and posts to footer (backlinks)
-- [ ] create curation bots that post top tags, users, etc
-  - [ ] create a "bestof" bot that collects and summarizes stuff from around the site. they're just normal posts like any other. don't define any special rec engines or discovery in the database.
+- [x] create curation bots that post top tags, users, etc
+  - [x] create a "bestof" bot that collects and summarizes stuff from around the site. they're just normal posts like any other. don't define any special rec engines or discovery in the database.
 - [x] add mod/flagging mechanism by commenting "flag"
 - [x] figure out self-reactions and dup reaction counts
 - [ ] launch
