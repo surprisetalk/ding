@@ -1482,8 +1482,12 @@ const extractReader = (raw: string, base: string) => {
   const title = doc.querySelector("title")?.textContent?.trim()
     || doc.querySelector('meta[property="og:title"]')?.getAttribute("content")?.trim()
     || new URL(base).hostname;
+  const ogImageRaw = doc.querySelector('meta[property="og:image"]')?.getAttribute("content")
+    || doc.querySelector('meta[name="twitter:image"]')?.getAttribute("content")
+    || null;
+  const ogImage = ogImageRaw ? new URL(ogImageRaw, base).href : null;
   const body = doc.body;
-  if (!body) return null;
+  if (!body) return { title, html: "", ogImage };
   [...body.querySelectorAll([...STRIP_TAGS].map(t => t.toLowerCase()).join(","))].forEach(n => n.remove());
   const root = doc.querySelector("article")
     ?? doc.querySelector("main")
@@ -1500,7 +1504,7 @@ const extractReader = (raw: string, base: string) => {
     if (tag === "IMG" && el.getAttribute("src")) el.setAttribute("src", new URL(el.getAttribute("src")!, base).href);
   };
   walk(root);
-  return { title, html: root.innerHTML.trim() };
+  return { title, html: root.innerHTML.trim(), ogImage };
 };
 
 app.get("/reader", async (c) => {
@@ -1512,7 +1516,10 @@ app.get("/reader", async (c) => {
     const ct = res.headers.get("content-type") || "";
     if (ct.startsWith("image/")) return c.json({ kind: "image", src: `/img?url=${encodeURIComponent(url)}` });
     const reader = extractReader(await res.text(), url);
-    if (!reader || !reader.html) return c.json({ kind: "iframe", src: url });
+    if (!reader || !reader.html) {
+      if (reader?.ogImage) return c.json({ kind: "image", src: `/img?url=${encodeURIComponent(reader.ogImage)}` });
+      return c.json({ kind: "iframe", src: url });
+    }
     return c.json({ kind: "reader", title: reader.title, html: reader.html, url });
   } catch (e) {
     return c.json({ kind: "iframe", src: url, error: String(e) });
