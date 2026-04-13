@@ -280,7 +280,7 @@ const Post = (c: any, user?: string, p?: URLSearchParams) => {
   const linkUrl = (c.body && extractFirstUrl(c.body)) || null;
   return (
   <>
-    <a href={linkUrl ?? `/c/${c.cid}`} data-preview={linkUrl ?? ""} class="thumb">
+    <a href={linkUrl ?? `/c/${c.cid}`} data-preview={linkUrl ?? ""} data-cid={c.cid} class="thumb">
       <img src={c.thumb ? `/img?url=${encodeURIComponent(c.thumb)}` : defaultThumb} loading="lazy" onerror={`this.onerror=null;this.src='${defaultThumb}'`} />
     </a>
     <div class="post-content">
@@ -438,10 +438,13 @@ app.use("*", async (c, next) => {
             preview.innerHTML = "<div class='preview-body'>loading…</div>";
             document.body.appendChild(preview);
             try {
-              const r = await fetch("/reader?url=" + encodeURIComponent(url));
+              const q = "/reader?url=" + encodeURIComponent(url) + (a.dataset.cid ? "&cid=" + a.dataset.cid : "");
+              const r = await fetch(q);
               const d = await r.json();
               const body = preview.querySelector(".preview-body");
+              const esc = s => s.replace(/[&<>"']/g, ch => ({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;"}[ch]));
               if (d.kind === "image") body.innerHTML = '<img src="' + d.src + '">';
+              else if (d.kind === "post") body.innerHTML = '<a href="/c/' + d.cid + '"><pre>' + esc(d.body) + '</pre></a>';
               else if (d.kind === "reader") body.innerHTML = '<h2><a href="' + d.url + '" target="_blank" rel="noopener">' + d.title + '</a></h2>' + d.html;
               else body.innerHTML = '<iframe src="' + d.src + '" sandbox></iframe>';
             } catch { closePreview(); }
@@ -1482,12 +1485,8 @@ const extractReader = (raw: string, base: string) => {
   const title = doc.querySelector("title")?.textContent?.trim()
     || doc.querySelector('meta[property="og:title"]')?.getAttribute("content")?.trim()
     || new URL(base).hostname;
-  const ogImageRaw = doc.querySelector('meta[property="og:image"]')?.getAttribute("content")
-    || doc.querySelector('meta[name="twitter:image"]')?.getAttribute("content")
-    || null;
-  const ogImage = ogImageRaw ? new URL(ogImageRaw, base).href : null;
   const body = doc.body;
-  if (!body) return { title, html: "", ogImage };
+  if (!body) return null;
   [...body.querySelectorAll([...STRIP_TAGS].map(t => t.toLowerCase()).join(","))].forEach(n => n.remove());
   const root = doc.querySelector("article")
     ?? doc.querySelector("main")
@@ -1504,22 +1503,24 @@ const extractReader = (raw: string, base: string) => {
     if (tag === "IMG" && el.getAttribute("src")) el.setAttribute("src", new URL(el.getAttribute("src")!, base).href);
   };
   walk(root);
-  return { title, html: root.innerHTML.trim(), ogImage };
+  return { title, html: root.innerHTML.trim() };
 };
 
 app.get("/reader", async (c) => {
   const url = c.req.query("url");
+  const cid = c.req.query("cid");
   if (!url || !/^https?:\/\//.test(url)) throw new HTTPException(400, { message: "bad url" });
   if (isImageUrl(url)) return c.json({ kind: "image", src: `/img?url=${encodeURIComponent(url)}` });
+  if (cid && /^\d+$/.test(cid)) {
+    const [post] = await sql`select cid, body from com where cid = ${+cid}`;
+    if (post?.body && post.body.length > 280) return c.json({ kind: "post", cid: post.cid, body: post.body });
+  }
   try {
     const res = await fetch(url, { headers: { "User-Agent": "ding/1.0" }, signal: AbortSignal.timeout(6000) });
     const ct = res.headers.get("content-type") || "";
     if (ct.startsWith("image/")) return c.json({ kind: "image", src: `/img?url=${encodeURIComponent(url)}` });
     const reader = extractReader(await res.text(), url);
-    if (!reader || !reader.html) {
-      if (reader?.ogImage) return c.json({ kind: "image", src: `/img?url=${encodeURIComponent(reader.ogImage)}` });
-      return c.json({ kind: "iframe", src: url });
-    }
+    if (!reader || !reader.html) return c.json({ kind: "iframe", src: url });
     return c.json({ kind: "reader", title: reader.title, html: reader.html, url });
   } catch (e) {
     return c.json({ kind: "iframe", src: url, error: String(e) });
