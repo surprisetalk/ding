@@ -424,38 +424,27 @@ app.use("*", async (c, next) => {
             });
             window.location.href = "/c?" + p;
           };
-          let pressTimer, preview;
+          let preview;
           const closePreview = () => { preview?.remove(); preview = null; };
-          document.addEventListener("pointerdown", e => {
+          document.addEventListener("click", async e => {
+            if (preview && !preview.contains(e.target)) { closePreview(); return; }
             const a = e.target.closest("a.thumb[data-preview]");
-            if (!a || !a.dataset.preview) return;
+            if (!a || !a.dataset.preview || e.metaKey || e.ctrlKey || e.shiftKey || e.button) return;
+            e.preventDefault();
             const url = a.dataset.preview;
-            pressTimer = setTimeout(async () => {
-              pressTimer = null;
-              a.dataset.held = "1";
-              closePreview();
-              preview = document.createElement("div");
-              preview.id = "preview";
-              preview.innerHTML = "<div class='preview-body'>loading…</div>";
-              document.body.appendChild(preview);
-              try {
-                const r = await fetch("/reader?url=" + encodeURIComponent(url));
-                const d = await r.json();
-                const body = preview.querySelector(".preview-body");
-                if (d.kind === "image") body.innerHTML = '<img src="' + d.src + '">';
-                else if (d.kind === "reader") body.innerHTML = '<h2><a href="' + d.url + '" target="_blank" rel="noopener">' + d.title + '</a></h2>' + d.html;
-                else body.innerHTML = '<iframe src="' + d.src + '" sandbox></iframe>';
-              } catch { closePreview(); }
-            }, 350);
-          });
-          const cancelPress = () => { if (pressTimer) { clearTimeout(pressTimer); pressTimer = null; } };
-          document.addEventListener("pointerup", cancelPress);
-          document.addEventListener("pointercancel", cancelPress);
-          document.addEventListener("pointermove", e => { if (pressTimer && (Math.abs(e.movementX) > 3 || Math.abs(e.movementY) > 3)) cancelPress(); });
-          document.addEventListener("click", e => {
-            const held = e.target.closest("a.thumb[data-held]");
-            if (held) { e.preventDefault(); held.removeAttribute("data-held"); return; }
-            if (preview && !preview.contains(e.target)) closePreview();
+            closePreview();
+            preview = document.createElement("div");
+            preview.id = "preview";
+            preview.innerHTML = "<div class='preview-body'>loading…</div>";
+            document.body.appendChild(preview);
+            try {
+              const r = await fetch("/reader?url=" + encodeURIComponent(url));
+              const d = await r.json();
+              const body = preview.querySelector(".preview-body");
+              if (d.kind === "image") body.innerHTML = '<img src="' + d.src + '">';
+              else if (d.kind === "reader") body.innerHTML = '<h2><a href="' + d.url + '" target="_blank" rel="noopener">' + d.title + '</a></h2>' + d.html;
+              else body.innerHTML = '<iframe src="' + d.src + '" sandbox></iframe>';
+            } catch { closePreview(); }
           }, true);
           document.addEventListener("keydown", e => { if (e.key === "Escape") closePreview(); });
           ${n ? html`
