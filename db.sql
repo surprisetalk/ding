@@ -43,6 +43,7 @@ create table com (
   c_comments int not null default 0,    -- count of non-reaction replies
   c_reactions hstore not null default ''::hstore,  -- reaction counts (e.g., '▲=>5,👍=>3')
   c_flags int not null default 0,       -- count of 'flag' replies
+  flaggers citext[] not null default '{}',
   -- Root posts require at least one public tag
   check ((parent_cid is null and tags <> '{}') or parent_cid is not null)
 );

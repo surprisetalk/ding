@@ -721,14 +721,44 @@ Deno.test(
       assertEquals(+after.r, +(before.r ?? 0) + 1);
     });
 
-    await t.step("POST /c/:p flag updates c_flags not c_comments or c_reactions", async () => {
-      const [before] = await sql`select c_flags, c_comments, c_reactions from com where cid = 301`;
-      const res = await app.request("/c/301", { method: "POST", body: fd({ body: "flag" }), headers: jAuth });
+    await t.step("POST /c/:p flag updates c_flags, records flagger, no com row", async () => {
+      const [seed] = await sql`insert into com (created_by, body, tags) values ('BugHunter42', 'flag me', '{humor}') returning cid`;
+      const [childrenBefore] = await sql`select count(*)::int as n from com where parent_cid = ${seed.cid}`;
+      const res = await app.request(`/c/${seed.cid}`, { method: "POST", body: fd({ body: "flag" }), headers: jAuth });
       assertEquals(res.status, 302);
-      const [after] = await sql`select c_flags, c_comments, c_reactions from com where cid = 301`;
-      assertEquals(+after.c_flags, +before.c_flags + 1);
-      assertEquals(+after.c_comments, +before.c_comments);
-      assertEquals(after.c_reactions, before.c_reactions);
+      const [after] = await sql`select c_flags, c_comments, flaggers from com where cid = ${seed.cid}`;
+      assertEquals(+after.c_flags, 1);
+      assertEquals(+after.c_comments, 0);
+      assertEquals(after.flaggers, ["john_doe"]);
+      const [childrenAfter] = await sql`select count(*)::int as n from com where parent_cid = ${seed.cid}`;
+      assertEquals(childrenAfter.n, childrenBefore.n);
+    });
+
+    await t.step("POST /c/:p flag is idempotent per-user", async () => {
+      const [seed] = await sql`insert into com (created_by, body, tags) values ('BugHunter42', 'flag once', '{humor}') returning cid`;
+      await app.request(`/c/${seed.cid}`, { method: "POST", body: fd({ body: "flag" }), headers: jAuth });
+      await app.request(`/c/${seed.cid}`, { method: "POST", body: fd({ body: "flag" }), headers: jAuth });
+      const [row] = await sql`select c_flags, flaggers from com where cid = ${seed.cid}`;
+      assertEquals(+row.c_flags, 1);
+      assertEquals(row.flaggers, ["john_doe"]);
+    });
+
+    await t.step("POST /c/:p self-flag blocked with err=self-flag", async () => {
+      const [seed] = await sql`insert into com (created_by, body, tags) values ('jane_doe', 'mine', '{humor}') returning cid`;
+      const res = await app.request(`/c/${seed.cid}`, { method: "POST", body: fd({ body: "flag" }), headers: janeAuth });
+      assertEquals(res.status, 302);
+      assertEquals(res.headers.get("location")?.includes("err=self-flag"), true);
+      const [row] = await sql`select c_flags, flaggers from com where cid = ${seed.cid}`;
+      assertEquals(+row.c_flags, 0);
+      assertEquals(row.flaggers, []);
+    });
+
+    await t.step("GET /c/:cid hides body when c_flags >= threshold for non-author", async () => {
+      const [seed] = await sql`insert into com (created_by, body, tags, c_flags, flaggers) values ('BugHunter42', 'secret body text', '{humor}', 3, '{a,b,c}') returning cid`;
+      const res = await app.request(`/c/${seed.cid}`, { headers: jAuth });
+      const html = await res.text();
+      assertEquals(html.includes("<pre>[flagged]</pre>"), true);
+      assertEquals(html.includes("<pre>secret body text</pre>"), false);
     });
 
     await t.step("POST /c/:p reply 403 on private parent from non-member", async () => {

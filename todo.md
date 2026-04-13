@@ -5,7 +5,7 @@
 - [x] add related tags and posts to footer (backlinks)
 - [ ] create curation bots that post top tags, users, etc
   - [ ] create a "bestof" bot that collects and summarizes stuff from around the site. they're just normal posts like any other. don't define any special rec engines or discovery in the database.
-- [ ] add mod/flagging mechanism by commenting "flag"
+- [x] add mod/flagging mechanism by commenting "flag"
 - [x] figure out self-reactions and dup reaction counts
 - [ ] launch
 - [ ] bubbletea cli/tui
@@ -24,4 +24,3 @@
   - [ ] boost high-quality posts/comments
 - [ ] emulate r/True* communities, hub for academics (like math/sci twitter), underground art/humor, map of reddit?
 - [ ] build bots/tools that repost to bsky/masto/x/pinterest (become a better buffer!)
-- [ ] instead of thumbs linking to source, just hold to open up iframe preview?

@@ -26,6 +26,8 @@ export const extractImageUrl = (b: string) =>
 
 const isImageUrl = (u: string) => /\.(?:jpe?g|png|gif|webp|svg)(?:\?|$)/i.test(u);
 
+const FLAG_THRESHOLD = 3;
+
 const resolveThumbnail = async (url: string) => {
   if (isImageUrl(url)) return url;
   try {
@@ -267,7 +269,7 @@ const Comment = (c: any, user?: string) => (
       ))}
       {Reactions(c)}
     </div>
-    <pre>{c.body || "[deleted by author]"}</pre>
+    <pre>{(c.c_flags >= FLAG_THRESHOLD && user !== c.created_by) ? "[flagged]" : (c.body || "[deleted by author]")}</pre>
     <div style="padding-left:1rem">{c?.child_comments?.map((ch: any) => Comment(ch, user))}</div>
   </div>
 );
@@ -495,7 +497,7 @@ app.get("/", async (c) => {
       array(select body from com where parent_cid = c.cid and char_length(body) = 1 and created_by = ${
     name || ""
   }) as user_reactions,
-      array(select jsonb_build_object('body', body, 'created_by', created_by, 'cid', cid, 'created_at', created_at) from com where parent_cid = c.cid and char_length(body) > 1 order by created_at desc) as child_comments
+      array(select jsonb_build_object('body', body, 'created_by', created_by, 'cid', cid, 'created_at', created_at, 'c_flags', c_flags) from com where parent_cid = c.cid and char_length(body) > 1 order by created_at desc) as child_comments
     from com c where parent_cid is null and orgs <@ ${rT}::text[] and (usrs = '{}' or ${name || ""}::text = any(usrs))
     ${tags.length ? sql`and tags @> ${tags}::text[]` : sql``}
     ${orgs.length ? sql`and orgs @> ${orgs}::text[]` : sql``}
@@ -1225,6 +1227,15 @@ app.post("/c/:p?", async (c) => {
     usrs = l.usr;
   }
 
+  if (pid && b === "flag") {
+    const [prm2] = await sql`select created_by, parent_cid as prm_parent, flaggers from com where cid = ${pid}`;
+    const back = prm2.prm_parent ? `/c/${prm2.prm_parent}#${pid}` : `/c/${pid}`;
+    if (prm2.created_by === n) return c.redirect(`${back}?err=self-flag`);
+    if (!prm2.flaggers.includes(n))
+      await sql`update com set c_flags = c_flags + 1, flaggers = array_append(flaggers, ${n}) where cid = ${pid}`;
+    return c.redirect(back);
+  }
+
   const links = extractLinks(b);
   const thumb = pid
     ? null
@@ -1235,9 +1246,7 @@ app.post("/c/:p?", async (c) => {
   if (pid) {
     if (isReaction(b))
       await sql`update com set c_reactions = c_reactions || hstore(${b}, (coalesce((c_reactions->${b})::int,0)+1)::text) where cid = ${pid}`;
-    else {b === "flag"
-        ? await sql`update com set c_flags = c_flags + 1 where cid = ${pid}`
-        : await sql`update com set c_comments = c_comments + 1 where cid = ${pid}`;}
+    else await sql`update com set c_comments = c_comments + 1 where cid = ${pid}`;
   }
 
   const [pr] = pid ? await sql`select parent_cid from com where cid = ${pid}` : [null];
@@ -1266,7 +1275,7 @@ app.get("/c/:cid?", async (c) => {
       array(select body from com where parent_cid = c.cid and char_length(body) = 1 and created_by = ${
     n || ""
   }) as user_reactions,
-      array(select jsonb_build_object('body', body, 'created_by', created_by, 'cid', cid, 'created_at', created_at, 'tags', tags, 'orgs', orgs, 'usrs', usrs) from com where parent_cid = c.cid and char_length(body) > 1 order by created_at desc) as child_comments
+      array(select jsonb_build_object('body', body, 'created_by', created_by, 'cid', cid, 'created_at', created_at, 'tags', tags, 'orgs', orgs, 'usrs', usrs, 'c_flags', c_flags) from com where parent_cid = c.cid and char_length(body) > 1 order by created_at desc) as child_comments
     from com c where ${
     cid
       ? sql`cid = ${cid}`
