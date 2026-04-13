@@ -18,7 +18,8 @@
     "@hono/hono": "jsr:@hono/hono",
     "postgres": "https://deno.land/x/postgresjs@v3.4.8/mod.js",
     "stripe": "npm:stripe@^20.3.1",
-    "@sendgrid/mail": "npm:@sendgrid/mail"
+    "@sendgrid/mail": "npm:@sendgrid/mail",
+    "@b-fuze/deno-dom": "jsr:@b-fuze/deno-dom@^0.1.48"
   },
   "tasks": {
     "deploy": "deno run -A jsr:@deno/deployctl deploy --prod --project=dong server.tsx"

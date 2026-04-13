@@ -13,6 +13,7 @@ import { serveStatic } from "@hono/hono/deno";
 import pg from "postgres";
 import sg from "@sendgrid/mail";
 import Stripe from "stripe";
+import { DOMParser, type Element } from "@b-fuze/deno-dom";
 
 //// CONSTANTS & HELPERS ///////////////////////////////////////////////////////
 
@@ -275,9 +276,11 @@ const Comment = (c: any, user?: string) => (
 const defaultThumb =
   "data:image/svg+xml,%3Csvg xmlns=%27http://www.w3.org/2000/svg%27 viewBox=%270 0 1 1%27%3E%3Crect fill=%27%23333%27 width=%271%27 height=%271%27/%3E%3C/svg%3E";
 
-const Post = (c: any, user?: string, p?: URLSearchParams) => (
+const Post = (c: any, user?: string, p?: URLSearchParams) => {
+  const linkUrl = (c.body && extractFirstUrl(c.body)) || null;
+  return (
   <>
-    <a href={(c.body && extractFirstUrl(c.body)) || `/c/${c.cid}`}>
+    <a href={linkUrl ?? `/c/${c.cid}`} data-preview={linkUrl ?? ""} class="thumb">
       <img src={c.thumb ? `/img?url=${encodeURIComponent(c.thumb)}` : defaultThumb} loading="lazy" onerror={`this.onerror=null;this.src='${defaultThumb}'`} />
     </a>
     <div class="post-content">
@@ -303,7 +306,8 @@ const Post = (c: any, user?: string, p?: URLSearchParams) => (
       </div>
     </div>
   </>
-);
+  );
+};
 
 //// HONO //////////////////////////////////////////////////////////////////////
 
@@ -420,6 +424,40 @@ app.use("*", async (c, next) => {
             });
             window.location.href = "/c?" + p;
           };
+          let pressTimer, preview;
+          const closePreview = () => { preview?.remove(); preview = null; };
+          document.addEventListener("pointerdown", e => {
+            const a = e.target.closest("a.thumb[data-preview]");
+            if (!a || !a.dataset.preview) return;
+            const url = a.dataset.preview;
+            pressTimer = setTimeout(async () => {
+              pressTimer = null;
+              a.dataset.held = "1";
+              closePreview();
+              preview = document.createElement("div");
+              preview.id = "preview";
+              preview.innerHTML = "<div class='preview-body'>loading…</div>";
+              document.body.appendChild(preview);
+              try {
+                const r = await fetch("/reader?url=" + encodeURIComponent(url));
+                const d = await r.json();
+                const body = preview.querySelector(".preview-body");
+                if (d.kind === "image") body.innerHTML = '<img src="' + d.src + '">';
+                else if (d.kind === "reader") body.innerHTML = '<h2><a href="' + d.url + '" target="_blank" rel="noopener">' + d.title + '</a></h2>' + d.html;
+                else body.innerHTML = '<iframe src="' + d.src + '" sandbox></iframe>';
+              } catch { closePreview(); }
+            }, 350);
+          });
+          const cancelPress = () => { if (pressTimer) { clearTimeout(pressTimer); pressTimer = null; } };
+          document.addEventListener("pointerup", cancelPress);
+          document.addEventListener("pointercancel", cancelPress);
+          document.addEventListener("pointermove", e => { if (pressTimer && (Math.abs(e.movementX) > 3 || Math.abs(e.movementY) > 3)) cancelPress(); });
+          document.addEventListener("click", e => {
+            const held = e.target.closest("a.thumb[data-held]");
+            if (held) { e.preventDefault(); held.removeAttribute("data-held"); return; }
+            if (preview && !preview.contains(e.target)) closePreview();
+          }, true);
+          document.addEventListener("keydown", e => { if (e.key === "Escape") closePreview(); });
           ${n ? html`
           (async () => {
             if (!("Notification" in window)) return;
@@ -1441,6 +1479,55 @@ app.get("/img", async (c) => {
   const ct = res.headers.get("content-type") || "image/png";
   if (!ct.startsWith("image/")) throw new HTTPException(400, { message: "not an image" });
   return new Response(res.body, { headers: { "Content-Type": ct, "Cache-Control": "public, max-age=604800, immutable" } });
+});
+
+const KEEP_TAGS = new Set(["P","H1","H2","H3","H4","H5","H6","UL","OL","LI","BLOCKQUOTE","PRE","CODE","EM","STRONG","A","BR","IMG","FIGURE","FIGCAPTION"]);
+const STRIP_TAGS = new Set(["SCRIPT","STYLE","NAV","HEADER","FOOTER","ASIDE","FORM","NOSCRIPT","SVG","BUTTON","INPUT","SELECT","TEXTAREA","IFRAME"]);
+const KEEP_ATTRS: Record<string, Set<string>> = { A: new Set(["href"]), IMG: new Set(["src","alt"]) };
+
+const pDensity = (el: Element) => [...el.querySelectorAll("p")].reduce((n, p) => n + (p.textContent?.length ?? 0), 0);
+
+const extractReader = (raw: string, base: string) => {
+  const doc = new DOMParser().parseFromString(raw, "text/html");
+  if (!doc) return null;
+  const title = doc.querySelector("title")?.textContent?.trim()
+    || doc.querySelector('meta[property="og:title"]')?.getAttribute("content")?.trim()
+    || new URL(base).hostname;
+  const body = doc.body;
+  if (!body) return null;
+  [...body.querySelectorAll([...STRIP_TAGS].map(t => t.toLowerCase()).join(","))].forEach(n => n.remove());
+  const root = doc.querySelector("article")
+    ?? doc.querySelector("main")
+    ?? [...body.querySelectorAll("section, div, article")].reduce<Element | null>(
+      (best, el) => pDensity(el) > (best ? pDensity(best) : 0) ? el : best, null)
+    ?? body;
+  const walk = (el: Element) => {
+    [...el.children].forEach(walk);
+    const tag = el.tagName;
+    if (!KEEP_TAGS.has(tag)) { el.replaceWith(...[...el.childNodes]); return; }
+    const allowed = KEEP_ATTRS[tag] ?? new Set<string>();
+    [...el.attributes].forEach(a => { if (!allowed.has(a.name)) el.removeAttribute(a.name); });
+    if (tag === "A" && el.getAttribute("href")) el.setAttribute("href", new URL(el.getAttribute("href")!, base).href);
+    if (tag === "IMG" && el.getAttribute("src")) el.setAttribute("src", new URL(el.getAttribute("src")!, base).href);
+  };
+  walk(root);
+  return { title, html: root.innerHTML.trim() };
+};
+
+app.get("/reader", async (c) => {
+  const url = c.req.query("url");
+  if (!url || !/^https?:\/\//.test(url)) throw new HTTPException(400, { message: "bad url" });
+  if (isImageUrl(url)) return c.json({ kind: "image", src: `/img?url=${encodeURIComponent(url)}` });
+  try {
+    const res = await fetch(url, { headers: { "User-Agent": "ding/1.0" }, signal: AbortSignal.timeout(6000) });
+    const ct = res.headers.get("content-type") || "";
+    if (ct.startsWith("image/")) return c.json({ kind: "image", src: `/img?url=${encodeURIComponent(url)}` });
+    const reader = extractReader(await res.text(), url);
+    if (!reader || !reader.html) return c.json({ kind: "iframe", src: url });
+    return c.json({ kind: "reader", title: reader.title, html: reader.html, url });
+  } catch (e) {
+    return c.json({ kind: "iframe", src: url, error: String(e) });
+  }
 });
 
 app.use("/*", serveStatic({ root: "./public" }));

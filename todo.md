@@ -23,4 +23,5 @@
   - [ ] boost non-reposted content
   - [ ] boost high-quality posts/comments
 - [ ] emulate r/True* communities, hub for academics (like math/sci twitter), underground art/humor, map of reddit?
-- [ ] build reposter bots
+- [ ] build bots/tools that repost to bsky/masto/x/pinterest (become a better buffer!)
+- [ ] instead of thumbs linking to source, just hold to open up iframe preview?
