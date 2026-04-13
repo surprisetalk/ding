@@ -578,6 +578,52 @@ Deno.test(
       assertEquals((stripe as any).__updateCalls.length, 0);
     });
 
+    await t.step("POST /org/:name/remove by self (non-owner) leaves org and decrements Stripe qty", async () => {
+      await sql`update usr set orgs_r = array_append(orgs_r, 'TestOrg'), orgs_w = array_append(orgs_w, 'TestOrg') where name = 'jane_doe'`;
+      (stripe as any).__updateCalls.length = 0;
+      const origRetrieve = (stripe as any).subscriptions.retrieve;
+      (stripe as any).subscriptions.retrieve = () =>
+        Promise.resolve({ items: { data: [{ id: "si_123", quantity: 2 }] } });
+
+      const janeAuth = { Authorization: "Basic " + btoa("jane@example.com:password1!") };
+      const body = new FormData();
+      body.append("name", "jane_doe");
+      const res = await app.request("/org/TestOrg/remove", { method: "POST", body, headers: janeAuth });
+      assertEquals(res.status, 302);
+
+      const [usr] = await sql`select orgs_r, orgs_w from usr where name = 'jane_doe'`;
+      assertEquals(usr.orgs_r.includes("TestOrg"), false);
+      assertEquals(usr.orgs_w.includes("TestOrg"), false);
+
+      const calls = (stripe as any).__updateCalls;
+      assertEquals(calls.length, 1);
+      assertEquals(calls[0].args.items[0].quantity, 1);
+
+      (stripe as any).subscriptions.retrieve = origRetrieve;
+    });
+
+    await t.step("POST /org/:name/remove owner cannot leave own org", async () => {
+      (stripe as any).__updateCalls.length = 0;
+      const body = new FormData();
+      body.append("name", "john_doe");
+      const res = await app.request("/org/TestOrg/remove", { method: "POST", body, headers: authHeaders });
+      assertEquals(res.status, 400);
+      assertEquals((stripe as any).__updateCalls.length, 0);
+      const [usr] = await sql`select orgs_r from usr where name = 'john_doe'`;
+      assertEquals(usr.orgs_r.includes("TestOrg"), true);
+    });
+
+    await t.step("POST /org/:name/remove by non-owner targeting another member returns 403", async () => {
+      await sql`update usr set orgs_r = array_append(orgs_r, 'TestOrg'), orgs_w = array_append(orgs_w, 'TestOrg') where name = 'jane_doe'`;
+      (stripe as any).__updateCalls.length = 0;
+      const janeAuth = { Authorization: "Basic " + btoa("jane@example.com:password1!") };
+      const body = new FormData();
+      body.append("name", "john_doe");
+      const res = await app.request("/org/TestOrg/remove", { method: "POST", body, headers: janeAuth });
+      assertEquals(res.status, 403);
+      assertEquals((stripe as any).__updateCalls.length, 0);
+    });
+
     await t.step("POST /org/new with taken name returns 409, no Stripe Checkout", async () => {
       const stripeCreateCalls: any[] = [];
       const origCreate = (stripe as any).checkout.sessions.create;

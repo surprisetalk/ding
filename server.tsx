@@ -887,6 +887,21 @@ app.get("/org/:name", async (c) => {
                     </button>
                   </form>
                 )}
+                {m.name === viewer && org.created_by !== viewer && (
+                  <form
+                    method="post"
+                    action={`/org/${org.name}/remove`}
+                    style="display:inline; padding: 0; width: auto;"
+                  >
+                    <input type="hidden" name="name" value={viewer} />
+                    <button
+                      type="submit"
+                      style="font-size:0.75rem; padding: 0.1rem 0.4rem; opacity: 0.6; border: 1px solid currentColor; background: none; border-radius: 4px;"
+                    >
+                      leave
+                    </button>
+                  </form>
+                )}
               </div>
             ))}
           </div>
@@ -962,7 +977,11 @@ app.post("/org/:name/remove", authed, async (c) => {
     form(c),
   ]);
   if (!org) return notFound();
-  if (org.created_by !== c.get("name")) throw new HTTPException(403, { message: "Only owner can remove" });
+  const viewer = c.get("name");
+  const isOwner = org.created_by === viewer;
+  const isSelfLeave = paramName === viewer;
+  if (isOwner && isSelfLeave) throw new HTTPException(400, { message: "Owner cannot leave their own org — transfer or delete it first" });
+  if (!isOwner && !isSelfLeave) throw new HTTPException(403, { message: "Only owner or self can remove" });
 
   const [member] = await sql`select name from usr where name = ${paramName} and ${org.name} = any(orgs_r)`;
   if (!member) throw new HTTPException(404, { message: `${paramName} is not a member of ${org.name}` });
