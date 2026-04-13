@@ -368,6 +368,17 @@ app.use("*", async (c, next) => {
   if (url.search && botRe.test(ua)) return c.text("Forbidden", 403);
   const n = await getSignedCookie(c, cookieSecret, "name");
   if (n) c.set("name", n);
+  let unread = 0;
+  if (n && !host(c)) {
+    const [row] = await sql`
+      select count(*)::int as c from com
+      where created_by != ${n}
+        and orgs <@ (select orgs_r from usr where name = ${n})::text[]
+        and created_at > (select last_seen_at from usr where name = ${n})
+        and (${n}::text = any(usrs) or parent_cid in (select cid from com where created_by = ${n}))
+    `;
+    unread = row?.c || 0;
+  }
   c.setRenderer((content: any, props?: any) =>
     c.html(html`
       <!DOCTYPE html>
@@ -383,7 +394,8 @@ app.use("*", async (c, next) => {
           <header>
             <section>
               <a href="/" style="letter-spacing:10px;font-weight:700;width:100%;">▢ding</a>
-              <a href="/org/new" style="letter-spacing:2px;font-size:0.875rem;opacity:0.8;"> +org </a>
+              <a href="/o/new" style="letter-spacing:2px;font-size:0.875rem;opacity:0.8;"> +org </a>
+              ${n ? html`<a href="/n" style="letter-spacing:2px;font-size:0.875rem;opacity:0.8;"> inbox${unread ? ` (${unread})` : ""} </a>` : ""}
               <a href="/u" style="letter-spacing:2px;font-size:0.875rem;opacity:0.8;">${c.get("name")
                 ? "@" + c.get("name")
                 : "account"}</a>
@@ -408,6 +420,33 @@ app.use("*", async (c, next) => {
             });
             window.location.href = "/c?" + p;
           };
+          ${n ? html`
+          (async () => {
+            if (!("Notification" in window)) return;
+            if (Notification.permission === "default") {
+              const b = document.createElement("button");
+              b.textContent = "🔔 enable notifications";
+              b.style.cssText = "position:fixed;bottom:0.5rem;right:0.5rem;font-size:0.75rem;opacity:0.7;z-index:10;";
+              b.onclick = async () => { await Notification.requestPermission(); b.remove(); };
+              document.body.appendChild(b);
+            }
+            let last = ${unread};
+            setInterval(async () => {
+              try {
+                const r = await fetch("/n/unread", { credentials: "same-origin" });
+                if (!r.ok) return;
+                const d = await r.json();
+                if (d.count > last && Notification.permission === "granted") {
+                  (d.latest || []).slice(0, d.count - last).forEach(x => {
+                    const nn = new Notification("ding", { body: x.title });
+                    nn.onclick = () => { window.open(x.url, "_blank"); nn.close(); };
+                  });
+                }
+                last = d.count;
+              } catch {}
+            }, 60000);
+          })();
+          ` : ""}
           </script>
         </body>
       </html>
@@ -726,6 +765,76 @@ app.post("/u", authed, async (c) => {
   return c.redirect("/u");
 });
 
+const notifQuery = (name: string, orgs_r: string[]) => sql`
+  select c.*, (c.created_at > u.last_seen_at) as unread,
+    case when ${name}::text = any(c.usrs) then 'mention' else 'reply' end as kind
+  from com c
+  cross join (select last_seen_at from usr where name = ${name}) u
+  where c.created_by != ${name}
+    and c.orgs <@ ${orgs_r}::text[]
+    and (
+      ${name}::text = any(c.usrs)
+      or c.parent_cid in (select cid from com where created_by = ${name})
+    )
+  order by c.created_at desc
+  limit 100
+`;
+
+app.get("/n", authed, async (c) => {
+  const name = c.get("name");
+  const [usr] = await sql`select orgs_r from usr where name = ${name}`;
+  const items = await notifQuery(name, usr?.orgs_r || []);
+  await sql`update usr set last_seen_at = now() where name = ${name}`;
+  if (host(c) === "api") return c.json(items);
+  return (c as any).render(
+    <>
+      <section>
+        <h2>notifications</h2>
+        <p style="font-size:0.75rem;opacity:0.6;margin:0.25rem 0 1rem 0;">mentions and replies. unread items are highlighted.</p>
+      </section>
+      <section>
+        {items.length === 0
+          ? <p style="opacity:0.6;">no notifications yet.</p>
+          : items.map((i: any) => (
+            <div
+              key={i.cid}
+              style={`border-left: 3px solid ${i.unread ? "currentColor" : "transparent"}; padding-left: 0.5rem; margin-bottom: 0.5rem;`}
+            >
+              <div style="font-size:0.75rem;opacity:0.6;">{i.kind}</div>
+              {Comment(i, name)}
+            </div>
+          ))}
+      </section>
+    </>,
+    { title: "notifications" },
+  );
+});
+
+app.get("/n/unread", authed, async (c) => {
+  const name = c.get("name");
+  const [usr] = await sql`select orgs_r, last_seen_at from usr where name = ${name}`;
+  const rT = usr?.orgs_r || [];
+  const rows = await sql`
+    select cid, body, created_by, parent_cid
+    from com c
+    where created_by != ${name}
+      and c.created_at > ${usr.last_seen_at}
+      and orgs <@ ${rT}::text[]
+      and (
+        ${name}::text = any(usrs)
+        or parent_cid in (select cid from com where created_by = ${name})
+      )
+    order by created_at desc limit 10
+  `;
+  return c.json({
+    count: rows.length,
+    latest: rows.map((r: any) => ({
+      title: `@${r.created_by}: ${(r.body || "").trim().slice(0, 80)}`,
+      url: `/c/${r.parent_cid || r.cid}#${r.cid}`,
+    })),
+  });
+});
+
 app.get("/u/:name", async (c) => {
   const profileName = c.req.param("name");
   const viewerName = c.get("name") ?? (await basicAuthName(c)) ?? undefined;
@@ -745,7 +854,7 @@ app.get("/u/:name", async (c) => {
   }
 });
 
-app.get("/org/new", authed, (c) =>
+app.get("/o/new", authed, (c) =>
   (c as any).render(
     <section>
       <h2>
@@ -755,7 +864,7 @@ app.get("/org/new", authed, (c) =>
         create a private organization for your team. access control is managed via the <code>*org</code> tag.
       </p>
       <p style="font-size: 0.875rem; opacity: 0.8; margin-bottom: 1.5rem;">cost: $1/member/month.</p>
-      <form method="post" action="/org/new" style="padding: 0;">
+      <form method="post" action="/o/new" style="padding: 0;">
         <div style="display:flex; gap:0.5rem; align-items:center;">
           <input
             required
@@ -774,7 +883,7 @@ app.get("/org/new", authed, (c) =>
     { title: "new org" },
   ));
 
-app.post("/org/new", authed, async (c) => {
+app.post("/o/new", authed, async (c) => {
   const { name } = await form(c);
   if (!name.match(/^[0-9a-zA-Z_]{4,32}$/)) throw new HTTPException(400, { message: "Invalid name" });
 
@@ -798,8 +907,8 @@ app.post("/org/new", authed, async (c) => {
       },
     ],
     mode: "subscription",
-    success_url: `${new URL(c.req.url).origin}/org/success?session_id={CHECKOUT_SESSION_ID}`,
-    cancel_url: `${new URL(c.req.url).origin}/org/new`,
+    success_url: `${new URL(c.req.url).origin}/o/success?session_id={CHECKOUT_SESSION_ID}`,
+    cancel_url: `${new URL(c.req.url).origin}/o/new`,
     metadata: {
       orgName: name,
       creatorName: c.get("name")!,
@@ -833,7 +942,7 @@ const createOrg = async (orgName: string, creatorName: string, subId: string) =>
   `;
 };
 
-app.get("/org/success", authed, async (c) => {
+app.get("/o/success", authed, async (c) => {
   const sessionId = c.req.query("session_id");
   if (!sessionId) throw new HTTPException(400);
 
@@ -843,10 +952,10 @@ app.get("/org/success", authed, async (c) => {
   const { orgName, creatorName } = session.metadata!;
   await createOrg(orgName, creatorName, session.subscription as string);
 
-  return c.redirect(`/org/${orgName}`);
+  return c.redirect(`/o/${orgName}`);
 });
 
-app.get("/org/:name", async (c) => {
+app.get("/o/:name", async (c) => {
   const [org, hasAccess, members] = await Promise.all([
     sql`select * from org where name = ${c.req.param("name")}`.then((r: any) => r[0]),
     sql`select true from usr where true and name = ${c.get("name") ?? ""} and ${c.req.param("name")} = any(orgs_r)`
@@ -875,7 +984,7 @@ app.get("/org/:name", async (c) => {
                 {org.created_by === viewer && m.name !== viewer && (
                   <form
                     method="post"
-                    action={`/org/${org.name}/remove`}
+                    action={`/o/${org.name}/remove`}
                     style="display:inline; padding: 0; width: auto;"
                   >
                     <input type="hidden" name="name" value={m.name} />
@@ -890,7 +999,7 @@ app.get("/org/:name", async (c) => {
                 {m.name === viewer && org.created_by !== viewer && (
                   <form
                     method="post"
-                    action={`/org/${org.name}/remove`}
+                    action={`/o/${org.name}/remove`}
                     style="display:inline; padding: 0; width: auto;"
                   >
                     <input type="hidden" name="name" value={viewer} />
@@ -913,7 +1022,7 @@ app.get("/org/:name", async (c) => {
             </h3>
             <form
               method="post"
-              action={`/org/${org.name}/invite`}
+              action={`/o/${org.name}/invite`}
               style="padding: 0; display: flex; flex-direction: row; gap: 0.5rem;"
             >
               <input
@@ -933,7 +1042,7 @@ app.get("/org/:name", async (c) => {
   );
 });
 
-app.post("/org/:name/invite", authed, async (c) => {
+app.post("/o/:name/invite", authed, async (c) => {
   const [org, { email }] = await Promise.all([
     sql`select * from org where name = ${c.req.param("name")}`.then((r: any) => r[0]),
     form(c),
@@ -944,7 +1053,7 @@ app.post("/org/:name/invite", authed, async (c) => {
     throw new HTTPException(400, { message: "Invalid email" });
 
   const [existing] = await sql`select name, orgs_r from usr where email = ${email}`;
-  if (existing?.orgs_r.includes(org.name)) return c.redirect(`/org/${org.name}`);
+  if (existing?.orgs_r.includes(org.name)) return c.redirect(`/o/${org.name}`);
 
   const sub = await stripe.subscriptions.retrieve(org.stripe_sub_id);
   const newQty = sub.items.data[0].quantity! + 1;
@@ -968,10 +1077,10 @@ app.post("/org/:name/invite", authed, async (c) => {
     );
     throw err;
   }
-  return c.redirect(`/org/${org.name}`);
+  return c.redirect(`/o/${org.name}`);
 });
 
-app.post("/org/:name/remove", authed, async (c) => {
+app.post("/o/:name/remove", authed, async (c) => {
   const [org, { name: paramName }] = await Promise.all([
     sql`select * from org where name = ${c.req.param("name")}`.then((r: any) => r[0]),
     form(c),
@@ -1002,7 +1111,7 @@ app.post("/org/:name/remove", authed, async (c) => {
     );
     throw err;
   }
-  return c.redirect(`/org/${org.name}`);
+  return c.redirect(`/o/${org.name}`);
 });
 
 app.post("/api/stripe-webhook", async (c) => {
@@ -1058,7 +1167,7 @@ app.post("/c/:cid/delete", authed, async (c) => {
   return c.redirect(cm?.parent_cid ? `/c/${cm.parent_cid}` : "/");
 });
 
-const postRate = new Map<string, number[]>();
+export const postRate = new Map<string, number[]>();
 const POST_RATE_MAX = 10, POST_RATE_MS = 60_000;
 
 app.post("/c/:p?", async (c) => {
@@ -1243,7 +1352,7 @@ app.get("/c/:cid?", async (c) => {
                 {orgCreatedBy && (
                   <>
                     {" · "}created by <a href={`/u/${orgCreatedBy}`}>@{orgCreatedBy}</a>
-                    {" · "}<a href={`/org/${singleOrg}`}>settings</a>
+                    {" · "}<a href={`/o/${singleOrg}`}>settings</a>
                   </>
                 )}
               </p>

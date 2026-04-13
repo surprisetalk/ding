@@ -15,6 +15,7 @@ import app, {
   extractLinks,
   formatLabels,
   parseLabels,
+  postRate,
   setSql,
   stripe,
 } from "./server.tsx";
@@ -99,6 +100,7 @@ const pglite = (f: (sql: pg.Sql) => (t: Deno.TestContext) => Promise<void>) => a
   };
 
   setSql(testSql);
+  postRate.clear();
   await f(testSql)(t);
 
   await testSql.end();
@@ -430,10 +432,10 @@ Deno.test(
       Authorization: "Basic " + btoa("john@example.com:password1!"),
     };
 
-    await t.step("POST /org/new creates Checkout Session", async () => {
+    await t.step("POST /o/new creates Checkout Session", async () => {
       const body = new FormData();
       body.append("name", "TestOrg");
-      const res = await app.request("/org/new", { method: "POST", body, headers: authHeaders });
+      const res = await app.request("/o/new", { method: "POST", body, headers: authHeaders });
       assertEquals(res.status, 302);
       assertEquals(res.headers.get("location"), "https://stripe.com/checkout");
     });
@@ -464,10 +466,10 @@ Deno.test(
       assertEquals(usr.orgs_r.filter((o: string) => o === "WebhookOrg").length, 1);
     });
 
-    await t.step("GET /org/success creates org and updates user", async () => {
-      const res = await app.request("/org/success?session_id=cs_test_123", { headers: authHeaders });
+    await t.step("GET /o/success creates org and updates user", async () => {
+      const res = await app.request("/o/success?session_id=cs_test_123", { headers: authHeaders });
       assertEquals(res.status, 302);
-      assertEquals(res.headers.get("location"), "/org/TestOrg");
+      assertEquals(res.headers.get("location"), "/o/TestOrg");
 
       // Verify DB
       const [org] = await sql`select * from org where name = 'TestOrg'`;
@@ -480,11 +482,11 @@ Deno.test(
       assertEquals(usr.orgs_w.includes("TestOrg"), true);
     });
 
-    await t.step("POST /org/:name/invite by email adds existing member and bumps Stripe quantity", async () => {
+    await t.step("POST /o/:name/invite by email adds existing member and bumps Stripe quantity", async () => {
       (stripe as any).__updateCalls.length = 0;
       const body = new FormData();
       body.append("email", "jane@example.com");
-      const res = await app.request("/org/TestOrg/invite", { method: "POST", body, headers: authHeaders });
+      const res = await app.request("/o/TestOrg/invite", { method: "POST", body, headers: authHeaders });
       assertEquals(res.status, 302);
 
       const [usr] = await sql`select orgs_r, orgs_w from usr where name = 'jane_doe'`;
@@ -496,23 +498,23 @@ Deno.test(
       assertEquals(calls[0].args.items[0].quantity, 2);
     });
 
-    await t.step("POST /org/:name/invite matches email case-insensitively", async () => {
+    await t.step("POST /o/:name/invite matches email case-insensitively", async () => {
       // jane is already a member from the prior step; mixed case should be idempotent, not create a placeholder
       (stripe as any).__updateCalls.length = 0;
       const body = new FormData();
       body.append("email", "JANE@Example.com");
-      const res = await app.request("/org/TestOrg/invite", { method: "POST", body, headers: authHeaders });
+      const res = await app.request("/o/TestOrg/invite", { method: "POST", body, headers: authHeaders });
       assertEquals(res.status, 302);
       assertEquals((stripe as any).__updateCalls.length, 0);
       const users = await sql`select name from usr where email = 'jane@example.com'`;
       assertEquals(users.length, 1);
     });
 
-    await t.step("POST /org/:name/invite new email creates placeholder user with org membership", async () => {
+    await t.step("POST /o/:name/invite new email creates placeholder user with org membership", async () => {
       (stripe as any).__updateCalls.length = 0;
       const body = new FormData();
       body.append("email", "newbie@example.com");
-      const res = await app.request("/org/TestOrg/invite", { method: "POST", body, headers: authHeaders });
+      const res = await app.request("/o/TestOrg/invite", { method: "POST", body, headers: authHeaders });
       assertEquals(res.status, 302);
 
       const [usr] = await sql`select name, password, email_verified_at, orgs_r, orgs_w, invited_by from usr where email = 'newbie@example.com'`;
@@ -528,40 +530,40 @@ Deno.test(
       assertEquals(calls[0].args.items[0].quantity, 2);
     });
 
-    await t.step("POST /org/:name/invite duplicate email is no-op, no Stripe call, no duped array entry", async () => {
+    await t.step("POST /o/:name/invite duplicate email is no-op, no Stripe call, no duped array entry", async () => {
       (stripe as any).__updateCalls.length = 0;
       const body = new FormData();
       body.append("email", "jane@example.com");
-      const res = await app.request("/org/TestOrg/invite", { method: "POST", body, headers: authHeaders });
+      const res = await app.request("/o/TestOrg/invite", { method: "POST", body, headers: authHeaders });
       assertEquals(res.status, 302);
       assertEquals((stripe as any).__updateCalls.length, 0);
       const [usr] = await sql`select orgs_r from usr where name = 'jane_doe'`;
       assertEquals(usr.orgs_r.filter((o: string) => o === "TestOrg").length, 1);
     });
 
-    await t.step("POST /org/:name/invite 400 for missing/invalid email, no Stripe call", async () => {
+    await t.step("POST /o/:name/invite 400 for missing/invalid email, no Stripe call", async () => {
       (stripe as any).__updateCalls.length = 0;
       const body = new FormData();
       body.append("email", "not-an-email");
-      const res = await app.request("/org/TestOrg/invite", { method: "POST", body, headers: authHeaders });
+      const res = await app.request("/o/TestOrg/invite", { method: "POST", body, headers: authHeaders });
       assertEquals(res.status, 400);
       assertEquals((stripe as any).__updateCalls.length, 0);
     });
 
-    await t.step("POST /org/:name/invite 403 for non-owner", async () => {
+    await t.step("POST /o/:name/invite 403 for non-owner", async () => {
       const janeAuth = { Authorization: "Basic " + btoa("jane@example.com:password1!") };
       (stripe as any).__updateCalls.length = 0;
       const body = new FormData();
       body.append("email", "john@example.com");
-      const res = await app.request("/org/TestOrg/invite", { method: "POST", body, headers: janeAuth });
+      const res = await app.request("/o/TestOrg/invite", { method: "POST", body, headers: janeAuth });
       assertEquals(res.status, 403);
       assertEquals((stripe as any).__updateCalls.length, 0);
     });
 
-    await t.step("POST /org/:name/remove removes member", async () => {
+    await t.step("POST /o/:name/remove removes member", async () => {
       const body = new FormData();
       body.append("name", "jane_doe");
-      const res = await app.request("/org/TestOrg/remove", { method: "POST", body, headers: authHeaders });
+      const res = await app.request("/o/TestOrg/remove", { method: "POST", body, headers: authHeaders });
       assertEquals(res.status, 302);
 
       const [usr] = await sql`select orgs_r, orgs_w from usr where name = 'jane_doe'`;
@@ -569,16 +571,16 @@ Deno.test(
       assertEquals(usr.orgs_w.includes("TestOrg"), false);
     });
 
-    await t.step("POST /org/:name/remove non-member returns 404, no Stripe call", async () => {
+    await t.step("POST /o/:name/remove non-member returns 404, no Stripe call", async () => {
       (stripe as any).__updateCalls.length = 0;
       const body = new FormData();
       body.append("name", "jane_doe");
-      const res = await app.request("/org/TestOrg/remove", { method: "POST", body, headers: authHeaders });
+      const res = await app.request("/o/TestOrg/remove", { method: "POST", body, headers: authHeaders });
       assertEquals(res.status, 404);
       assertEquals((stripe as any).__updateCalls.length, 0);
     });
 
-    await t.step("POST /org/:name/remove by self (non-owner) leaves org and decrements Stripe qty", async () => {
+    await t.step("POST /o/:name/remove by self (non-owner) leaves org and decrements Stripe qty", async () => {
       await sql`update usr set orgs_r = array_append(orgs_r, 'TestOrg'), orgs_w = array_append(orgs_w, 'TestOrg') where name = 'jane_doe'`;
       (stripe as any).__updateCalls.length = 0;
       const origRetrieve = (stripe as any).subscriptions.retrieve;
@@ -588,7 +590,7 @@ Deno.test(
       const janeAuth = { Authorization: "Basic " + btoa("jane@example.com:password1!") };
       const body = new FormData();
       body.append("name", "jane_doe");
-      const res = await app.request("/org/TestOrg/remove", { method: "POST", body, headers: janeAuth });
+      const res = await app.request("/o/TestOrg/remove", { method: "POST", body, headers: janeAuth });
       assertEquals(res.status, 302);
 
       const [usr] = await sql`select orgs_r, orgs_w from usr where name = 'jane_doe'`;
@@ -602,29 +604,29 @@ Deno.test(
       (stripe as any).subscriptions.retrieve = origRetrieve;
     });
 
-    await t.step("POST /org/:name/remove owner cannot leave own org", async () => {
+    await t.step("POST /o/:name/remove owner cannot leave own org", async () => {
       (stripe as any).__updateCalls.length = 0;
       const body = new FormData();
       body.append("name", "john_doe");
-      const res = await app.request("/org/TestOrg/remove", { method: "POST", body, headers: authHeaders });
+      const res = await app.request("/o/TestOrg/remove", { method: "POST", body, headers: authHeaders });
       assertEquals(res.status, 400);
       assertEquals((stripe as any).__updateCalls.length, 0);
       const [usr] = await sql`select orgs_r from usr where name = 'john_doe'`;
       assertEquals(usr.orgs_r.includes("TestOrg"), true);
     });
 
-    await t.step("POST /org/:name/remove by non-owner targeting another member returns 403", async () => {
+    await t.step("POST /o/:name/remove by non-owner targeting another member returns 403", async () => {
       await sql`update usr set orgs_r = array_append(orgs_r, 'TestOrg'), orgs_w = array_append(orgs_w, 'TestOrg') where name = 'jane_doe'`;
       (stripe as any).__updateCalls.length = 0;
       const janeAuth = { Authorization: "Basic " + btoa("jane@example.com:password1!") };
       const body = new FormData();
       body.append("name", "john_doe");
-      const res = await app.request("/org/TestOrg/remove", { method: "POST", body, headers: janeAuth });
+      const res = await app.request("/o/TestOrg/remove", { method: "POST", body, headers: janeAuth });
       assertEquals(res.status, 403);
       assertEquals((stripe as any).__updateCalls.length, 0);
     });
 
-    await t.step("POST /org/new with taken name returns 409, no Stripe Checkout", async () => {
+    await t.step("POST /o/new with taken name returns 409, no Stripe Checkout", async () => {
       const stripeCreateCalls: any[] = [];
       const origCreate = (stripe as any).checkout.sessions.create;
       (stripe as any).checkout.sessions.create = (args: any) => {
@@ -633,7 +635,7 @@ Deno.test(
       };
       const body = new FormData();
       body.append("name", "TestOrg");
-      const res = await app.request("/org/new", { method: "POST", body, headers: authHeaders });
+      const res = await app.request("/o/new", { method: "POST", body, headers: authHeaders });
       assertEquals(res.status, 409);
       assertEquals(stripeCreateCalls.length, 0);
       (stripe as any).checkout.sessions.create = origCreate;
@@ -1093,6 +1095,103 @@ Deno.test(
         headers: { Authorization: "Basic " },
       });
       assertEquals(res.status, 302);
+    });
+  }),
+);
+
+Deno.test(
+  "notifications inbox",
+  pglite((sql) => async (t) => {
+    const jAuth = { Authorization: "Basic " + btoa("john@example.com:password1!") };
+    const janeAuth = { Authorization: "Basic " + btoa("jane@example.com:password1!") };
+    const fd = (o: Record<string, string>) => {
+      const f = new FormData();
+      for (const [k, v] of Object.entries(o)) f.append(k, v);
+      return f;
+    };
+
+    await t.step("mention shows up as unread in /n", async () => {
+      // jane posts mentioning john
+      const r = await app.request("/c", {
+        method: "POST",
+        body: fd({ body: "hey @john_doe check this out", tags: "#hi @john_doe" }),
+        headers: janeAuth,
+      });
+      assertEquals(r.status, 302);
+
+      const res = await app.request("/n", { headers: { Accept: "application/json", ...jAuth } });
+      assertEquals(res.status, 200);
+      const items = await res.json();
+      assertEquals(items.length >= 1, true);
+      const mention = items.find((i: any) => i.body.includes("@john_doe check"));
+      assertEquals(mention?.unread, true);
+      assertEquals(mention?.kind, "mention");
+      assertEquals(mention?.created_by, "jane_doe");
+    });
+
+    await t.step("second GET /n shows prior mention as read", async () => {
+      // Previous call updated last_seen_at; a fresh call with no new posts should show unread=false
+      const res = await app.request("/n", { headers: { Accept: "application/json", ...jAuth } });
+      const items = await res.json();
+      const mention = items.find((i: any) => i.body.includes("@john_doe check"));
+      assertEquals(mention?.unread, false);
+    });
+
+    await t.step("reply to john's post shows up in /n", async () => {
+      // john posts
+      const r1 = await app.request("/c", {
+        method: "POST",
+        body: fd({ body: "john post body", tags: "#johntag" }),
+        headers: jAuth,
+      });
+      const cid = +r1.headers.get("location")!.match(/\/c\/(\d+)/)![1];
+
+      // jane replies
+      await app.request(`/c/${cid}`, {
+        method: "POST",
+        body: fd({ body: "reply from jane" }),
+        headers: janeAuth,
+      });
+
+      const res = await app.request("/n", { headers: { Accept: "application/json", ...jAuth } });
+      const items = await res.json();
+      const reply = items.find((i: any) => i.body === "reply from jane");
+      assertEquals(reply?.kind, "reply");
+      assertEquals(reply?.unread, true);
+    });
+
+    await t.step("own replies are excluded from /n", async () => {
+      const r1 = await app.request("/c", {
+        method: "POST",
+        body: fd({ body: "jane root post", tags: "#solo" }),
+        headers: janeAuth,
+      });
+      const cid = +r1.headers.get("location")!.match(/\/c\/(\d+)/)![1];
+      await app.request(`/c/${cid}`, { method: "POST", body: fd({ body: "jane replies to self" }), headers: janeAuth });
+
+      const res = await app.request("/n", { headers: { Accept: "application/json", ...janeAuth } });
+      const items = await res.json();
+      assertEquals(items.some((i: any) => i.body === "jane replies to self"), false);
+    });
+
+    await t.step("/n/unread returns count and latest", async () => {
+      // fresh post mentioning john
+      await app.request("/c", {
+        method: "POST",
+        body: fd({ body: "hi @john_doe again", tags: "#hi @john_doe" }),
+        headers: janeAuth,
+      });
+      const res = await app.request("/n/unread", { headers: jAuth });
+      assertEquals(res.status, 200);
+      const d = await res.json();
+      assertEquals(d.count >= 1, true);
+      assertEquals(d.latest[0].url.startsWith("/c/"), true);
+      assertEquals(d.latest[0].title.includes("@jane_doe"), true);
+    });
+
+    await t.step("/n requires auth", async () => {
+      const res = await app.request("/n");
+      assertEquals(res.status, 401);
     });
   }),
 );

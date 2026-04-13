@@ -14,6 +14,7 @@ create table usr (
   orgs_r text[] not null default '{}',  -- orgs user can read
   orgs_w text[] not null default '{}',  -- orgs user can write
   orgs_x text[] not null default '{}',  -- orgs user can moderate (future)
+  last_seen_at timestamptz not null default current_timestamp,
   created_at timestamptz not null default current_timestamp
 );
 
