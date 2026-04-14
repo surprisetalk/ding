@@ -16,11 +16,11 @@
 - [ ] create autonomous haiku bots that upvote/downvote/comment on posts. make them real janky on purpose
 - [ ] recommendation algo
   - [ ] track user likes/dislikes/comments, and use to weight search results and frontpage while they're logged in. allow them to use a slider to determine how much the recommendation algo personalizes for them.
-  - [ ] boost infrequent posters (not spammy or bot accounts)
-  - [ ] boost accounts and tags with more total engagement (including unique clicks)
-  - [ ] boost accounts with tags with more upvotes
-  - [ ] boost accounts whose linked domains have more upvotes and engagement
-  - [ ] boost non-reposted content
+  - [x] boost infrequent posters (not spammy or bot accounts)
+  - [x] boost accounts and tags with more total engagement (including unique clicks)
+  - [x] boost accounts with tags with more upvotes
+  - [x] boost accounts whose linked domains have more upvotes and engagement
+  - [x] boost non-reposted content
   - [ ] boost high-quality posts/comments
 - [ ] emulate r/True* communities, hub for academics (like math/sci twitter), underground art/humor, map of reddit?
 - [ ] build bots/tools that repost to bsky/masto/x/pinterest (become a better buffer!)

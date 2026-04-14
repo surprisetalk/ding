@@ -26,6 +26,25 @@ export const extractImageUrl = (b: string) =>
 
 const isImageUrl = (u: string) => /\.(?:jpe?g|png|gif|webp|svg)(?:\?|$)/i.test(u);
 
+const extractDomain = (b: string) => {
+  const u = extractFirstUrl(b);
+  if (!u) return null;
+  try { return new URL(u).hostname; } catch { return null; }
+};
+
+const refreshScores = async (
+  opts: { pid?: string | number; author?: string; tags?: string[]; domain?: string | null },
+) => {
+  const { pid, author, tags, domain } = opts;
+  await sql`select refresh_score(array(
+    select cid from com where false
+    ${pid ? sql`or cid = ${pid} or ${pid}::int = any(links)` : sql``}
+    ${author ? sql`or created_by = ${author}` : sql``}
+    ${tags && tags.length ? sql`or tags && ${tags}::text[]` : sql``}
+    ${domain ? sql`or domain = ${domain}` : sql``}
+  ))`;
+};
+
 const FLAG_THRESHOLD = 3;
 
 const resolveThumbnail = async (url: string) => {
@@ -507,7 +526,7 @@ app.get("/", async (c) => {
       ? sql`created_at desc`
       : s === "top"
       ? sql`reaction_count desc, created_at desc`
-      : sql`created_at + interval '2 hours' * ln(greatest(coalesce((c_reactions->'▲')::int, 0)+1, 1)) desc`
+      : sql`score desc`
   }
     offset ${p * 25} limit 25
   `;
@@ -1197,10 +1216,10 @@ app.post("/c/:p?", async (c) => {
   const f = await c.req.formData(),
     b = f.get("body")?.toString() || "",
     [usr] = await sql`select orgs_w, orgs_r from usr where name = ${n}`;
-  let tags: string[], orgs: string[], usrs: string[];
+  let tags: string[], orgs: string[], usrs: string[], prm: any = null;
 
   if (pid) {
-    const [prm] = await sql`select tags, orgs, usrs, created_by, parent_cid as prm_parent from com where cid = ${pid}`;
+    [prm] = await sql`select tags, orgs, usrs, created_by, parent_cid as prm_parent, domain from com where cid = ${pid}`;
     if (!prm || !prm.orgs.every((t: any) => usr.orgs_r.includes(t)) || (prm.usrs.length && !prm.usrs.includes(n)))
       throw new HTTPException(403);
     tags = prm.tags;
@@ -1216,6 +1235,7 @@ app.post("/c/:p?", async (c) => {
           tx`delete from com where cid = ${existing.cid}`,
           tx`update com set c_reactions = c_reactions || hstore(${b}, greatest(coalesce((c_reactions->${b})::int,0)-1, 0)::text) where cid = ${pid}`,
         ]));
+        await refreshScores({ pid, author: prm.created_by, tags: prm.tags, domain: prm.domain });
         return c.redirect(prm.prm_parent ? `/c/${prm.prm_parent}#${pid}` : `/c/${pid}`);
       }
     }
@@ -1240,13 +1260,18 @@ app.post("/c/:p?", async (c) => {
   const thumb = pid
     ? null
     : (extractImageUrl(b) || (extractFirstUrl(b) ? await resolveThumbnail(extractFirstUrl(b)!) : null));
+  const domain = pid ? null : extractDomain(b);
   const [cm] =
-    await sql`insert into com (parent_cid, created_by, body, tags, orgs, usrs, links, thumb) values (${pid}, ${n}, ${b}, ${tags}, ${orgs}, ${usrs}, ${links}, ${thumb}) returning cid`;
+    await sql`insert into com (parent_cid, created_by, body, tags, orgs, usrs, links, thumb, domain) values (${pid}, ${n}, ${b}, ${tags}, ${orgs}, ${usrs}, ${links}, ${thumb}, ${domain}) returning cid`;
 
   if (pid) {
     if (isReaction(b))
       await sql`update com set c_reactions = c_reactions || hstore(${b}, (coalesce((c_reactions->${b})::int,0)+1)::text) where cid = ${pid}`;
     else await sql`update com set c_comments = c_comments + 1 where cid = ${pid}`;
+    if (isReaction(b))
+      await refreshScores({ pid, author: prm.created_by, tags: prm.tags, domain: prm.domain });
+  } else {
+    await refreshScores({ pid: cm.cid, author: n, tags, domain });
   }
 
   const [pr] = pid ? await sql`select parent_cid from com where cid = ${pid}` : [null];
@@ -1291,7 +1316,7 @@ app.get("/c/:cid?", async (c) => {
     ${q.comments ? sql`and char_length(body) > 1` : sql``}
     ${q.q ? sql`and to_tsvector('english', body) @@ plainto_tsquery('english', ${q.q})` : sql``}
     order by ${
-    s === "new" ? sql`created_at desc` : s === "top" ? sql`reaction_count desc, created_at desc` : sql`created_at desc`
+    s === "new" ? sql`created_at desc` : s === "top" ? sql`reaction_count desc, created_at desc` : sql`score desc`
   }
     offset ${p * lim} limit ${lim}
   `;

@@ -44,6 +44,17 @@ create table com (
   c_reactions hstore not null default ''::hstore,  -- reaction counts (e.g., '▲=>5,👍=>3')
   c_flags int not null default 0,       -- count of 'flag' replies
   flaggers citext[] not null default '{}',
+  -- Denormalized recommendation signals (maintained by refresh_score)
+  domain text,
+  author_ups int not null default 0,
+  author_downs int not null default 0,
+  author_posts_count int not null default 0,
+  tag_ups int not null default 0,
+  tag_downs int not null default 0,
+  domain_ups int not null default 0,
+  domain_downs int not null default 0,
+  repost_ups int not null default 0,
+  score timestamptz not null default current_timestamp,
   -- Root posts require at least one public tag
   check ((parent_cid is null and tags <> '{}') or parent_cid is not null)
 );
@@ -55,6 +66,57 @@ create index com_usrs_idx on com using gin (usrs);
 create index com_links_idx on com using gin (links);
 create index com_parent_cid_idx on com (parent_cid);
 create index com_created_by_idx on com (created_by);
+create index com_score_idx on com (score desc);
+create index com_domain_idx on com (domain) where domain is not null;
+
+create view stat_usr as
+select u.name as uid,
+  (select count(*)::int from com where created_by = u.name and parent_cid is null and char_length(body) > 1) as posts_count,
+  (select count(*)::int from com r join com p on p.cid = r.parent_cid where p.created_by = u.name and r.body = '▲') as ups_received,
+  (select count(*)::int from com r join com p on p.cid = r.parent_cid where p.created_by = u.name and r.body = '▼') as downs_received
+from usr u;
+
+create view stat_tag as
+select t.tag,
+  count(*) filter (where r.body = '▲')::int as ups_received,
+  count(*) filter (where r.body = '▼')::int as downs_received
+from (select unnest(tags) tag, cid from com where tags <> '{}' and parent_cid is null) t
+join com r on r.parent_cid = t.cid and char_length(r.body) = 1
+group by t.tag;
+
+create view stat_domain as
+select p.domain,
+  count(*) filter (where r.body = '▲')::int as ups_received,
+  count(*) filter (where r.body = '▼')::int as downs_received
+from com p
+join com r on r.parent_cid = p.cid and char_length(r.body) = 1
+where p.domain is not null
+group by p.domain;
+
+create or replace function refresh_score(cids int[]) returns void language sql as $$
+  update com c set
+    author_ups = coalesce(su.ups_received, 0),
+    author_downs = coalesce(su.downs_received, 0),
+    author_posts_count = coalesce(su.posts_count, 0),
+    tag_ups = coalesce((select max(ups_received) from stat_tag where tag = any(c.tags)), 0),
+    tag_downs = coalesce((select max(downs_received) from stat_tag where tag = any(c.tags)), 0),
+    domain_ups = coalesce((select ups_received from stat_domain where domain = c.domain), 0),
+    domain_downs = coalesce((select downs_received from stat_domain where domain = c.domain), 0),
+    repost_ups = coalesce((select sum(coalesce((c2.c_reactions->'▲')::int, 0))::int from com c2 where c2.cid = any(c.links)), 0),
+    score = c.created_at
+      + interval '2 hours'   * ln(coalesce((c.c_reactions->'▲')::int, 0) + 1)
+      - interval '6 hours'   * ln(coalesce((c.c_reactions->'▼')::int, 0) + 1)
+      + interval '1 hour'    * ln(coalesce(su.ups_received, 0) + 1)
+      - interval '3 hours'   * ln(coalesce(su.downs_received, 0) + 1)
+      + interval '1 hour'    * ln(coalesce((select max(ups_received) from stat_tag where tag = any(c.tags)), 0) + 1)
+      - interval '3 hours'   * ln(coalesce((select max(downs_received) from stat_tag where tag = any(c.tags)), 0) + 1)
+      + interval '1 hour'    * ln(coalesce((select ups_received from stat_domain where domain = c.domain), 0) + 1)
+      - interval '3 hours'   * ln(coalesce((select downs_received from stat_domain where domain = c.domain), 0) + 1)
+      - interval '30 minutes'* ln(coalesce(su.posts_count, 0) + 1)
+      - interval '2 hours'   * ln(coalesce((select sum(coalesce((c2.c_reactions->'▲')::int, 0))::int from com c2 where c2.cid = any(c.links)), 0) + 1)
+  from stat_usr su
+  where c.cid = any(cids) and c.created_by = su.uid;
+$$;
 
 
 insert into
@@ -140,3 +202,6 @@ on conflict do nothing;
 
 -- Sync sequences for tables with hardcoded IDs in seeds
 select setval('com_cid_seq', (select max(cid) from com));
+
+-- Backfill score + denormalized stats
+select refresh_score(array(select cid from com));

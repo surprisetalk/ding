@@ -901,6 +901,112 @@ Deno.test(
   }),
 );
 
+//// RECOMMENDATION SCORING TESTS //////////////////////////////////////////////
+
+Deno.test(
+  "recommendation scoring",
+  pglite((sql) => async (t) => {
+    const mkPost = async (author: string, body: string, tags: string[], domain: string | null = null) => {
+      const [r] = await sql`insert into com (created_by, body, tags, domain) values (${author}, ${body}, ${tags}, ${domain}) returning cid`;
+      await sql`select refresh_score(array(select cid from com where created_by = ${author}))`;
+      return r.cid as number;
+    };
+    const react = async (reactor: string, pid: number, body: string) => {
+      await sql`insert into com (parent_cid, created_by, body, tags) values (${pid}, ${reactor}, ${body}, '{x}')`;
+      await sql`update com set c_reactions = c_reactions || hstore(${body}, (coalesce((c_reactions->${body})::int,0)+1)::text) where cid = ${pid}`;
+      const [p] = await sql`select created_by, tags, domain from com where cid = ${pid}`;
+      await sql`select refresh_score(array(
+        select cid from com where cid = ${pid} or created_by = ${p.created_by} or tags && ${p.tags}::text[]
+          ${p.domain ? sql`or domain = ${p.domain}` : sql``}
+      ))`;
+    };
+    const unreact = async (reactor: string, pid: number, body: string) => {
+      await sql`delete from com where parent_cid = ${pid} and created_by = ${reactor} and body = ${body}`;
+      await sql`update com set c_reactions = c_reactions || hstore(${body}, greatest(coalesce((c_reactions->${body})::int,0)-1, 0)::text) where cid = ${pid}`;
+      const [p] = await sql`select created_by, tags, domain from com where cid = ${pid}`;
+      await sql`select refresh_score(array(
+        select cid from com where cid = ${pid} or created_by = ${p.created_by} or tags && ${p.tags}::text[]
+          ${p.domain ? sql`or domain = ${p.domain}` : sql``}
+      ))`;
+    };
+    const score = async (cid: number) => {
+      const [r] = await sql`select score from com where cid = ${cid}`;
+      return new Date(r.score).getTime();
+    };
+    const mkUser = async (name: string) => {
+      await sql`insert into usr (name, email, password, bio, email_verified_at, invited_by) values (${name}, ${name + "@x.com"}, 'x', 'x', now(), 'john_doe') on conflict do nothing`;
+    };
+
+    await t.step("heavily-upvoted author ranks above new author", async () => {
+      for (const u of ["rep_high", "rep_low", "rater1", "rater2"]) await mkUser(u);
+      const seed = await mkPost("rep_high", "old", ["aa"]);
+      await react("rater1", seed, "▲");
+      await react("rater2", seed, "▲");
+      const hi = await mkPost("rep_high", "new hi", ["bb"]);
+      const lo = await mkPost("rep_low", "new lo", ["bb"]);
+      assertEquals((await score(hi)) > (await score(lo)), true);
+    });
+
+    await t.step("downvotes on own post outweigh upvotes (3x)", async () => {
+      for (const u of ["postA1", "postB1", "voter1", "voter2", "voter3"]) await mkUser(u);
+      const up = await mkPost("postA1", "a", ["cc"]);
+      const down = await mkPost("postB1", "b", ["dd"]);
+      for (const v of ["voter1", "voter2", "voter3"]) await react(v, up, "▲");
+      for (const v of ["voter1", "voter2"]) await react(v, down, "▼");
+      assertEquals((await score(down)) < (await score(up)), true);
+    });
+
+    await t.step("mass-downvoted author drags their other posts down", async () => {
+      for (const u of ["dragged", "cleanuser", "dvoter1", "dvoter2", "dvoter3"]) await mkUser(u);
+      const other = await mkPost("cleanuser", "clean", ["ff"]);
+      const first = await mkPost("dragged", "first", ["gg"]);
+      for (const v of ["dvoter1", "dvoter2", "dvoter3"]) await react(v, first, "▼");
+      const second = await mkPost("dragged", "second", ["hh"]);
+      assertEquals((await score(second)) < (await score(other)), true);
+    });
+
+    await t.step("post on reputable domain beats post on unknown domain", async () => {
+      for (const u of ["domA1", "domB1", "ranker1", "ranker2"]) await mkUser(u);
+      const seed = await mkPost("domA1", "good", ["ii"], "good.example");
+      await react("ranker1", seed, "▲");
+      await react("ranker2", seed, "▲");
+      const reputable = await mkPost("domB1", "news", ["jj"], "good.example");
+      const fresh = await mkPost("domB1", "news2", ["jj"], "unknown.example");
+      assertEquals((await score(reputable)) > (await score(fresh)), true);
+    });
+
+    await t.step("heavy poster ranks below infrequent poster", async () => {
+      for (const u of ["heavy", "light"]) await mkUser(u);
+      for (let i = 0; i < 20; i++)
+        await sql`insert into com (created_by, body, tags) values ('heavy', ${"filler " + i}, '{kk}')`;
+      await sql`select refresh_score(array(select cid from com where created_by = 'heavy'))`;
+      const h = await mkPost("heavy", "hot take", ["ll"]);
+      const l = await mkPost("light", "hot take", ["ll"]);
+      assertEquals((await score(h)) < (await score(l)), true);
+    });
+
+    await t.step("repost (linking to upvoted post) ranks below original content", async () => {
+      for (const u of ["origauth", "repostr", "upvtr1", "upvtr2", "upvtr3"]) await mkUser(u);
+      const original = await mkPost("origauth", "original content", ["nn"]);
+      for (const v of ["upvtr1", "upvtr2", "upvtr3"]) await react(v, original, "▲");
+      const [r] = await sql`insert into com (created_by, body, tags, links) values ('repostr', 'see this', '{oo}', ${[original]}::int[]) returning cid`;
+      await sql`select refresh_score(array[${r.cid}]::int[])`;
+      const fresh = await mkPost("repostr", "own thought", ["pp"]);
+      assertEquals((await score(r.cid as number)) < (await score(fresh)), true);
+    });
+
+    await t.step("reaction remove restores score (idempotent)", async () => {
+      for (const u of ["idemuser", "idemvote"]) await mkUser(u);
+      const p = await mkPost("idemuser", "ping", ["mm"]);
+      const before = await score(p);
+      await react("idemvote", p, "▲");
+      assertEquals((await score(p)) > before, true);
+      await unreact("idemvote", p, "▲");
+      assertEquals(await score(p), before);
+    });
+  }),
+);
+
 //// BOT INTERACTION TESTS //////////////////////////////////////////////////////
 
 Deno.test(
