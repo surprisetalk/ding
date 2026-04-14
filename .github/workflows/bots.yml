@@ -5,339 +5,73 @@ on:
     - cron: "*/5 * * * *"
   workflow_dispatch:
 
+concurrency:
+  group: refresh-bots
+  cancel-in-progress: true
+
 jobs:
   bots:
     runs-on: ubuntu-latest
+    timeout-minutes: 4
+    strategy:
+      fail-fast: false
+      max-parallel: 15
+      matrix:
+        bot:
+          - hn
+          - lobsters
+          - arxiv
+          - smallweb
+          - hmmm
+          - tildes
+          - 8ball
+          - dice
+          - codegolf
+          - estimation
+          - remind
+          - bestof
+          - haiku
+          - pentameter
+          - museum
+          - album
+          - mathgif
+          - clipart
+          - geometry
+          - emojiglitch
+          - lowpoly
+          - pixelsort
+          - dither
+          - aquarium
+          - stars
+          - cowsay
+          - sortinghat
+          - summoner
+          - kenm
+          - linkedin
+          - bigfoot
+          - caveman
+          - critic
     steps:
       - uses: actions/checkout@v4
-
       - uses: denoland/setup-deno@v2
         with:
           deno-version: v2.x
-
-      - name: Run HN bot
+      - name: Run ${{ matrix.bot }} bot
         continue-on-error: true
         timeout-minutes: 2
         env:
           DING_API_URL: ${{ secrets.DING_API_URL }}
-          BOT_HN_EMAIL: ${{ secrets.BOT_HN_EMAIL }}
-          BOT_HN_PASSWORD: ${{ secrets.BOT_HN_PASSWORD }}
-        run: deno run -A bots/hn.ts
-
-      - name: Run Lobsters bot
-        continue-on-error: true
-        timeout-minutes: 2
-        env:
-          DING_API_URL: ${{ secrets.DING_API_URL }}
-          BOT_LOBSTERS_EMAIL: ${{ secrets.BOT_LOBSTERS_EMAIL }}
-          BOT_LOBSTERS_PASSWORD: ${{ secrets.BOT_LOBSTERS_PASSWORD }}
-        run: deno run -A bots/lobsters.ts
-
-      - name: Run arXiv bot
-        continue-on-error: true
-        timeout-minutes: 2
-        env:
-          DING_API_URL: ${{ secrets.DING_API_URL }}
-          BOT_ARXIV_EMAIL: ${{ secrets.BOT_ARXIV_EMAIL }}
-          BOT_ARXIV_PASSWORD: ${{ secrets.BOT_ARXIV_PASSWORD }}
-        run: deno run -A bots/arxiv.ts
-
-      - name: Run SmallWeb bot
-        continue-on-error: true
-        timeout-minutes: 2
-        env:
-          DING_API_URL: ${{ secrets.DING_API_URL }}
-          BOT_SMALLWEB_EMAIL: ${{ secrets.BOT_SMALLWEB_EMAIL }}
-          BOT_SMALLWEB_PASSWORD: ${{ secrets.BOT_SMALLWEB_PASSWORD }}
-        run: deno run -A bots/smallweb.ts
-
-      - name: Run Hmmm bot
-        continue-on-error: true
-        timeout-minutes: 2
-        env:
-          DING_API_URL: ${{ secrets.DING_API_URL }}
-          BOT_HMMM_EMAIL: ${{ secrets.BOT_HMMM_EMAIL }}
-          BOT_HMMM_PASSWORD: ${{ secrets.BOT_HMMM_PASSWORD }}
-        run: deno run -A bots/hmmm.ts
-
-      - name: Run Tildes bot
-        continue-on-error: true
-        timeout-minutes: 2
-        env:
-          DING_API_URL: ${{ secrets.DING_API_URL }}
-          BOT_TILDES_EMAIL: ${{ secrets.BOT_TILDES_EMAIL }}
-          BOT_TILDES_PASSWORD: ${{ secrets.BOT_TILDES_PASSWORD }}
-        run: deno run -A bots/tildes.ts
-
-      - name: Run 8ball bot
-        continue-on-error: true
-        timeout-minutes: 2
-        env:
-          DING_API_URL: ${{ secrets.DING_API_URL }}
-          BOT_8BALL_EMAIL: ${{ secrets.BOT_8BALL_EMAIL }}
-          BOT_8BALL_PASSWORD: ${{ secrets.BOT_8BALL_PASSWORD }}
-        run: deno run -A bots/8ball.ts
-
-      - name: Run Dice bot
-        continue-on-error: true
-        timeout-minutes: 2
-        env:
-          DING_API_URL: ${{ secrets.DING_API_URL }}
-          BOT_DICE_EMAIL: ${{ secrets.BOT_DICE_EMAIL }}
-          BOT_DICE_PASSWORD: ${{ secrets.BOT_DICE_PASSWORD }}
-        run: deno run -A bots/dice.ts
-
-      - name: Run CodeGolf bot
-        continue-on-error: true
-        timeout-minutes: 2
-        env:
-          DING_API_URL: ${{ secrets.DING_API_URL }}
-          BOT_CODEGOLF_EMAIL: ${{ secrets.BOT_CODEGOLF_EMAIL }}
-          BOT_CODEGOLF_PASSWORD: ${{ secrets.BOT_CODEGOLF_PASSWORD }}
-        run: deno run -A bots/codegolf.ts
-
-      - name: Run Estimation bot
-        continue-on-error: true
-        timeout-minutes: 2
-        env:
-          DING_API_URL: ${{ secrets.DING_API_URL }}
-          BOT_ESTIMATION_EMAIL: ${{ secrets.BOT_ESTIMATION_EMAIL }}
-          BOT_ESTIMATION_PASSWORD: ${{ secrets.BOT_ESTIMATION_PASSWORD }}
-        run: deno run -A bots/estimation.ts
-
-      - name: Run Remind bot
-        continue-on-error: true
-        timeout-minutes: 2
-        env:
-          DING_API_URL: ${{ secrets.DING_API_URL }}
-          BOT_REMIND_EMAIL: ${{ secrets.BOT_REMIND_EMAIL }}
-          BOT_REMIND_PASSWORD: ${{ secrets.BOT_REMIND_PASSWORD }}
-        run: deno run -A bots/remind.ts
-
-      - name: Run BestOf bot
-        continue-on-error: true
-        timeout-minutes: 2
-        env:
-          DING_API_URL: ${{ secrets.DING_API_URL }}
-          BOT_BESTOF_EMAIL: ${{ secrets.BOT_BESTOF_EMAIL }}
-          BOT_BESTOF_PASSWORD: ${{ secrets.BOT_BESTOF_PASSWORD }}
-        run: deno run -A bots/bestof.ts
-
-      - name: Run Haiku bot
-        continue-on-error: true
-        timeout-minutes: 2
-        env:
-          DING_API_URL: ${{ secrets.DING_API_URL }}
-          BOT_HAIKU_EMAIL: ${{ secrets.BOT_HAIKU_EMAIL }}
-          BOT_HAIKU_PASSWORD: ${{ secrets.BOT_HAIKU_PASSWORD }}
-        run: deno run -A bots/haiku.ts
-
-      - name: Run Pentameter bot
-        continue-on-error: true
-        timeout-minutes: 2
-        env:
-          DING_API_URL: ${{ secrets.DING_API_URL }}
-          BOT_PENTAMETER_EMAIL: ${{ secrets.BOT_PENTAMETER_EMAIL }}
-          BOT_PENTAMETER_PASSWORD: ${{ secrets.BOT_PENTAMETER_PASSWORD }}
-        run: deno run -A bots/pentameter.ts
-
-      - name: Run Museum bot
-        continue-on-error: true
-        timeout-minutes: 2
-        env:
-          DING_API_URL: ${{ secrets.DING_API_URL }}
-          BOT_MUSEUM_EMAIL: ${{ secrets.BOT_MUSEUM_EMAIL }}
-          BOT_MUSEUM_PASSWORD: ${{ secrets.BOT_MUSEUM_PASSWORD }}
-        run: deno run -A bots/museum.ts
-
-      - name: Run Album bot
-        continue-on-error: true
-        timeout-minutes: 2
-        env:
-          DING_API_URL: ${{ secrets.DING_API_URL }}
-          BOT_ALBUM_EMAIL: ${{ secrets.BOT_ALBUM_EMAIL }}
-          BOT_ALBUM_PASSWORD: ${{ secrets.BOT_ALBUM_PASSWORD }}
-        run: deno run -A bots/album.ts
-
-      - name: Run MathGIF bot
-        continue-on-error: true
-        timeout-minutes: 2
-        env:
-          DING_API_URL: ${{ secrets.DING_API_URL }}
-          BOT_MATHGIF_EMAIL: ${{ secrets.BOT_MATHGIF_EMAIL }}
-          BOT_MATHGIF_PASSWORD: ${{ secrets.BOT_MATHGIF_PASSWORD }}
-        run: deno run -A bots/mathgif.ts
-
-      - name: Run Clipart bot
-        continue-on-error: true
-        timeout-minutes: 2
-        env:
-          DING_API_URL: ${{ secrets.DING_API_URL }}
-          BOT_CLIPART_EMAIL: ${{ secrets.BOT_CLIPART_EMAIL }}
-          BOT_CLIPART_PASSWORD: ${{ secrets.BOT_CLIPART_PASSWORD }}
+          BOT_EMAIL: ${{ secrets[format('BOT_{0}_EMAIL', matrix.bot)] }}
+          BOT_PASSWORD: ${{ secrets[format('BOT_{0}_PASSWORD', matrix.bot)] }}
+          ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
           R2_ENDPOINT: ${{ secrets.R2_ENDPOINT }}
           R2_ACCESS_KEY_ID: ${{ secrets.R2_ACCESS_KEY_ID }}
           R2_SECRET_ACCESS_KEY: ${{ secrets.R2_SECRET_ACCESS_KEY }}
           R2_BUCKET: ${{ secrets.R2_BUCKET }}
           R2_PUBLIC_URL: ${{ secrets.R2_PUBLIC_URL }}
-        run: deno run -A bots/clipart.ts
-
-      - name: Run Geometry bot
-        continue-on-error: true
-        timeout-minutes: 2
-        env:
-          DING_API_URL: ${{ secrets.DING_API_URL }}
-          BOT_GEOMETRY_EMAIL: ${{ secrets.BOT_GEOMETRY_EMAIL }}
-          BOT_GEOMETRY_PASSWORD: ${{ secrets.BOT_GEOMETRY_PASSWORD }}
-          R2_ENDPOINT: ${{ secrets.R2_ENDPOINT }}
-          R2_ACCESS_KEY_ID: ${{ secrets.R2_ACCESS_KEY_ID }}
-          R2_SECRET_ACCESS_KEY: ${{ secrets.R2_SECRET_ACCESS_KEY }}
-          R2_BUCKET: ${{ secrets.R2_BUCKET }}
-          R2_PUBLIC_URL: ${{ secrets.R2_PUBLIC_URL }}
-        run: deno run -A bots/geometry.ts
-
-      - name: Run EmojiGlitch bot
-        continue-on-error: true
-        timeout-minutes: 2
-        env:
-          DING_API_URL: ${{ secrets.DING_API_URL }}
-          BOT_EMOJIGLITCH_EMAIL: ${{ secrets.BOT_EMOJIGLITCH_EMAIL }}
-          BOT_EMOJIGLITCH_PASSWORD: ${{ secrets.BOT_EMOJIGLITCH_PASSWORD }}
-          R2_ENDPOINT: ${{ secrets.R2_ENDPOINT }}
-          R2_ACCESS_KEY_ID: ${{ secrets.R2_ACCESS_KEY_ID }}
-          R2_SECRET_ACCESS_KEY: ${{ secrets.R2_SECRET_ACCESS_KEY }}
-          R2_BUCKET: ${{ secrets.R2_BUCKET }}
-          R2_PUBLIC_URL: ${{ secrets.R2_PUBLIC_URL }}
-        run: deno run -A bots/emojiglitch.ts
-
-      - name: Run Lowpoly bot
-        continue-on-error: true
-        timeout-minutes: 2
-        env:
-          DING_API_URL: ${{ secrets.DING_API_URL }}
-          BOT_LOWPOLY_EMAIL: ${{ secrets.BOT_LOWPOLY_EMAIL }}
-          BOT_LOWPOLY_PASSWORD: ${{ secrets.BOT_LOWPOLY_PASSWORD }}
-          R2_ENDPOINT: ${{ secrets.R2_ENDPOINT }}
-          R2_ACCESS_KEY_ID: ${{ secrets.R2_ACCESS_KEY_ID }}
-          R2_SECRET_ACCESS_KEY: ${{ secrets.R2_SECRET_ACCESS_KEY }}
-          R2_BUCKET: ${{ secrets.R2_BUCKET }}
-          R2_PUBLIC_URL: ${{ secrets.R2_PUBLIC_URL }}
-        run: deno run -A bots/lowpoly.ts
-
-      - name: Run PixelSort bot
-        continue-on-error: true
-        timeout-minutes: 2
-        env:
-          DING_API_URL: ${{ secrets.DING_API_URL }}
-          BOT_PIXELSORT_EMAIL: ${{ secrets.BOT_PIXELSORT_EMAIL }}
-          BOT_PIXELSORT_PASSWORD: ${{ secrets.BOT_PIXELSORT_PASSWORD }}
-          R2_ENDPOINT: ${{ secrets.R2_ENDPOINT }}
-          R2_ACCESS_KEY_ID: ${{ secrets.R2_ACCESS_KEY_ID }}
-          R2_SECRET_ACCESS_KEY: ${{ secrets.R2_SECRET_ACCESS_KEY }}
-          R2_BUCKET: ${{ secrets.R2_BUCKET }}
-          R2_PUBLIC_URL: ${{ secrets.R2_PUBLIC_URL }}
-        run: deno run -A bots/pixelsort.ts
-
-      - name: Run Dither bot
-        continue-on-error: true
-        timeout-minutes: 2
-        env:
-          DING_API_URL: ${{ secrets.DING_API_URL }}
-          BOT_DITHER_EMAIL: ${{ secrets.BOT_DITHER_EMAIL }}
-          BOT_DITHER_PASSWORD: ${{ secrets.BOT_DITHER_PASSWORD }}
-        run: deno run -A bots/dither.ts
-
-      - name: Run Aquarium bot
-        continue-on-error: true
-        timeout-minutes: 2
-        env:
-          DING_API_URL: ${{ secrets.DING_API_URL }}
-          BOT_AQUARIUM_EMAIL: ${{ secrets.BOT_AQUARIUM_EMAIL }}
-          BOT_AQUARIUM_PASSWORD: ${{ secrets.BOT_AQUARIUM_PASSWORD }}
-        run: deno run -A bots/aquarium.ts
-
-      - name: Run Stars bot
-        continue-on-error: true
-        timeout-minutes: 2
-        env:
-          DING_API_URL: ${{ secrets.DING_API_URL }}
-          BOT_STARS_EMAIL: ${{ secrets.BOT_STARS_EMAIL }}
-          BOT_STARS_PASSWORD: ${{ secrets.BOT_STARS_PASSWORD }}
-        run: deno run -A bots/stars.ts
-
-      - name: Run Cowsay bot
-        continue-on-error: true
-        timeout-minutes: 2
-        env:
-          DING_API_URL: ${{ secrets.DING_API_URL }}
-          BOT_COWSAY_EMAIL: ${{ secrets.BOT_COWSAY_EMAIL }}
-          BOT_COWSAY_PASSWORD: ${{ secrets.BOT_COWSAY_PASSWORD }}
-        run: deno run -A bots/cowsay.ts
-
-      - name: Run SortingHat bot
-        continue-on-error: true
-        timeout-minutes: 2
-        env:
-          DING_API_URL: ${{ secrets.DING_API_URL }}
-          BOT_SORTINGHAT_EMAIL: ${{ secrets.BOT_SORTINGHAT_EMAIL }}
-          BOT_SORTINGHAT_PASSWORD: ${{ secrets.BOT_SORTINGHAT_PASSWORD }}
-        run: deno run -A bots/sortinghat.ts
-
-      - name: Run Summoner bot
-        continue-on-error: true
-        timeout-minutes: 2
-        env:
-          DING_API_URL: ${{ secrets.DING_API_URL }}
-          BOT_SUMMONER_EMAIL: ${{ secrets.BOT_SUMMONER_EMAIL }}
-          BOT_SUMMONER_PASSWORD: ${{ secrets.BOT_SUMMONER_PASSWORD }}
-        run: deno run -A bots/summoner.ts
-
-      - name: Run KenM bot
-        continue-on-error: true
-        timeout-minutes: 2
-        env:
-          DING_API_URL: ${{ secrets.DING_API_URL }}
-          BOT_KENM_EMAIL: ${{ secrets.BOT_KENM_EMAIL }}
-          BOT_KENM_PASSWORD: ${{ secrets.BOT_KENM_PASSWORD }}
-          ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
-        run: deno run -A bots/kenm.ts
-
-      - name: Run LinkedIn bot
-        continue-on-error: true
-        timeout-minutes: 2
-        env:
-          DING_API_URL: ${{ secrets.DING_API_URL }}
-          BOT_LINKEDIN_EMAIL: ${{ secrets.BOT_LINKEDIN_EMAIL }}
-          BOT_LINKEDIN_PASSWORD: ${{ secrets.BOT_LINKEDIN_PASSWORD }}
-          ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
-        run: deno run -A bots/linkedin.ts
-
-      - name: Run Bigfoot bot
-        continue-on-error: true
-        timeout-minutes: 2
-        env:
-          DING_API_URL: ${{ secrets.DING_API_URL }}
-          BOT_BIGFOOT_EMAIL: ${{ secrets.BOT_BIGFOOT_EMAIL }}
-          BOT_BIGFOOT_PASSWORD: ${{ secrets.BOT_BIGFOOT_PASSWORD }}
-          ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
-        run: deno run -A bots/bigfoot.ts
-
-      - name: Run Caveman bot
-        continue-on-error: true
-        timeout-minutes: 2
-        env:
-          DING_API_URL: ${{ secrets.DING_API_URL }}
-          BOT_CAVEMAN_EMAIL: ${{ secrets.BOT_CAVEMAN_EMAIL }}
-          BOT_CAVEMAN_PASSWORD: ${{ secrets.BOT_CAVEMAN_PASSWORD }}
-          ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
-        run: deno run -A bots/caveman.ts
-
-      - name: Run Critic bot
-        continue-on-error: true
-        timeout-minutes: 2
-        env:
-          DING_API_URL: ${{ secrets.DING_API_URL }}
-          BOT_CRITIC_EMAIL: ${{ secrets.BOT_CRITIC_EMAIL }}
-          BOT_CRITIC_PASSWORD: ${{ secrets.BOT_CRITIC_PASSWORD }}
-          ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
-        run: deno run -A bots/critic.ts
+        run: |
+          bot='${{ matrix.bot }}'
+          upper=$(echo "$bot" | tr '[:lower:]' '[:upper:]')
+          export "BOT_${upper}_EMAIL=$BOT_EMAIL"
+          export "BOT_${upper}_PASSWORD=$BOT_PASSWORD"
+          deno run -A "bots/${bot}.ts"
