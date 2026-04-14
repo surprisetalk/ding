@@ -1,6 +1,6 @@
 import { botInit, extractArticle, extractImageUrl, firstLink, getAnsweredCids, reply } from "../bots.ts";
 
-const MAX_CHARS = 1500;
+const MAX_CHARS = 5000;
 
 async function main() {
   const { apiUrl, auth, botUsername } = botInit("READER");
@@ -34,9 +34,7 @@ async function main() {
       return null;
     });
     if (!article) continue;
-    const text = article.text.length > MAX_CHARS
-      ? article.text.slice(0, MAX_CHARS).trimEnd() + "…"
-      : article.text;
+    const text = article.text.length > MAX_CHARS ? article.text.slice(0, MAX_CHARS).trimEnd() + "…" : article.text;
     const raw = article.title ? `**${article.title}**\n\n${text}` : text;
     const body = raw.split("\n").map((l) => `> ${l}`).join("\n");
     await reply(auth, apiUrl, p.cid, body);
