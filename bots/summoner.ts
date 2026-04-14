@@ -3,7 +3,7 @@ import { botInit, getAnsweredCids, reply, extractImageUrl } from "../bots.ts";
 const { apiUrl, auth, botUsername } = botInit("SUMMONER");
 
 const IMAGE_BOTS = ["@bot_lowpoly", "@bot_pixelsort", "@bot_dither"];
-const TEXT_BOTS = ["@bot_cowsay"];
+const TEXT_BOTS = ["@bot_cowsay", "@bot_upgoerfive"];
 
 type Post = {
   cid: number;

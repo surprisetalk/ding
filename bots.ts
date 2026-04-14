@@ -1,5 +1,8 @@
 // Shared bot infrastructure for ding bots
 
+import { parseHTML } from "npm:linkedom";
+import { Readability } from "npm:@mozilla/readability";
+
 // ---- Bot init ----
 
 export function botInit(envPrefix: string) {
@@ -93,6 +96,32 @@ export async function fetchPost(
   if (!res.ok) return null;
   const items = await res.json();
   return items[0] || null;
+}
+
+export function firstLink(body: string): string | null {
+  const m = body.match(/https?:\/\/[^\s)]+/);
+  return m ? m[0] : null;
+}
+
+export async function extractArticle(
+  url: string,
+): Promise<{ title: string; text: string } | null> {
+  const res = await fetch(url, {
+    headers: { "user-agent": "Mozilla/5.0 ding-reader" },
+    redirect: "follow",
+  });
+  if (!res.ok) return null;
+  const ct = res.headers.get("content-type") || "";
+  if (!ct.includes("html")) return null;
+  const html = await res.text();
+  // deno-lint-ignore no-explicit-any
+  const doc = (parseHTML(html) as any).document;
+  // deno-lint-ignore no-explicit-any
+  const article = new Readability(doc as any).parse();
+  if (!article?.textContent) return null;
+  const text = article.textContent.replace(/\s+/g, " ").trim();
+  if (text.length < 100) return null;
+  return { title: (article.title ?? "").trim(), text };
 }
 
 export function extractImageUrl(body: string): string | null {
@@ -406,7 +435,7 @@ export async function claude(
     },
     body: JSON.stringify({
       model: CLAUDE_MODEL,
-      max_tokens: opts.maxTokens ?? 400,
+      max_tokens: opts.maxTokens ?? 250,
       temperature: opts.temperature ?? 1,
       system: opts.system,
       messages: [{ role: "user", content: prompt }],

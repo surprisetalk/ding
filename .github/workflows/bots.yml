@@ -52,6 +52,9 @@ jobs:
           - caveman
           - critic
           - wizard
+          - reader
+          - tldr
+          - upgoerfive
     steps:
       - uses: actions/checkout@v4
       - uses: denoland/setup-deno@v2
