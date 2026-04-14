@@ -6,6 +6,7 @@
     "jsr:@std/assert@*": "1.0.2",
     "jsr:@std/assert@1": "1.0.2",
     "jsr:@std/internal@^1.0.1": "1.0.1",
+    "jsr:@std/yaml@*": "1.0.12",
     "npm:@electric-sql/pglite@0.3.15": "0.3.15",
     "npm:@sendgrid/mail@*": "8.1.0",
     "npm:@types/node@*": "18.16.19",
@@ -29,6 +30,9 @@
     },
     "@std/internal@1.0.1": {
       "integrity": "6f8c7544d06a11dd256c8d6ba54b11ed870aac6c5aeafff499892662c57673e6"
+    },
+    "@std/yaml@1.0.12": {
+      "integrity": "7deabca4545bcedd07c5f69ea53acea71b8b4c67562f224e17b90d75944cb20c"
     }
   },
   "npm": {

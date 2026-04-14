@@ -11,6 +11,28 @@ const auth = btoa(`${BOT_EMAIL}:${BOT_PASSWORD}`);
 const BOT_USERNAME = BOT_EMAIL.split("@")[0].replace(/-/g, "_");
 
 const FEED_URL = "https://www.reddit.com/r/hmmm/.rss";
+const FETCH_TIMEOUT_MS = 15_000;
+
+// Reddit throttles aggressively; a descriptive, contact-bearing UA + a single
+// retry-on-429 keeps us well-behaved without hanging the workflow.
+async function redditFetch(url: string, init: RequestInit = {}): Promise<Response> {
+  for (let attempt = 0; attempt < 2; attempt++) {
+    const res = await fetch(url, {
+      ...init,
+      signal: AbortSignal.timeout(FETCH_TIMEOUT_MS),
+      headers: {
+        "User-Agent": "ding-bot/1.0 (+https://ding.bar; contact: taylor@ding.bar)",
+        "Accept": "application/rss+xml, application/xml, text/xml, */*",
+        ...(init.headers || {}),
+      },
+    });
+    if (res.status !== 429 || attempt === 1) return res;
+    const retryAfter = parseInt(res.headers.get("retry-after") || "5", 10);
+    console.warn(`Reddit 429, sleeping ${retryAfter}s then retrying`);
+    await new Promise((r) => setTimeout(r, Math.min(retryAfter, 30) * 1000));
+  }
+  throw new Error("unreachable");
+}
 
 // Fetch bot's latest posts to find watermark
 async function getPostedUrls(): Promise<Set<string>> {
@@ -60,11 +82,7 @@ function extractImageUrl(html: string): string | null {
 
 // Parse Reddit Atom feed
 async function fetchRedditFeed(): Promise<RedditItem[]> {
-  const res = await fetch(FEED_URL, {
-    headers: {
-      "User-Agent": "ding-bot/1.0 (https://ding.bar)",
-    },
-  });
+  const res = await redditFetch(FEED_URL);
   if (!res.ok) {
     console.error(`Failed to fetch feed: ${res.status}`);
     return [];
@@ -148,12 +166,15 @@ async function main() {
   const newItems = items.filter((item) => !postedUrls.has(item.link));
   console.log(`Found ${newItems.length} new items to post`);
 
-  // Post up to 10 per run
-  for (const item of newItems.slice(0, 10)) {
+  // Post up to 3 per run (be polite; cron fires every 5 min)
+  for (const item of newItems.slice(0, 3)) {
     console.log(`Posting: ${item.title.slice(0, 60)}...`);
     const ok = await postItem(item);
     if (!ok) console.error(`Failed to post: ${item.title}`);
   }
 }
 
-main();
+main().catch((err) => {
+  console.error(`hmmm bot failed gracefully: ${err?.message || err}`);
+  Deno.exit(0);
+});
