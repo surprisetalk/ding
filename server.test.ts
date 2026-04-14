@@ -1329,6 +1329,45 @@ Deno.test(
       const res = await app.request("/n");
       assertEquals(res.status, 401);
     });
+
+    await t.step("/c?mention= matches body @refs (top-level, no usrs)", async () => {
+      // jane posts a top-level with @john_doe only in body; tags field has no @
+      await app.request("/c", {
+        method: "POST",
+        body: fd({ body: "shout out to @john_doe here", tags: "#shout" }),
+        headers: janeAuth,
+      });
+
+      const res = await app.request("/c?mention=john_doe", {
+        headers: { Accept: "application/json", ...jAuth },
+      });
+      assertEquals(res.status, 200);
+      const items = await res.json();
+      assertEquals(items.some((i: any) => i.body === "shout out to @john_doe here"), true);
+    });
+
+    await t.step("/c?mention=&comments=1 matches body @refs in replies", async () => {
+      // john posts a tagged root
+      const r1 = await app.request("/c", {
+        method: "POST",
+        body: fd({ body: "john root", tags: "#rootx" }),
+        headers: jAuth,
+      });
+      const parent = +r1.headers.get("location")!.match(/\/c\/(\d+)/)![1];
+      // jane replies summoning a bot-style handle
+      await app.request(`/c/${parent}`, {
+        method: "POST",
+        body: fd({ body: "@bot_dither" }),
+        headers: janeAuth,
+      });
+
+      const res = await app.request("/c?mention=bot_dither&comments=1", {
+        headers: { Accept: "application/json", ...jAuth },
+      });
+      assertEquals(res.status, 200);
+      const items = await res.json();
+      assertEquals(items.some((i: any) => i.body === "@bot_dither"), true);
+    });
   }),
 );
 

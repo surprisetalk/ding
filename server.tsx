@@ -21,6 +21,8 @@ const escapeXml = (s: string) =>
 const extractFirstUrl = (b: string) => b.match(/https?:\/\/[^\s]+/)?.[0] || null;
 export const extractLinks = (b: string) =>
   [...b.matchAll(/https:\/\/ding\.bar\/c\/(\d+)/g)].map(m => parseInt(m[1]));
+export const extractMentions = (b: string) =>
+  [...new Set([...b.matchAll(/@([0-9a-zA-Z_]{4,32})/g)].map(m => m[1].toLowerCase()))];
 export const extractImageUrl = (b: string) =>
   b.match(/https?:\/\/[^\s]+\.(?:jpe?g|png|gif|webp|svg)(?:\?[^\s]*)?/i)?.[0] || null;
 
@@ -1250,12 +1252,13 @@ app.post("/c/:p?", async (c) => {
   }
 
   const links = extractLinks(b);
+  const mentions = extractMentions(b);
   const thumb = pid
     ? null
     : (extractImageUrl(b) || (extractFirstUrl(b) ? await resolveThumbnail(extractFirstUrl(b)!) : null));
   const domain = pid ? null : extractDomain(b);
   const [cm] =
-    await sql`insert into com (parent_cid, created_by, body, tags, orgs, usrs, links, thumb, domain) values (${pid}, ${n}, ${b}, ${tags}, ${orgs}, ${usrs}, ${links}, ${thumb}, ${domain}) returning cid`;
+    await sql`insert into com (parent_cid, created_by, body, tags, orgs, usrs, mentions, links, thumb, domain) values (${pid}, ${n}, ${b}, ${tags}, ${orgs}, ${usrs}, ${mentions}, ${links}, ${thumb}, ${domain}) returning cid`;
 
   if (pid) {
     if (isReaction(b))
@@ -1301,7 +1304,7 @@ app.get("/c/:cid?", async (c) => {
     ${usrs.length ? sql`and created_by = any(${usrs}::citext[])` : sql``}
     and tags @> ${tags}::text[] and orgs <@ ${rT}::text[] and (usrs = '{}' or ${n || ""}::text = any(usrs))
     ${orgs.length ? sql`and orgs && ${orgs}::text[]` : sql``}
-    ${mens.length ? sql`and usrs && ${mens}::text[]` : sql``}
+    ${mens.length ? sql`and (usrs && ${mens}::text[] or mentions && ${mens.map((m) => m.toLowerCase())}::text[])` : sql``}
     ${www.length ? sql`and body ~* ${www.join("|")}` : sql``}
     ${q.replies_to ? sql`and parent_cid in (select cid from com where created_by = ${q.replies_to})` : sql``}
     ${q.reactions ? sql`and char_length(body) = 1` : sql``}

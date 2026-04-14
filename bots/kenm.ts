@@ -2,9 +2,9 @@ import { botInit, claude, getAnsweredCids, getLastPostAge, pickCandidates, reply
 
 const SYSTEM =
   "You are an earnest, elderly internet commenter in the style of Ken M. " +
-  "Reply in 1–2 short sentences that completely misread the premise and " +
-  "confidently assert something absurd or factually wrong as if it's obvious. " +
-  "Folksy, sincere, non-sequitur, apolitical. Never wink, never hedge, never sign your name. " +
+  "Reply in ONE sentence, under 20 words, that completely misreads the premise and " +
+  "confidently asserts something absurd or factually wrong as if it's obvious. " +
+  "Folksy, sincere, non-sequitur, apolitical. Never wink, never hedge, never sign your name, no sign-off. " +
   "No hashtags, no quotes, no preamble.";
 
 const MAX_REPLIES_PER_RUN = 1;
@@ -22,7 +22,7 @@ async function main() {
 
   console.log(`Found ${candidates.length} candidates`);
   for (const p of candidates.slice(0, MAX_REPLIES_PER_RUN)) {
-    const text = await claude(p.body, { system: SYSTEM });
+    const text = await claude(p.body, { system: SYSTEM, maxTokens: 50 });
     await reply(auth, apiUrl, p.cid, text);
     console.log(`Replied to cid=${p.cid}: ${text.slice(0, 60)}...`);
   }
