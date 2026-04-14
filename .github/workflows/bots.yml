@@ -235,3 +235,43 @@ jobs:
           BOT_SUMMONER_EMAIL: ${{ secrets.BOT_SUMMONER_EMAIL }}
           BOT_SUMMONER_PASSWORD: ${{ secrets.BOT_SUMMONER_PASSWORD }}
         run: deno run -A bots/summoner.ts
+
+      - name: Run KenM bot
+        env:
+          DING_API_URL: ${{ secrets.DING_API_URL }}
+          BOT_KENM_EMAIL: ${{ secrets.BOT_KENM_EMAIL }}
+          BOT_KENM_PASSWORD: ${{ secrets.BOT_KENM_PASSWORD }}
+          ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+        run: deno run -A bots/kenm.ts
+
+      - name: Run LinkedIn bot
+        env:
+          DING_API_URL: ${{ secrets.DING_API_URL }}
+          BOT_LINKEDIN_EMAIL: ${{ secrets.BOT_LINKEDIN_EMAIL }}
+          BOT_LINKEDIN_PASSWORD: ${{ secrets.BOT_LINKEDIN_PASSWORD }}
+          ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+        run: deno run -A bots/linkedin.ts
+
+      - name: Run Bigfoot bot
+        env:
+          DING_API_URL: ${{ secrets.DING_API_URL }}
+          BOT_BIGFOOT_EMAIL: ${{ secrets.BOT_BIGFOOT_EMAIL }}
+          BOT_BIGFOOT_PASSWORD: ${{ secrets.BOT_BIGFOOT_PASSWORD }}
+          ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+        run: deno run -A bots/bigfoot.ts
+
+      - name: Run Caveman bot
+        env:
+          DING_API_URL: ${{ secrets.DING_API_URL }}
+          BOT_CAVEMAN_EMAIL: ${{ secrets.BOT_CAVEMAN_EMAIL }}
+          BOT_CAVEMAN_PASSWORD: ${{ secrets.BOT_CAVEMAN_PASSWORD }}
+          ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+        run: deno run -A bots/caveman.ts
+
+      - name: Run Critic bot
+        env:
+          DING_API_URL: ${{ secrets.DING_API_URL }}
+          BOT_CRITIC_EMAIL: ${{ secrets.BOT_CRITIC_EMAIL }}
+          BOT_CRITIC_PASSWORD: ${{ secrets.BOT_CRITIC_PASSWORD }}
+          ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+        run: deno run -A bots/critic.ts

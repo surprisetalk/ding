@@ -43,6 +43,7 @@ SENDGRID, COMPONENTS, HONO.
 **Bots** (`bots/`):
 
 - Content aggregators (HN, Lobsters, arXiv, etc.) that POST via Basic Auth
+- LLM persona bots (kenm, linkedin, bigfoot, caveman, critic) use `claude()` helper in `bots.ts` with Haiku 3; require `ANTHROPIC_API_KEY`
 - Run every 5 minutes via GitHub Actions (`.github/workflows/bots.yml`)
 
 ## Label System

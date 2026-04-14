@@ -343,3 +343,35 @@ export function seededRng(seed: number): () => number {
 export function todaySeed(): number {
   return Math.floor(Date.now() / 86_400_000);
 }
+
+// ---- Claude ----
+
+const CLAUDE_MODEL = "claude-3-haiku-20240307";
+
+export async function claude(
+  prompt: string,
+  opts: { system?: string; maxTokens?: number; temperature?: number } = {},
+): Promise<string> {
+  const key = Deno.env.get("ANTHROPIC_API_KEY");
+  if (!key) throw new Error("Missing ANTHROPIC_API_KEY");
+  const res = await fetch("https://api.anthropic.com/v1/messages", {
+    method: "POST",
+    headers: {
+      "x-api-key": key,
+      "anthropic-version": "2023-06-01",
+      "content-type": "application/json",
+    },
+    body: JSON.stringify({
+      model: CLAUDE_MODEL,
+      max_tokens: opts.maxTokens ?? 400,
+      temperature: opts.temperature ?? 1,
+      system: opts.system,
+      messages: [{ role: "user", content: prompt }],
+    }),
+  });
+  if (!res.ok) throw new Error(`Claude API ${res.status}: ${await res.text()}`);
+  const data = await res.json();
+  const text = data?.content?.[0]?.text;
+  if (!text) throw new Error(`Claude returned no text: ${JSON.stringify(data)}`);
+  return text.trim();
+}
