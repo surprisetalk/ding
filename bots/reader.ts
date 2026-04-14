@@ -37,7 +37,8 @@ async function main() {
     const text = article.text.length > MAX_CHARS
       ? article.text.slice(0, MAX_CHARS).trimEnd() + "…"
       : article.text;
-    const body = article.title ? `**${article.title}**\n\n${text}` : text;
+    const raw = article.title ? `**${article.title}**\n\n${text}` : text;
+    const body = raw.split("\n").map((l) => `> ${l}`).join("\n");
     await reply(auth, apiUrl, p.cid, body);
     console.log(`Replied to cid=${p.cid} (${url})`);
   }

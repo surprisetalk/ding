@@ -25,7 +25,8 @@ async function main() {
   for (const p of candidates.slice(0, MAX_REPLIES_PER_RUN)) {
     const content = await resolveTextContent(auth, apiUrl, p);
     const text = await claude(content, { system: SYSTEM, maxTokens: 300, temperature: 0.6 });
-    await reply(auth, apiUrl, p.cid, text);
+    const body = text.split("\n").map((l) => `> ${l}`).join("\n");
+    await reply(auth, apiUrl, p.cid, body);
     console.log(`Replied to cid=${p.cid}: ${text.slice(0, 60)}...`);
   }
 }
