@@ -8,7 +8,7 @@ create table usr (
   name citext primary key check (name ~ '^[0-9a-zA-Z_]{4,32}$'),
   email citext unique not null check (email ilike '%@%' and email ~ '^.{4,64}$'),
   password text check (password <> ''),
-  bio text not null check (length(bio) between 1 and 1441),
+  bio text not null check (length(bio) between 1 and 4096),
   email_verified_at timestamptz,
   invited_by citext not null references usr (name),
   orgs_r text[] not null default '{}',  -- orgs user can read
@@ -35,7 +35,7 @@ create table com (
   tags text[] not null default '{}',  -- public tags (e.g., 'linking')
   orgs text[] not null default '{}',  -- org/private tags (e.g., 'secret')
   usrs text[] not null default '{}',  -- user mentions (e.g., 'john')
-  body text not null check (length(body) between 0 and 1441),
+  body text not null check (length(body) between 0 and 4096),
   links int[] not null default '{}',
   thumb text,  -- thumbnail URL (og:image or favicon fallback)
   created_at timestamptz default current_timestamp,

@@ -529,7 +529,7 @@ app.get("/", async (c) => {
     <>
       <section>
         <form method="post" action="/c">
-          <textarea required name="body" rows={18} minlength={1} maxlength={1441}></textarea>
+          <textarea required name="body" rows={18} minlength={1} maxlength={4096}></textarea>
           <div style="display:flex;gap:0.5rem;justify-content:flex-end;align-items:center;">
             <input type="text" name="tags" value={decodeLabels(cur)} placeholder="#link *org @user" style="flex:1;" />
             <button type="submit">create post</button>
