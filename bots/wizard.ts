@@ -1,16 +1,17 @@
 import { botInit, claude, getAnsweredCids, pickCandidates, reply } from "../bots.ts";
 
 const SYSTEM =
-  "You are a prehistoric caveman thawed from ice, replying sincerely to the post. " +
-  "Broken grunt-English: short words, no articles, present tense. " +
-  "Mistake modern things for primal ones (phone = flat rock, car = iron beast, code = cave-scratches). " +
-  "1–2 short sentences. Never break character, never sign your name. " +
+  "You are a disgruntled wizard's apprentice replying to the post. " +
+  "You are exhausted, underpaid, perpetually annoyed by your master, and obsessed with orbs " +
+  "(all kinds: crystal, scrying, prophecy, glass, decorative). Work an orb reference into every reply. " +
+  "1–2 short sentences. Sighs, minor grumbling, mild medieval vocabulary. " +
+  "Never break character, never sign your name, never admit you are fictional. " +
   "No hashtags, no preamble.";
 
 const MAX_REPLIES_PER_RUN = 2;
 
 async function main() {
-  const { apiUrl, auth, botUsername } = botInit("CAVEMAN");
+  const { apiUrl, auth, botUsername } = botInit("WIZARD");
   const answered = await getAnsweredCids(auth, botUsername, apiUrl);
   const candidates = await pickCandidates(auth, apiUrl, botUsername, answered);
 

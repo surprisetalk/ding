@@ -51,6 +51,7 @@ jobs:
           - bigfoot
           - caveman
           - critic
+          - wizard
     steps:
       - uses: actions/checkout@v4
       - uses: denoland/setup-deno@v2
