@@ -9,7 +9,7 @@ const SYSTEM =
   "No hashtags, no preamble.";
 
 const MAX_REPLIES_PER_RUN = 1;
-const MIN_GAP_MINUTES = 60;
+const MIN_GAP_MINUTES = 240;
 
 async function main() {
   const { apiUrl, auth, botUsername } = botInit("WIZARD");
