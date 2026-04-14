@@ -32,25 +32,36 @@ interface SmallwebItem {
   author: string;
 }
 
+const ENTITIES: Record<string, string> = {
+  amp: "&", lt: "<", gt: ">", quot: '"', apos: "'", nbsp: " ",
+};
+
+function decodeEntities(s: string): string {
+  for (let i = 0; i < 3; i++) {
+    const next = s
+      .replace(/&#x([0-9a-fA-F]+);/g, (_, h) => String.fromCodePoint(parseInt(h, 16)))
+      .replace(/&#(\d+);/g, (_, d) => String.fromCodePoint(parseInt(d, 10)))
+      .replace(/&([a-zA-Z]+);/g, (m, n) => ENTITIES[n] ?? m);
+    if (next === s) return s;
+    s = next;
+  }
+  return s;
+}
+
 async function fetchSmallwebFeed(): Promise<SmallwebItem[]> {
   const res = await fetch("https://kagi.com/api/v1/smallweb/feed");
   const xml = await res.text();
   const items: SmallwebItem[] = [];
 
-  // Atom uses <entry> instead of RSS <item>
-  // Entry tags may have attributes like xml:base="..."
   const entryMatches = xml.match(/<entry[^>]*>[\s\S]*?<\/entry>/g) || [];
   for (const entryXml of entryMatches) {
-    // Title may be CDATA-wrapped or plain
-    const title = entryXml.match(/<title><!\[CDATA\[(.*?)\]\]><\/title>/)?.[1] ||
+    const rawTitle = entryXml.match(/<title><!\[CDATA\[(.*?)\]\]><\/title>/)?.[1] ||
       entryXml.match(/<title[^>]*>(.*?)<\/title>/)?.[1] || "";
-
-    // Atom links use href attribute: <link href="..." />
     const link = entryXml.match(/<link[^>]*href="([^"]+)"/)?.[1] || "";
+    const rawAuthor = entryXml.match(/<author>[\s\S]*?<name>(.*?)<\/name>/)?.[1] || "";
 
-    // Author is nested: <author><name>...</name></author>
-    const author = entryXml.match(/<author>[\s\S]*?<name>(.*?)<\/name>/)?.[1] ||
-      "";
+    const title = decodeEntities(rawTitle);
+    const author = decodeEntities(rawAuthor);
 
     if (title && link)
       items.push({ title, link, author });
