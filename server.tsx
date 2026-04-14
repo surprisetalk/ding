@@ -32,16 +32,9 @@ const extractDomain = (b: string) => {
   try { return new URL(u).hostname; } catch { return null; }
 };
 
-const refreshScores = async (
-  opts: { pid?: string | number; author?: string; tags?: string[]; domain?: string | null },
-) => {
-  const { pid, author, tags, domain } = opts;
+const refreshScores = async (pid: string | number) => {
   await sql`select refresh_score(array(
-    select cid from com where false
-    ${pid ? sql`or cid = ${pid} or ${pid}::int = any(links)` : sql``}
-    ${author ? sql`or created_by = ${author}` : sql``}
-    ${tags && tags.length ? sql`or tags && ${tags}::text[]` : sql``}
-    ${domain ? sql`or domain = ${domain}` : sql``}
+    select cid from com where cid = ${pid} or ${pid}::int = any(links)
   ))`;
 };
 
@@ -1235,7 +1228,7 @@ app.post("/c/:p?", async (c) => {
           tx`delete from com where cid = ${existing.cid}`,
           tx`update com set c_reactions = c_reactions || hstore(${b}, greatest(coalesce((c_reactions->${b})::int,0)-1, 0)::text) where cid = ${pid}`,
         ]));
-        await refreshScores({ pid, author: prm.created_by, tags: prm.tags, domain: prm.domain });
+        await refreshScores(pid);
         return c.redirect(prm.prm_parent ? `/c/${prm.prm_parent}#${pid}` : `/c/${pid}`);
       }
     }
@@ -1268,10 +1261,9 @@ app.post("/c/:p?", async (c) => {
     if (isReaction(b))
       await sql`update com set c_reactions = c_reactions || hstore(${b}, (coalesce((c_reactions->${b})::int,0)+1)::text) where cid = ${pid}`;
     else await sql`update com set c_comments = c_comments + 1 where cid = ${pid}`;
-    if (isReaction(b))
-      await refreshScores({ pid, author: prm.created_by, tags: prm.tags, domain: prm.domain });
+    await refreshScores(pid);
   } else {
-    await refreshScores({ pid: cm.cid, author: n, tags, domain });
+    await refreshScores(cm.cid);
   }
 
   const [pr] = pid ? await sql`select parent_cid from com where cid = ${pid}` : [null];

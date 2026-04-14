@@ -78,10 +78,11 @@ from usr u;
 
 create view stat_tag as
 select t.tag,
+  count(distinct t.cid)::int as posts_count,
   count(*) filter (where r.body = '▲')::int as ups_received,
   count(*) filter (where r.body = '▼')::int as downs_received
 from (select unnest(tags) tag, cid from com where tags <> '{}' and parent_cid is null) t
-join com r on r.parent_cid = t.cid and char_length(r.body) = 1
+left join com r on r.parent_cid = t.cid and char_length(r.body) = 1
 group by t.tag;
 
 create view stat_domain as
@@ -106,10 +107,11 @@ create or replace function refresh_score(cids int[]) returns void language sql a
     score = c.created_at
       + interval '2 hours'   * ln(coalesce((c.c_reactions->'▲')::int, 0) + 1)
       - interval '6 hours'   * ln(coalesce((c.c_reactions->'▼')::int, 0) + 1)
-      + interval '1 hour'    * ln(coalesce(su.ups_received, 0) + 1)
-      - interval '3 hours'   * ln(coalesce(su.downs_received, 0) + 1)
-      + interval '1 hour'    * ln(coalesce((select max(ups_received) from stat_tag where tag = any(c.tags)), 0) + 1)
-      - interval '3 hours'   * ln(coalesce((select max(downs_received) from stat_tag where tag = any(c.tags)), 0) + 1)
+      + interval '1 hour'    * ln(coalesce(su.ups_received, 0)::float / ln(coalesce(su.posts_count, 0) + 2) + 1)
+      - interval '3 hours'   * ln(coalesce(su.downs_received, 0)::float / ln(coalesce(su.posts_count, 0) + 2) + 1)
+      + interval '1 hour'    * ln(coalesce((select max(ups_received::float / ln(posts_count + 2)) from stat_tag where tag = any(c.tags)), 0) + 1)
+      - interval '3 hours'   * ln(coalesce((select max(downs_received::float / ln(posts_count + 2)) from stat_tag where tag = any(c.tags)), 0) + 1)
+      + interval '1 hour'    * ln(c.c_comments + 1)
       + interval '1 hour'    * ln(coalesce((select ups_received from stat_domain where domain = c.domain), 0) + 1)
       - interval '3 hours'   * ln(coalesce((select downs_received from stat_domain where domain = c.domain), 0) + 1)
       - interval '30 minutes'* ln(coalesce(su.posts_count, 0) + 1)
