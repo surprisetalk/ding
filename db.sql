@@ -95,29 +95,76 @@ where p.domain is not null
 group by p.domain;
 
 create or replace function refresh_score(cids int[]) returns void language sql as $$
+  with
+  targets as (select cid, tags, domain, links, created_by from com where cid = any(cids)),
+  tag_agg as (
+    select t.cid,
+      coalesce(max(st.ups_received), 0)::int as tag_ups,
+      coalesce(max(st.downs_received), 0)::int as tag_downs,
+      coalesce(max(st.ups_received::float / ln(st.posts_count + 2)), 0) as tag_ups_idf,
+      coalesce(max(st.downs_received::float / ln(st.posts_count + 2)), 0) as tag_downs_idf
+    from targets t left join stat_tag st on st.tag = any(t.tags)
+    group by t.cid
+  ),
+  dom_agg as (
+    select t.cid,
+      coalesce(sd.ups_received, 0)::int as domain_ups,
+      coalesce(sd.downs_received, 0)::int as domain_downs
+    from targets t left join stat_domain sd on sd.domain = t.domain
+  ),
+  repost_agg as (
+    select t.cid, coalesce(sum(coalesce((c2.c_reactions->'▲')::int, 0))::int, 0) as repost_ups
+    from targets t left join com c2 on c2.cid = any(t.links)
+    group by t.cid
+  ),
+  authors as (select distinct created_by as uid from targets),
+  usr_posts as (
+    select created_by as uid, count(*)::int as posts_count
+    from com where created_by in (select uid from authors) and parent_cid is null and char_length(body) > 1
+    group by created_by
+  ),
+  usr_rx as (
+    select p.created_by as uid,
+      count(*) filter (where r.body = '▲')::int as ups_received,
+      count(*) filter (where r.body = '▼')::int as downs_received
+    from com p join com r on r.parent_cid = p.cid and char_length(r.body) = 1
+    where p.created_by in (select uid from authors)
+    group by p.created_by
+  ),
+  usr_agg as (
+    select a.uid,
+      coalesce(up.posts_count, 0) as posts_count,
+      coalesce(ur.ups_received, 0) as ups_received,
+      coalesce(ur.downs_received, 0) as downs_received
+    from authors a
+    left join usr_posts up on up.uid = a.uid
+    left join usr_rx ur on ur.uid = a.uid
+  )
   update com c set
-    author_ups = coalesce(su.ups_received, 0),
-    author_downs = coalesce(su.downs_received, 0),
-    author_posts_count = coalesce(su.posts_count, 0),
-    tag_ups = coalesce((select max(ups_received) from stat_tag where tag = any(c.tags)), 0),
-    tag_downs = coalesce((select max(downs_received) from stat_tag where tag = any(c.tags)), 0),
-    domain_ups = coalesce((select ups_received from stat_domain where domain = c.domain), 0),
-    domain_downs = coalesce((select downs_received from stat_domain where domain = c.domain), 0),
-    repost_ups = coalesce((select sum(coalesce((c2.c_reactions->'▲')::int, 0))::int from com c2 where c2.cid = any(c.links)), 0),
+    author_ups = coalesce(ua.ups_received, 0),
+    author_downs = coalesce(ua.downs_received, 0),
+    author_posts_count = coalesce(ua.posts_count, 0),
+    tag_ups = ta.tag_ups,
+    tag_downs = ta.tag_downs,
+    domain_ups = da.domain_ups,
+    domain_downs = da.domain_downs,
+    repost_ups = ra.repost_ups,
     score = c.created_at
       + interval '2 hours'   * ln(coalesce((c.c_reactions->'▲')::int, 0) + 1)
       - interval '6 hours'   * ln(coalesce((c.c_reactions->'▼')::int, 0) + 1)
-      + interval '1 hour'    * ln(coalesce(su.ups_received, 0)::float / ln(coalesce(su.posts_count, 0) + 2) + 1)
-      - interval '3 hours'   * ln(coalesce(su.downs_received, 0)::float / ln(coalesce(su.posts_count, 0) + 2) + 1)
-      + interval '1 hour'    * ln(coalesce((select max(ups_received::float / ln(posts_count + 2)) from stat_tag where tag = any(c.tags)), 0) + 1)
-      - interval '3 hours'   * ln(coalesce((select max(downs_received::float / ln(posts_count + 2)) from stat_tag where tag = any(c.tags)), 0) + 1)
+      + interval '1 hour'    * ln(coalesce(ua.ups_received, 0)::float / ln(coalesce(ua.posts_count, 0) + 2) + 1)
+      - interval '3 hours'   * ln(coalesce(ua.downs_received, 0)::float / ln(coalesce(ua.posts_count, 0) + 2) + 1)
+      + interval '1 hour'    * ln(ta.tag_ups_idf + 1)
+      - interval '3 hours'   * ln(ta.tag_downs_idf + 1)
       + interval '1 hour'    * ln(c.c_comments + 1)
-      + interval '1 hour'    * ln(coalesce((select ups_received from stat_domain where domain = c.domain), 0) + 1)
-      - interval '3 hours'   * ln(coalesce((select downs_received from stat_domain where domain = c.domain), 0) + 1)
-      - interval '30 minutes'* ln(coalesce(su.posts_count, 0) + 1)
-      - interval '2 hours'   * ln(coalesce((select sum(coalesce((c2.c_reactions->'▲')::int, 0))::int from com c2 where c2.cid = any(c.links)), 0) + 1)
-  from stat_usr su
-  where c.cid = any(cids) and c.created_by = su.uid;
+      + interval '1 hour'    * ln(da.domain_ups + 1)
+      - interval '3 hours'   * ln(da.domain_downs + 1)
+      - interval '30 minutes'* ln(coalesce(ua.posts_count, 0) + 1)
+      - interval '2 hours'   * ln(ra.repost_ups + 1)
+  from tag_agg ta, dom_agg da, repost_agg ra, usr_agg ua
+  where c.cid = any(cids)
+    and ta.cid = c.cid and da.cid = c.cid and ra.cid = c.cid
+    and ua.uid = c.created_by;
 $$;
 
 
