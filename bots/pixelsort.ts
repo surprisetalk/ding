@@ -54,7 +54,7 @@ async function main() {
   const answeredCids = await getAnsweredCids(auth, botUsername, apiUrl);
   console.log(`Already answered ${answeredCids.size} posts`);
 
-  const res = await fetch(`${apiUrl}/c?mention=${botUsername}&sort=new&limit=20`, {
+  const res = await fetch(`${apiUrl}/c?mention=${botUsername}&comments=1&sort=new&limit=20`, {
     headers: { Accept: "application/json", Authorization: `Basic ${auth}` },
   });
   if (!res.ok) throw new Error(`Failed to fetch mentions: HTTP ${res.status}`);
