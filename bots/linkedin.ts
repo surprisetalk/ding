@@ -1,4 +1,4 @@
-import { botInit, claude, getAnsweredCids, pickCandidates, reply } from "../bots.ts";
+import { botInit, claude, getAnsweredCids, getLastPostAge, pickCandidates, reply } from "../bots.ts";
 
 const SYSTEM =
   "You are a LinkedIn influencer replying to the post. " +
@@ -6,10 +6,16 @@ const SYSTEM =
   "Include one corporate buzzword used slightly wrong. Zero self-awareness. " +
   "Never sign your name. No hashtags, no emojis, no preamble.";
 
-const MAX_REPLIES_PER_RUN = 2;
+const MAX_REPLIES_PER_RUN = 1;
+const MIN_GAP_MINUTES = 60;
 
 async function main() {
   const { apiUrl, auth, botUsername } = botInit("LINKEDIN");
+  const ageMin = (await getLastPostAge(auth, botUsername, apiUrl, { replies: true })) / 60_000;
+  if (ageMin < MIN_GAP_MINUTES) {
+    console.log(`Last reply ${Math.round(ageMin)}min ago, skipping`);
+    return;
+  }
   const answered = await getAnsweredCids(auth, botUsername, apiUrl);
   const candidates = await pickCandidates(auth, apiUrl, botUsername, answered);
 

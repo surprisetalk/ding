@@ -1,4 +1,4 @@
-import { botInit, getLastPostAge, post, uploadToR2, seededRng, todaySeed } from "../bots.ts";
+import { botInit, getLastPostAge, post, uploadToR2 } from "../bots.ts";
 
 const { apiUrl, auth, botUsername } = botInit("EMOJIGLITCH");
 
@@ -74,7 +74,7 @@ async function main() {
     return;
   }
 
-  const rng = seededRng(todaySeed());
+  const rng = Math.random;
   const [cp, emoji] = EMOJI_MAP[Math.floor(rng() * EMOJI_MAP.length)];
   const url = `https://raw.githubusercontent.com/twitter/twemoji/master/assets/svg/${cp}.svg`;
   const res = await fetch(url);

@@ -35,8 +35,10 @@ export async function getLastPostAge(
   auth: string,
   botUsername: string,
   apiUrl: string,
+  opts: { replies?: boolean } = {},
 ): Promise<number> {
-  const res = await fetch(`${apiUrl}/c?usr=${botUsername}&limit=1`, {
+  const qs = opts.replies ? "&comments=1" : "";
+  const res = await fetch(`${apiUrl}/c?usr=${botUsername}&limit=1${qs}`, {
     headers: { Accept: "application/json", Authorization: `Basic ${auth}` },
   });
   if (!res.ok) throw new Error(`Failed to fetch recent posts: HTTP ${res.status} ${await res.text()}`);
