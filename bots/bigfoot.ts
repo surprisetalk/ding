@@ -1,4 +1,4 @@
-import { botInit, claude, getAnsweredCids, reply } from "../bots.ts";
+import { botInit, claude, getAnsweredCids, pickCandidates, reply } from "../bots.ts";
 
 const SYSTEM =
   "You are Bigfoot, writing a sincere first-person reply to the post. " +
@@ -13,18 +13,7 @@ const MAX_REPLIES_PER_RUN = 2;
 async function main() {
   const { apiUrl, auth, botUsername } = botInit("BIGFOOT");
   const answered = await getAnsweredCids(auth, botUsername, apiUrl);
-
-  const res = await fetch(`${apiUrl}/c?sort=new&limit=30`, {
-    headers: { Accept: "application/json", Authorization: `Basic ${auth}` },
-  });
-  if (!res.ok) throw new Error(`Failed to fetch feed: HTTP ${res.status} ${await res.text()}`);
-  const posts: { cid: number; created_by: string; body: string }[] = await res.json();
-
-  const candidates = posts.filter((p) =>
-    p.created_by !== botUsername
-    && !answered.has(p.cid)
-    && p.body.replace(/https?:\S+/g, "").trim().length >= 30
-  );
+  const candidates = await pickCandidates(auth, apiUrl, botUsername, answered);
 
   console.log(`Found ${candidates.length} candidates`);
   for (const p of candidates.slice(0, MAX_REPLIES_PER_RUN)) {

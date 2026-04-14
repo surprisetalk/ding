@@ -344,6 +344,47 @@ export function todaySeed(): number {
   return Math.floor(Date.now() / 86_400_000);
 }
 
+// ---- Candidate picking ----
+
+// Fetches a pool of top-level posts AND comments from the feed, filters out
+// the bot's own posts + already-answered cids, then ranks remaining candidates:
+// prefer posts with fewer replies (spreads bots across threads), random
+// tiebreak (different bots pick different items on the same run).
+export async function pickCandidates(
+  auth: string,
+  apiUrl: string,
+  botUsername: string,
+  answered: Set<number>,
+  opts: { pool?: number; minBodyLen?: number } = {},
+): Promise<{ cid: number; parent_cid: number | null; body: string; created_by: string; c_comments: number }[]> {
+  const pool = opts.pool ?? 50;
+  const minBodyLen = opts.minBodyLen ?? 30;
+  const [top, comments] = await Promise.all([
+    fetch(`${apiUrl}/c?sort=new&limit=${pool}`, {
+      headers: { Accept: "application/json", Authorization: `Basic ${auth}` },
+    }).then((r) => r.ok ? r.json() : []),
+    fetch(`${apiUrl}/c?sort=new&comments=1&limit=${pool}`, {
+      headers: { Accept: "application/json", Authorization: `Basic ${auth}` },
+    }).then((r) => r.ok ? r.json() : []),
+  ]);
+  const seen = new Set<number>();
+  const all = [...top, ...comments].filter((p: { cid: number }) => {
+    if (seen.has(p.cid)) return false;
+    seen.add(p.cid);
+    return true;
+  });
+  return all
+    .filter((p: { cid: number; created_by: string; body: string }) =>
+      p.created_by !== botUsername
+      && !answered.has(p.cid)
+      && p.body.length > 1
+      && p.body.replace(/https?:\S+/g, "").trim().length >= minBodyLen
+    )
+    .map((p) => ({ p, c: Number(p.c_comments ?? 0), r: Math.random() }))
+    .sort((a, b) => a.c - b.c || a.r - b.r)
+    .map(({ p }) => p);
+}
+
 // ---- Claude ----
 
 const CLAUDE_MODEL = "claude-3-haiku-20240307";
