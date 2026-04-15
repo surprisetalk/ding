@@ -328,8 +328,12 @@ const cookieSecret = Deno.env.get("COOKIE_SECRET") ?? Math.random().toString();
 const notFound = () => {
   throw new HTTPException(404, { message: "Not found." });
 };
-const form = async (c: Context) =>
-  Object.fromEntries([...(await c.req.formData()).entries()].map(([k, v]) => [k, v.toString()]));
+const form = async (c: Context) => {
+  const ct = c.req.header("content-type") || "";
+  if (!ct.includes("form") && !ct.includes("multipart"))
+    throw new HTTPException(400, { message: `Expected form content-type, got "${ct || "none"}"` });
+  return Object.fromEntries([...(await c.req.formData()).entries()].map(([k, v]) => [k, v.toString()]));
+};
 const host = (c: Context) => {
   const h = c.req.header("host")?.match(/^(?:https?:\/\/)?(?:www\.)?([^\/]+)\.([^\/]+)\./)?.[1];
   if (h) return h;
