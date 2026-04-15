@@ -22,6 +22,12 @@ async function main() {
     if (p.created_by === botUsername || answered.has(p.cid)) return false;
     const url = firstLink(p.body);
     if (!url) return false;
+    try {
+      const h = new URL(url).hostname;
+      if (h === "ding.bar" || h.endsWith(".ding.bar")) return false;
+    } catch {
+      return false;
+    }
     if (extractImageUrl(p.body)) return false;
     return true;
   });
