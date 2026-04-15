@@ -18,16 +18,18 @@ import app, {
   formatLabels,
   parseLabels,
   postRate,
+  resend,
   setSql,
-  sg,
   stripe,
 } from "./server.tsx";
 
-// Stub SendGrid so tests don't make network calls.
+// Stub Resend so tests don't make network calls.
 const sentEmails: { to: string; subject: string; text: string }[] = [];
-(sg as any).send = (msg: any) => {
-  sentEmails.push({ to: msg.to, subject: msg.subject, text: msg.text });
-  return Promise.resolve([{ statusCode: 202 }, {}]);
+(resend as any).emails = {
+  send: (msg: any) => {
+    sentEmails.push({ to: msg.to, subject: msg.subject, text: msg.text });
+    return Promise.resolve({ data: { id: "test_id" }, error: null });
+  },
 };
 
 //// PGLITE WRAPPER ////////////////////////////////////////////////////////////

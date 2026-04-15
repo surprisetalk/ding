@@ -11,8 +11,8 @@ import { html } from "@hono/hono/html";
 import { deleteCookie, getSignedCookie, setSignedCookie } from "@hono/hono/cookie";
 import { serveStatic } from "@hono/hono/deno";
 import pg from "postgres";
-import sg from "@sendgrid/mail";
-export { sg };
+import { Resend } from "resend";
+export const resend = new Resend(Deno.env.get("RESEND_API_KEY") ?? "");
 import Stripe from "stripe";
 
 //// CONSTANTS & HELPERS ///////////////////////////////////////////////////////
@@ -132,32 +132,23 @@ const validateEmailToken = async (token: string, email: string, maxAge = 1728000
 export let sql: any = pg(Deno.env.get(`DATABASE_URL`)?.replace(/flycast/, "internal")!, { database: "ding" });
 export const setSql = (s: typeof sql) => (sql = s);
 
-//// SENDGRID //////////////////////////////////////////////////////////////////
+//// RESEND ///////////////////////////////////////////////////////////////////
 
-sg.setApiKey(Deno.env.get(`SENDGRID_API_KEY`) ?? "");
-
-if (!Deno.env.get(`SENDGRID_API_KEY`))
-  console.warn("SENDGRID_API_KEY is missing. Verification + password reset emails will fail.");
+if (!Deno.env.get(`RESEND_API_KEY`))
+  console.warn("RESEND_API_KEY is missing. Verification + password reset emails will fail.");
 
 const sendVerificationEmail = async (email: string, token: string) => {
-  if (!Deno.env.get(`SENDGRID_API_KEY`))
-    throw new Error(`SENDGRID_API_KEY missing — cannot send verification email to ${email}`);
-  try {
-    await sg.send({
-      to: email,
-      from: Deno.env.get("SENDGRID_FROM_EMAIL") ?? "taylor@troe.sh",
-      subject: "Verify your email",
-      text: `` +
-        `Welcome to ᵗ𝕙𝔢 𝐟𝐔𝓉𝓾гє 𝔬𝔣 ᑕⓞ𝓓ƗŇg.` +
-        `\n\n` +
-        `Please verify your email: ` +
-        `https://ding.bar/password` +
-        `?email=${encodeURIComponent(email)}` +
-        `&token=${encodeURIComponent(token)}`,
-    });
-  } catch (err: any) {
-    console.error(`Could not send verification email to ${email}:`, err?.response?.body || err);
-    throw err;
+  if (!Deno.env.get(`RESEND_API_KEY`))
+    throw new Error(`RESEND_API_KEY missing — cannot send verification email to ${email}`);
+  const { error } = await resend.emails.send({
+    to: email,
+    from: Deno.env.get("RESEND_FROM_EMAIL") ?? "noreply@ding.bar",
+    subject: "Verify your email",
+    text: `Welcome to ᵗ𝕙𝔢 𝐟𝐔𝓉𝓾гє 𝔬𝔣 ᑕⓞ𝓓ƗŇg.\n\nPlease verify your email: https://ding.bar/password?email=${encodeURIComponent(email)}&token=${encodeURIComponent(token)}`,
+  });
+  if (error) {
+    console.error(`Could not send verification email to ${email}:`, error);
+    throw new Error(`resend send failed: ${error.message}`);
   }
 };
 

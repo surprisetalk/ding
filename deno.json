@@ -18,7 +18,7 @@
     "@hono/hono": "jsr:@hono/hono",
     "postgres": "https://deno.land/x/postgresjs@v3.4.8/mod.js",
     "stripe": "npm:stripe@^20.3.1",
-    "@sendgrid/mail": "npm:@sendgrid/mail",
+    "resend": "npm:resend@^4.0.0",
     "@b-fuze/deno-dom": "jsr:@b-fuze/deno-dom@^0.1.48"
   },
   "tasks": {
