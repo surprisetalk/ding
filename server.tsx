@@ -255,6 +255,10 @@ const ActiveFilters = ({ params, basePath = "/c" }: { params: URLSearchParams; b
     : <div class="active-filters" />;
 };
 
+const CommentCount = (c: any) => (
+  <a href={`/c/${c.cid}`} class="reaction">» {c.comments || 0}</a>
+);
+
 const Reactions = (c: any) =>
   Object.entries({ "▲": 0, "▼": 0, ...(c.reaction_counts || {}) }).map(([k, v]) => (
     <form
@@ -279,6 +283,7 @@ const Comment = (c: any, user?: string) => (
       {formatLabels(c).map((l) => (
         <a key={l} href={`/c?${l[0] === "*" ? "org" : l[0] === "@" ? "usr" : "tag"}=${l.slice(1)}`}>{l}</a>
       ))}
+      {CommentCount(c)}
       {Reactions(c)}
     </div>
     <pre>{(c.c_flags >= FLAG_THRESHOLD && user !== c.created_by) ? "[flagged]" : (c.body || "[deleted by author]")}</pre>
@@ -315,6 +320,7 @@ const Post = (c: any, user?: string, p?: URLSearchParams) => {
             {l}
           </a>
         ))}
+        {CommentCount(c)}
         {Reactions(c)}
       </div>
     </div>
@@ -514,7 +520,11 @@ app.get("/", async (c) => {
       array(select body from com where parent_cid = c.cid and char_length(body) = 1 and created_by = ${
     name || ""
   }) as user_reactions,
-      array(select jsonb_build_object('body', body, 'created_by', created_by, 'cid', cid, 'created_at', created_at, 'c_flags', c_flags) from com where parent_cid = c.cid and char_length(body) > 1 order by created_at desc) as child_comments
+      array(select jsonb_build_object('body', ch.body, 'created_by', ch.created_by, 'cid', ch.cid, 'created_at', ch.created_at, 'c_flags', ch.c_flags,
+        'comments', (select count(*) from com c2 where c2.parent_cid = ch.cid and char_length(c2.body) > 1),
+        'reaction_counts', (select coalesce(jsonb_object_agg(body, cnt), '{}') from (select body, count(*) as cnt from com where parent_cid = ch.cid and char_length(body) = 1 group by body) r),
+        'user_reactions', array(select body from com where parent_cid = ch.cid and char_length(body) = 1 and created_by = ${name || ""})
+      ) from com ch where ch.parent_cid = c.cid and char_length(ch.body) > 1 order by ch.created_at desc) as child_comments
     from com c where parent_cid is null and orgs <@ ${rT}::text[] and (usrs = '{}' or ${name || ""}::text = any(usrs))
     ${tags.length ? sql`and tags @> ${tags}::text[]` : sql``}
     ${orgs.length ? sql`and orgs @> ${orgs}::text[]` : sql``}
@@ -1361,7 +1371,11 @@ app.get("/c/:cid?", async (c) => {
       array(select body from com where parent_cid = c.cid and char_length(body) = 1 and created_by = ${
     n || ""
   }) as user_reactions,
-      array(select jsonb_build_object('body', body, 'created_by', created_by, 'cid', cid, 'created_at', created_at, 'tags', tags, 'orgs', orgs, 'usrs', usrs, 'c_flags', c_flags) from com where parent_cid = c.cid and char_length(body) > 1 order by created_at desc) as child_comments
+      array(select jsonb_build_object('body', ch.body, 'created_by', ch.created_by, 'cid', ch.cid, 'created_at', ch.created_at, 'tags', ch.tags, 'orgs', ch.orgs, 'usrs', ch.usrs, 'c_flags', ch.c_flags,
+        'comments', (select count(*) from com c2 where c2.parent_cid = ch.cid and char_length(c2.body) > 1),
+        'reaction_counts', (select coalesce(jsonb_object_agg(body, cnt), '{}') from (select body, count(*) as cnt from com where parent_cid = ch.cid and char_length(body) = 1 group by body) r),
+        'user_reactions', array(select body from com where parent_cid = ch.cid and char_length(body) = 1 and created_by = ${n || ""})
+      ) from com ch where ch.parent_cid = c.cid and char_length(ch.body) > 1 order by ch.created_at desc) as child_comments
     from com c where ${
     cid
       ? sql`cid = ${cid}`
