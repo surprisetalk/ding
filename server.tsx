@@ -256,7 +256,7 @@ const ActiveFilters = ({ params, basePath = "/c" }: { params: URLSearchParams; b
 };
 
 const CommentCount = (c: any) => (
-  <a href={`/c/${c.cid}`} class="reaction">» {c.comments || 0}</a>
+  <span class="reaction"><a href={`/c/${c.cid}`}>» {c.comments || 0}</a></span>
 );
 
 const Reactions = (c: any) =>
@@ -514,7 +514,7 @@ app.get("/", async (c) => {
 
   const items = await sql`
     select c.*, 
-      (select count(*) from com c_ where c_.parent_cid = c.cid) as comments,
+      (select count(*) from com c_ where c_.parent_cid = c.cid and char_length(c_.body) > 1) as comments,
       (select count(*) from com r where r.parent_cid = c.cid and char_length(r.body) = 1) as reaction_count,
       (select coalesce(jsonb_object_agg(body, cnt), '{}') from (select body, count(*) as cnt from com where parent_cid = c.cid and char_length(body) = 1 group by body) r) as reaction_counts,
       array(select body from com where parent_cid = c.cid and char_length(body) = 1 and created_by = ${
@@ -1365,7 +1365,7 @@ app.get("/c/:cid?", async (c) => {
     www = c.req.queries("www") || [];
 
   const items = await sql`
-    select c.*, (select count(*) from com c_ where c_.parent_cid = c.cid) as comments,
+    select c.*, (select count(*) from com c_ where c_.parent_cid = c.cid and char_length(c_.body) > 1) as comments,
       (select count(*) from com r where r.parent_cid = c.cid and char_length(r.body) = 1) as reaction_count,
       (select coalesce(jsonb_object_agg(body, cnt), '{}') from (select body, count(*) as cnt from com where parent_cid = c.cid and char_length(body) = 1 group by body) r) as reaction_counts,
       array(select body from com where parent_cid = c.cid and char_length(body) = 1 and created_by = ${

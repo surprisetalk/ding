@@ -40,9 +40,11 @@ async function main() {
       return null;
     });
     if (!article) continue;
-    const text = article.text.length > MAX_CHARS ? article.text.slice(0, MAX_CHARS).trimEnd() + "…" : article.text;
-    const raw = article.title ? `**${article.title}**\n\n${text}` : text;
-    const body = raw.split("\n").map((l) => `> ${l}`).join("\n");
+    const truncated = article.text.length > MAX_CHARS
+      ? article.text.slice(0, MAX_CHARS).replace(/\s+\S*$/, "").trimEnd() + "…"
+      : article.text;
+    const header = article.title ? `**[${article.title}](${url})**\n\n` : `[${url}](${url})\n\n`;
+    const body = (header + truncated).split("\n").map((l) => l ? `> ${l}` : ">").join("\n");
     await reply(auth, apiUrl, p.cid, body);
     console.log(`Replied to cid=${p.cid} (${url})`);
   }

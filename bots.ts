@@ -118,8 +118,20 @@ export async function extractArticle(
   const doc = (parseHTML(html) as any).document;
   // deno-lint-ignore no-explicit-any
   const article = new Readability(doc as any).parse();
-  if (!article?.textContent) return null;
-  const text = article.textContent.replace(/\s+/g, " ").trim();
+  if (!article?.content) return null;
+  // deno-lint-ignore no-explicit-any
+  const cdoc = (parseHTML(`<div id=__r>${article.content}</div>`) as any).document;
+  const paras: string[] = [];
+  // deno-lint-ignore no-explicit-any
+  cdoc.querySelectorAll("p, h1, h2, h3, h4, h5, h6, li, blockquote, pre").forEach((el: any) => {
+    const t = (el.textContent || "").replace(/[ \t\u00a0]+/g, " ").replace(/\s*\n\s*/g, " ").trim();
+    if (!t) return;
+    const tag = el.tagName.toLowerCase();
+    if (tag === "li") paras.push(`- ${t}`);
+    else if (/^h[1-6]$/.test(tag)) paras.push(`**${t}**`);
+    else paras.push(t);
+  });
+  const text = paras.join("\n\n").trim();
   if (text.length < 100) return null;
   return { title: (article.title ?? "").trim(), text };
 }
