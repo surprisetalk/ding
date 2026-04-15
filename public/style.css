@@ -151,7 +151,7 @@ a:link {
 
 .reaction {
   display: inline;
-  font-size: 0.875rem;
+  font-size: 0.75rem;
   padding: 0;
   border: 0px solid currentColor !important;
   width: initial;
@@ -165,7 +165,9 @@ a:link {
   opacity: 0.6;
   color: inherit;
   text-decoration: none;
-  font: inherit;
+  font-size: 0.75rem;
+  font-family: inherit;
+  letter-spacing: normal;
 }
 
 .reaction.reacted button, .reaction.reacted a {
