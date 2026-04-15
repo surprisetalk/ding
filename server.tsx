@@ -144,7 +144,7 @@ const sendVerificationEmail = async (email: string, token: string) => {
     to: email,
     from: Deno.env.get("RESEND_FROM_EMAIL") ?? "noreply@ding.bar",
     subject: "Verify your email",
-    text: `Welcome to ᵗ𝕙𝔢 𝐟𝐔𝓉𝓾гє 𝔬𝔣 ᑕⓞ𝓓ƗŇg.\n\nPlease verify your email: https://ding.bar/password?email=${encodeURIComponent(email)}&token=${encodeURIComponent(token)}`,
+    text: `Welcome to ding.\n\nPlease verify your email: https://ding.bar/password?email=${encodeURIComponent(email)}&token=${encodeURIComponent(token)}`,
   });
   if (error) {
     console.error(`Could not send verification email to ${email}:`, error);
