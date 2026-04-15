@@ -15,8 +15,8 @@ async function main() {
   ]);
 
   const welcomed = new Set<string>();
-  for (const p of mine as { usrs?: string[] }[])
-    for (const u of p.usrs ?? []) welcomed.add(u.toLowerCase());
+  for (const p of mine as { body?: string }[])
+    for (const m of (p.body ?? "").matchAll(/@(\w+)/g)) welcomed.add(m[1].toLowerCase());
 
   const todo = (users as { name: string }[])
     .filter((u) => u.name.toLowerCase() !== botUsername.toLowerCase() && !welcomed.has(u.name.toLowerCase()))
@@ -25,7 +25,7 @@ async function main() {
 
   console.log(`Found ${todo.length} new users to welcome`);
   for (const u of todo) {
-    const ok = await post(auth, apiUrl, `welcome @${u.name}!`, `#welcome #bot @${u.name}`);
+    const ok = await post(auth, apiUrl, `welcome @${u.name}!`, `#welcome #bot`);
     console.log(`${ok ? "welcomed" : "FAILED"} @${u.name}`);
   }
 }
