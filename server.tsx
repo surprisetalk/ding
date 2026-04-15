@@ -418,6 +418,7 @@ app.use("*", async (c, next) => {
               <a href="/u" style="letter-spacing:2px;font-size:0.875rem;opacity:0.8;">${c.get("name")
                 ? "@" + c.get("name")
                 : "account"}</a>
+              <a href="/c" style="letter-spacing:2px;font-size:0.875rem;opacity:0.8;"> search </a>
               <a href="/c/496" style="letter-spacing:2px;font-size:0.875rem;opacity:0.8;"> help </a>
             </section>
           </header>
@@ -536,25 +537,25 @@ app.get("/", async (c) => {
             <input type="text" name="tags" value={decodeLabels(cur)} placeholder="#link *org @user" style="flex:1;" />
             <button type="submit">create post</button>
           </div>
-          {presets.length > 0 && (
-            <div class="tag-presets">
-              {presets.map((t: any) => (
-                <a
-                  key={t.tag}
-                  href={buildAdditiveLink(
-                    cur,
-                    (t.tag as string)[0] === "*" ? "org" : (t.tag as string)[0] === "@" ? "usr" : "tag",
-                    (t.tag as string).slice(1),
-                  )}
-                  class="tag-preset"
-                >
-                  {t.tag}
-                </a>
-              ))}
-            </div>
-          )}
         </form>
         <ActiveFilters params={cur} basePath="/" />
+        {presets.length > 0 && (
+          <div class="tag-presets">
+            {presets.map((t: any) => (
+              <a
+                key={t.tag}
+                href={buildAdditiveLink(
+                  cur,
+                  (t.tag as string)[0] === "*" ? "org" : (t.tag as string)[0] === "@" ? "usr" : "tag",
+                  (t.tag as string).slice(1),
+                )}
+                class="tag-preset"
+              >
+                {t.tag}
+              </a>
+            ))}
+          </div>
+        )}
         {meta && <h2>{meta}</h2>}
       </section>
       <section>
@@ -1349,6 +1350,12 @@ app.get("/c/:cid?", async (c) => {
       ? (await sql`select u.name, u.bio, (select count(*)::int from com where created_by = ${singleUsr} and parent_cid is null and orgs <@ ${rT}::text[]) as post_count from usr u where u.name = ${singleUsr}`)[0]
       : null;
     const usrPostCount = usrRow?.post_count ?? null;
+    const userMatches = q.q
+      ? await sql`select name from usr
+                   where name ilike ${"%" + q.q + "%"} or bio ilike ${"%" + q.q + "%"}
+                   order by (name ilike ${q.q + "%"}) desc, length(name) asc
+                   limit 5`
+      : [];
     return (c as any).render(
       <>
         <section>
@@ -1396,6 +1403,13 @@ app.get("/c/:cid?", async (c) => {
             </div>
           )}
           {!singleTag && !singleOrg && !singleUsr && meta && <h2>{meta}</h2>}
+          {q.q && userMatches.length > 0 && (
+            <div class="user-matches" style="display:flex;flex-wrap:wrap;gap:0.5rem;margin:0.5rem 0;font-size:0.875rem;">
+              {userMatches.map((u: any) => (
+                <a key={u.name} href={`/c?usr=${u.name}`}>@{u.name}</a>
+              ))}
+            </div>
+          )}
           <SortToggle sort={s} baseHref={`/c?${cur}`} title="results" />
         </section>
         <section>
