@@ -55,6 +55,7 @@ jobs:
           - reader
           - tldr
           - upgoerfive
+          - welcome
     steps:
       - uses: actions/checkout@v4
       - uses: denoland/setup-deno@v2

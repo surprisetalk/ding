@@ -923,6 +923,12 @@ app.get("/u/:name", async (c) => {
   }
 });
 
+app.get("/us", async (c) => {
+  const limit = Math.min(+(c.req.query("limit") || 100), 500);
+  const us = await sql`select name, created_at from usr order by created_at desc limit ${limit}`;
+  return c.json(us, 200);
+});
+
 app.get("/o/new", authed, (c) =>
   (c as any).render(
     <section>
