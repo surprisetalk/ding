@@ -12,6 +12,7 @@ import { deleteCookie, getSignedCookie, setSignedCookie } from "@hono/hono/cooki
 import { serveStatic } from "@hono/hono/deno";
 import pg from "postgres";
 import sg from "@sendgrid/mail";
+export { sg };
 import Stripe from "stripe";
 
 //// CONSTANTS & HELPERS ///////////////////////////////////////////////////////
@@ -135,10 +136,14 @@ export const setSql = (s: typeof sql) => (sql = s);
 
 sg.setApiKey(Deno.env.get(`SENDGRID_API_KEY`) ?? "");
 
-const sendVerificationEmail = async (email: string, token: string) =>
-  Deno.env.get(`SENDGRID_API_KEY`) &&
-  (await sg
-    .send({
+if (!Deno.env.get(`SENDGRID_API_KEY`))
+  console.warn("SENDGRID_API_KEY is missing. Verification + password reset emails will fail.");
+
+const sendVerificationEmail = async (email: string, token: string) => {
+  if (!Deno.env.get(`SENDGRID_API_KEY`))
+    throw new Error(`SENDGRID_API_KEY missing — cannot send verification email to ${email}`);
+  try {
+    await sg.send({
       to: email,
       from: "taylor@troe.sh",
       subject: "Verify your email",
@@ -149,10 +154,12 @@ const sendVerificationEmail = async (email: string, token: string) =>
         `https://ding.bar/password` +
         `?email=${encodeURIComponent(email)}` +
         `&token=${encodeURIComponent(token)}`,
-    })
-    .catch((err) => {
-      console.error(`Could not send verification email to ${email}:`, err?.response?.body || err);
-    }));
+    });
+  } catch (err: any) {
+    console.error(`Could not send verification email to ${email}:`, err?.response?.body || err);
+    throw err;
+  }
+};
 
 //// STRIPE ////////////////////////////////////////////////////////////////////
 
@@ -622,7 +629,9 @@ app.get("/forgot", (c) =>
   ));
 app.post("/forgot", async (c) => {
   const { email } = await form(c), [u] = await sql`select email from usr where email = ${email}`;
-  if (u) sendVerificationEmail(u.email, await emailToken(new Date(), u.email));
+  if (u)
+    await sendVerificationEmail(u.email, await emailToken(new Date(), u.email))
+      .catch((err) => console.error(`/forgot email failed for ${u.email}:`, err));
   return c.redirect("/forgot?sent=1");
 });
 
@@ -654,43 +663,95 @@ app.post("/invite", authed, async (c) => {
   const [u] = await sql`insert into usr (name, email, bio, invited_by) values (${n}, ${e}, '...', ${c.get(
     "name",
   )!}) on conflict do nothing returning email`;
-  if (u) sendVerificationEmail(u.email, await emailToken(new Date(), u.email));
+  if (u)
+    await sendVerificationEmail(u.email, await emailToken(new Date(), u.email))
+      .catch((err) => console.error(`/invite email failed for ${u.email}:`, err));
   return ok(c);
 });
 
-app.get("/signup", (c) =>
-  (c as any).render(
+app.get("/signup", (c) => {
+  const err = c.req.query("error"), prefillEmail = c.req.query("email") ?? "";
+  const messages: Record<string, any> = {
+    name_taken: <p>That username is already taken. Pick another.</p>,
+    already_verified: (
+      <p>That email is already registered. <a href="/forgot">Forgot your password?</a></p>
+    ),
+    email_failed: (
+      <p>
+        Account created, but the verification email failed to send. Try resending in a moment, or contact support.
+      </p>
+    ),
+    conflict: <p>Username or email already taken.</p>,
+  };
+  return (c as any).render(
     <section>
       <h2>sign up</h2>
       {c.req.query("ok") !== undefined && <p>Check your email for a verification link.</p>}
+      {c.req.query("resent") !== undefined && <p>Sent another verification email — check your inbox.</p>}
+      {err && messages[err]}
       <form method="post">
         <input type="text" name="name" placeholder="username" required />
-        <input type="email" name="email" placeholder="email" required />
+        <input type="email" name="email" placeholder="email" value={prefillEmail} required />
         <button type="submit">create account</button>
       </form>
+      {(err === "email_failed" || err === "conflict") && prefillEmail && (
+        <form method="post" action="/signup/resend" style="margin-top:1rem;">
+          <input type="hidden" name="email" value={prefillEmail} />
+          <button type="submit">resend verification email</button>
+        </form>
+      )}
     </section>,
     { title: "signup" },
-  ));
+  );
+});
 
 app.post("/signup", async (c) => {
   const formData = await form(c);
-  const usr = {
-    name: formData.name,
-    email: formData.email,
-    bio: "coming soon",
-    password: null,
-    invited_by: formData.name, // Self-invited for self-signups
-  };
+  const email = formData.email, name = formData.name;
+  const qs = `&email=${encodeURIComponent(email)}`;
+
+  const [existingByEmail] = await sql`select name, email_verified_at from usr where email = ${email}`;
+  if (existingByEmail) {
+    if (existingByEmail.email_verified_at) return c.redirect(`/signup?error=already_verified${qs}`);
+    // Unverified: idempotent resend so user isn't stuck.
+    try {
+      await sendVerificationEmail(email, await emailToken(new Date(), email));
+      return c.redirect("/signup?ok");
+    } catch (err) {
+      console.error(`/signup email_failed for ${email}:`, err);
+      return c.redirect(`/signup?error=email_failed${qs}`);
+    }
+  }
+
+  const [existingByName] = await sql`select name from usr where name = ${name}`;
+  if (existingByName) return c.redirect(`/signup?error=name_taken${qs}`);
+
+  const usr = { name, email, bio: "coming soon", password: null, invited_by: name };
   const [newUsr] = await sql`
     with usr_ as (insert into usr ${sql(usr)} on conflict do nothing returning *)
     select name, email from usr_
   `;
-  if (newUsr?.email) {
-    const token = await emailToken(new Date(), newUsr.email);
-    await sendVerificationEmail(newUsr.email, token);
+  if (!newUsr?.email) return c.redirect(`/signup?error=conflict${qs}`); // race: someone grabbed it between checks
+  try {
+    await sendVerificationEmail(newUsr.email, await emailToken(new Date(), newUsr.email));
     return c.redirect("/signup?ok");
+  } catch {
+    return c.redirect(`/signup?error=email_failed${qs}`);
   }
-  return c.redirect("/signup?error=conflict");
+});
+
+app.post("/signup/resend", async (c) => {
+  const { email } = await form(c);
+  const qs = `&email=${encodeURIComponent(email)}`;
+  const [u] = await sql`select email, email_verified_at from usr where email = ${email}`;
+  if (!u) return c.redirect(`/signup?error=conflict${qs}`); // pretend-success would mislead — ask them to sign up
+  if (u.email_verified_at) return c.redirect(`/signup?error=already_verified${qs}`);
+  try {
+    await sendVerificationEmail(u.email, await emailToken(new Date(), u.email));
+    return c.redirect("/signup?resent");
+  } catch {
+    return c.redirect(`/signup?error=email_failed${qs}`);
+  }
 });
 
 app.get("/u", async (c) => {

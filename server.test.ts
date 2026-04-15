@@ -7,6 +7,12 @@ import { citext } from "@electric-sql/pglite/contrib/citext";
 import { hstore } from "@electric-sql/pglite/contrib/hstore";
 import { PostgresConnection } from "pg-gateway";
 import dbSql from "./db.sql" with { type: "text" };
+// Set env BEFORE importing server.tsx — top-level code in server.tsx reads them at import time.
+if (!Deno.env.get("STRIPE_SECRET_KEY"))
+  Deno.env.set("STRIPE_SECRET_KEY", "sk_test_mock_key");
+if (!Deno.env.get("SENDGRID_API_KEY"))
+  Deno.env.set("SENDGRID_API_KEY", "SG.test_mock_key");
+
 import app, {
   decodeLabels,
   emailToken,
@@ -17,12 +23,16 @@ import app, {
   parseLabels,
   postRate,
   setSql,
+  sg,
   stripe,
 } from "./server.tsx";
 
-// Ensure STRIPE_SECRET_KEY is set for tests to prevent import-time crashes in server.tsx
-if (!Deno.env.get("STRIPE_SECRET_KEY"))
-  Deno.env.set("STRIPE_SECRET_KEY", "sk_test_mock_key");
+// Stub SendGrid so tests don't make network calls.
+const sentEmails: { to: string; subject: string; text: string }[] = [];
+(sg as any).send = (msg: any) => {
+  sentEmails.push({ to: msg.to, subject: msg.subject, text: msg.text });
+  return Promise.resolve([{ statusCode: 202 }, {}]);
+};
 
 //// PGLITE WRAPPER ////////////////////////////////////////////////////////////
 
@@ -213,26 +223,81 @@ Deno.test(
       assertEquals(u.email_verified_at, null);
     });
 
-    await t.step("POST /signup duplicate name redirects to ?error=conflict", async () => {
+    await t.step("POST /signup duplicate name (different email) redirects to ?error=name_taken", async () => {
       const body = new FormData();
       body.append("name", "john_doe");
       body.append("email", "different@example.com");
       const res = await app.request("/signup", { method: "POST", body });
       assertEquals(res.status, 302);
-      assertEquals(res.headers.get("location"), "/signup?error=conflict");
+      assertEquals(
+        res.headers.get("location"),
+        `/signup?error=name_taken&email=${encodeURIComponent("different@example.com")}`,
+      );
       const [{ count }] = await sql`select count(*)::int as count from usr where name = 'john_doe'`;
       assertEquals(count, 1);
     });
 
-    await t.step("POST /signup duplicate email redirects to ?error=conflict", async () => {
+    await t.step("POST /signup duplicate verified email redirects to ?error=already_verified", async () => {
       const body = new FormData();
       body.append("name", "different_name");
       body.append("email", "john@example.com");
       const res = await app.request("/signup", { method: "POST", body });
       assertEquals(res.status, 302);
-      assertEquals(res.headers.get("location"), "/signup?error=conflict");
+      assertEquals(
+        res.headers.get("location"),
+        `/signup?error=already_verified&email=${encodeURIComponent("john@example.com")}`,
+      );
       const [{ count }] = await sql`select count(*)::int as count from usr where name = 'different_name'`;
       assertEquals(count, 0);
+    });
+
+    await t.step("POST /signup duplicate unverified email re-sends and redirects to ?ok", async () => {
+      // fresh_user from earlier step is unverified
+      const body = new FormData();
+      body.append("name", "yet_another");
+      body.append("email", "fresh@example.com");
+      const res = await app.request("/signup", { method: "POST", body });
+      assertEquals(res.status, 302);
+      assertEquals(res.headers.get("location"), "/signup?ok");
+      // No new row inserted under the second name
+      const [{ count }] = await sql`select count(*)::int as count from usr where name = 'yet_another'`;
+      assertEquals(count, 0);
+    });
+
+    await t.step("POST /signup/resend for unverified email redirects to ?resent", async () => {
+      const body = new FormData();
+      body.append("email", "fresh@example.com");
+      const res = await app.request("/signup/resend", { method: "POST", body });
+      assertEquals(res.status, 302);
+      assertEquals(res.headers.get("location"), "/signup?resent");
+    });
+
+    await t.step("POST /signup/resend for verified email redirects to ?error=already_verified", async () => {
+      const body = new FormData();
+      body.append("email", "john@example.com");
+      const res = await app.request("/signup/resend", { method: "POST", body });
+      assertEquals(res.status, 302);
+      assertEquals(
+        res.headers.get("location"),
+        `/signup?error=already_verified&email=${encodeURIComponent("john@example.com")}`,
+      );
+    });
+
+    await t.step("POST /signup/resend for unknown email redirects to ?error=conflict", async () => {
+      const body = new FormData();
+      body.append("email", "nobody@example.com");
+      const res = await app.request("/signup/resend", { method: "POST", body });
+      assertEquals(res.status, 302);
+      assertEquals(
+        res.headers.get("location"),
+        `/signup?error=conflict&email=${encodeURIComponent("nobody@example.com")}`,
+      );
+    });
+
+    await t.step("GET /signup renders error message for ?error=name_taken", async () => {
+      const res = await app.request("/signup?error=name_taken&email=x%40y.com");
+      const html = await res.text();
+      assertEquals(html.includes("already taken"), true);
     });
 
     await t.step("GET /verify with valid token sets email_verified_at for signup user", async () => {
