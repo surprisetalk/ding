@@ -105,7 +105,7 @@ const buildAdditiveLink = (p: URLSearchParams | undefined, k: string, v: string)
 
 //// EMAIL TOKEN ///////////////////////////////////////////////////////////////
 
-const SECRET = Deno.env.get("EMAIL_TOKEN_SECRET") ?? Math.random().toString();
+const SECRET = Deno.env.get("EMAIL_TOKEN_SECRET") ?? (() => { throw new Error("EMAIL_TOKEN_SECRET required") })();
 
 export const emailToken = async (ts: Date, email: string) => {
   const epoch = Math.floor(ts.getTime() / 1000);
@@ -145,7 +145,7 @@ const sendVerificationEmail = async (email: string, token: string) => {
   try {
     await sg.send({
       to: email,
-      from: "taylor@troe.sh",
+      from: Deno.env.get("SENDGRID_FROM_EMAIL") ?? "taylor@troe.sh",
       subject: "Verify your email",
       text: `` +
         `Welcome to ᵗ𝕙𝔢 𝐟𝐔𝓉𝓾гє 𝔬𝔣 ᑕⓞ𝓓ƗŇg.` +
@@ -593,7 +593,8 @@ app.post("/login", async (c) => {
     await sql`select name, email, email_verified_at, (password = crypt(${password}, password)) as ok from usr where email=${email}`;
   if (!u?.ok) throw new HTTPException(401);
   if (!u.email_verified_at && !(await getSignedCookie(c, cookieSecret, "name")))
-    sendVerificationEmail(u.email, await emailToken(new Date(), u.email));
+    sendVerificationEmail(u.email, await emailToken(new Date(), u.email))
+      .catch((err) => console.error(`/login resend failed for ${u.email}:`, err?.response?.body || err));
   await setSignedCookie(c, "name", u.name, cookieSecret);
   return c.redirect(c.req.query("next")?.startsWith("/") ? c.req.query("next")! : "/u");
 });
@@ -735,7 +736,8 @@ app.post("/signup", async (c) => {
   try {
     await sendVerificationEmail(newUsr.email, await emailToken(new Date(), newUsr.email));
     return c.redirect("/signup?ok");
-  } catch {
+  } catch (err: any) {
+    console.error(`/signup email_failed for ${newUsr.email}:`, err?.response?.body || err);
     return c.redirect(`/signup?error=email_failed${qs}`);
   }
 });
@@ -749,7 +751,8 @@ app.post("/signup/resend", async (c) => {
   try {
     await sendVerificationEmail(u.email, await emailToken(new Date(), u.email));
     return c.redirect("/signup?resent");
-  } catch {
+  } catch (err: any) {
+    console.error(`/signup/resend email_failed for ${email}:`, err?.response?.body || err);
     return c.redirect(`/signup?error=email_failed${qs}`);
   }
 });

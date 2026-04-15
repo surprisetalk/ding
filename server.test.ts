@@ -6,12 +6,8 @@ import { PGlite } from "@electric-sql/pglite";
 import { citext } from "@electric-sql/pglite/contrib/citext";
 import { hstore } from "@electric-sql/pglite/contrib/hstore";
 import { PostgresConnection } from "pg-gateway";
+import "./test_env.ts"; // sets env BEFORE server.tsx module evaluation (ES import order)
 import dbSql from "./db.sql" with { type: "text" };
-// Set env BEFORE importing server.tsx — top-level code in server.tsx reads them at import time.
-if (!Deno.env.get("STRIPE_SECRET_KEY"))
-  Deno.env.set("STRIPE_SECRET_KEY", "sk_test_mock_key");
-if (!Deno.env.get("SENDGRID_API_KEY"))
-  Deno.env.set("SENDGRID_API_KEY", "SG.test_mock_key");
 
 import app, {
   decodeLabels,
