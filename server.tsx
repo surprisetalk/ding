@@ -59,6 +59,7 @@ const resolveThumbnail = async (url: string) => {
 export type Labels = { tag: string[]; org: string[]; usr: string[]; www: string[]; text: string };
 
 const PFX: Record<string, keyof Labels> = { "#": "tag", "*": "org", "@": "usr", "~": "www" };
+const SYM: Record<string, string> = { tag: "#", org: "*", usr: "@", www: "~" };
 
 export const parseLabels = (input: string): Labels => {
   const labels: Labels = { tag: [], org: [], usr: [], www: [], text: "" };
@@ -137,9 +138,10 @@ export const setSql = (s: typeof sql) => (sql = s);
 if (!Deno.env.get(`RESEND_API_KEY`))
   console.warn("RESEND_API_KEY is missing. Verification + password reset emails will fail.");
 
-const sendVerificationEmail = async (email: string, token: string) => {
+const sendVerify = async (email: string) => {
   if (!Deno.env.get(`RESEND_API_KEY`))
     throw new Error(`RESEND_API_KEY missing — cannot send verification email to ${email}`);
+  const token = await emailToken(new Date(), email);
   const { error } = await resend.emails.send({
     to: email,
     from: Deno.env.get("RESEND_FROM_EMAIL") ?? "noreply@ding.bar",
@@ -196,25 +198,20 @@ const isReaction = (body: string): boolean => !!body && [...body].length === 1; 
 
 const SortToggle = ({ sort, baseHref, title }: { sort: string; baseHref: string; title: string }) => {
   const base = new URL(baseHref, "http://x");
-  const hotParams = new URLSearchParams(base.search);
-  hotParams.delete("sort");
-  hotParams.delete("p");
-  const newParams = new URLSearchParams(base.search);
-  newParams.set("sort", "new");
-  newParams.delete("p");
-  const topParams = new URLSearchParams(base.search);
-  topParams.set("sort", "top");
-  topParams.delete("p");
+  const href = (s: string) => {
+    const p = new URLSearchParams(base.search);
+    s === "hot" ? p.delete("sort") : p.set("sort", s);
+    p.delete("p");
+    return `${base.pathname}?${p}`;
+  };
   return (
     <nav style="margin-bottom:0.5rem;display:flex;gap:0.5rem;align-items:baseline;justify-content:space-between;text-wrap:nowrap;">
       <span>{title}</span>
       <span style="text-overflow:hidden;overflow:hidden;opacity:0.5;">{". ".repeat(100)}</span>
       <span style="font-size:0.85rem;">
-        {sort === "hot" ? "hot" : <a href={`${base.pathname}?${hotParams}`}>hot</a>}
-        {" • "}
-        {sort === "new" ? "new" : <a href={`${base.pathname}?${newParams}`}>new</a>}
-        {" • "}
-        {sort === "top" ? "top" : <a href={`${base.pathname}?${topParams}`}>top</a>}
+        {["hot", "new", "top"].map((s, i) => (
+          <>{i > 0 && " • "}{sort === s ? s : <a href={href(s)}>{s}</a>}</>
+        ))}
       </span>
     </nav>
   );
@@ -223,13 +220,7 @@ const SortToggle = ({ sort, baseHref, title }: { sort: string; baseHref: string;
 const ActiveFilters = ({ params, basePath = "/c" }: { params: URLSearchParams; basePath?: string }) => {
   const f: { label: string; param: string; value: string }[] = [];
   ["tag", "org", "usr", "www", "mention"].forEach((k) =>
-    params.getAll(k).forEach((v) =>
-      f.push({
-        label: (k === "tag" ? "#" : k === "org" ? "*" : k === "usr" ? "@" : k === "www" ? "~" : `${k}:`) + v,
-        param: k,
-        value: v,
-      })
-    )
+    params.getAll(k).forEach((v) => f.push({ label: (SYM[k] ?? `${k}:`) + v, param: k, value: v }))
   );
   ["replies_to", "reactions", "comments"].forEach((k) =>
     params.get(k) &&
@@ -281,7 +272,7 @@ const Comment = (c: any, user?: string) => (
       {c.body && user == c.created_by && <a href={`/c/${c.cid}/delete`}>delete</a>}
       <a href={`/c/${c.cid}`}>reply</a>
       {formatLabels(c).map((l) => (
-        <a key={l} href={`/c?${l[0] === "*" ? "org" : l[0] === "@" ? "usr" : "tag"}=${l.slice(1)}`}>{l}</a>
+        <a key={l} href={`/c?${PFX[l[0]] ?? "tag"}=${l.slice(1)}`}>{l}</a>
       ))}
       {CommentCount(c)}
       {Reactions(c)}
@@ -316,7 +307,7 @@ const Post = (c: any, user?: string, p?: URLSearchParams) => {
         {c.body && user == c.created_by && <a href={`/c/${c.cid}/delete`}>delete</a>}
         <a href={`/c/${c.cid}`}>reply</a>
         {formatLabels(c).map((l) => (
-          <a key={l} href={buildAdditiveLink(p, l[0] === "*" ? "org" : l[0] === "@" ? "usr" : "tag", l.slice(1))}>
+          <a key={l} href={buildAdditiveLink(p, PFX[l[0]] ?? "tag", l.slice(1))}>
             {l}
           </a>
         ))}
@@ -598,8 +589,7 @@ app.post("/login", async (c) => {
     await sql`select name, email, email_verified_at, (password = crypt(${password}, password)) as ok from usr where email=${email}`;
   if (!u?.ok) throw new HTTPException(401);
   if (!u.email_verified_at && !(await getSignedCookie(c, cookieSecret, "name")))
-    sendVerificationEmail(u.email, await emailToken(new Date(), u.email))
-      .catch((err) => console.error(`/login resend failed for ${u.email}:`, err?.response?.body || err));
+    sendVerify(u.email).catch((err) => console.error(`/login resend failed for ${u.email}:`, err?.response?.body || err));
   await setSignedCookie(c, "name", u.name, cookieSecret);
   return c.redirect(c.req.query("next")?.startsWith("/") ? c.req.query("next")! : "/u");
 });
@@ -635,9 +625,7 @@ app.get("/forgot", (c) =>
   ));
 app.post("/forgot", async (c) => {
   const { email } = await form(c), [u] = await sql`select email from usr where email = ${email}`;
-  if (u)
-    await sendVerificationEmail(u.email, await emailToken(new Date(), u.email))
-      .catch((err) => console.error(`/forgot email failed for ${u.email}:`, err));
+  if (u) await sendVerify(u.email).catch((err) => console.error(`/forgot email failed for ${u.email}:`, err));
   return c.redirect("/forgot?sent=1");
 });
 
@@ -669,9 +657,7 @@ app.post("/invite", authed, async (c) => {
   const [u] = await sql`insert into usr (name, email, bio, invited_by) values (${n}, ${e}, '...', ${c.get(
     "name",
   )!}) on conflict do nothing returning email`;
-  if (u)
-    await sendVerificationEmail(u.email, await emailToken(new Date(), u.email))
-      .catch((err) => console.error(`/invite email failed for ${u.email}:`, err));
+  if (u) await sendVerify(u.email).catch((err) => console.error(`/invite email failed for ${u.email}:`, err));
   return ok(c);
 });
 
@@ -721,7 +707,7 @@ app.post("/signup", async (c) => {
     if (existingByEmail.email_verified_at) return c.redirect(`/signup?error=already_verified${qs}`);
     // Unverified: idempotent resend so user isn't stuck.
     try {
-      await sendVerificationEmail(email, await emailToken(new Date(), email));
+      await sendVerify(email);
       return c.redirect("/signup?ok");
     } catch (err) {
       console.error(`/signup email_failed for ${email}:`, err);
@@ -739,7 +725,7 @@ app.post("/signup", async (c) => {
   `;
   if (!newUsr?.email) return c.redirect(`/signup?error=conflict${qs}`); // race: someone grabbed it between checks
   try {
-    await sendVerificationEmail(newUsr.email, await emailToken(new Date(), newUsr.email));
+    await sendVerify(newUsr.email);
     return c.redirect("/signup?ok");
   } catch (err: any) {
     console.error(`/signup email_failed for ${newUsr.email}:`, err?.response?.body || err);
@@ -754,7 +740,7 @@ app.post("/signup/resend", async (c) => {
   if (!u) return c.redirect(`/signup?error=conflict${qs}`); // pretend-success would mislead — ask them to sign up
   if (u.email_verified_at) return c.redirect(`/signup?error=already_verified${qs}`);
   try {
-    await sendVerificationEmail(u.email, await emailToken(new Date(), u.email));
+    await sendVerify(u.email);
     return c.redirect("/signup?resent");
   } catch (err: any) {
     console.error(`/signup/resend email_failed for ${email}:`, err?.response?.body || err);
@@ -1153,7 +1139,7 @@ app.post("/o/:name/invite", authed, async (c) => {
       await sql`insert into usr (name, email, bio, invited_by, orgs_r, orgs_w) values (${newName}, ${email}, '...', ${c.get(
         "name",
       )!}, ${[org.name]}, ${[org.name]})`;
-      sendVerificationEmail(email, await emailToken(new Date(), email));
+      sendVerify(email);
     }
   } catch (err) {
     console.error(

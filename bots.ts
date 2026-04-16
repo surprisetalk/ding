@@ -50,6 +50,47 @@ export async function getLastPostAge(
   return Date.now() - new Date(posts[0].created_at).getTime();
 }
 
+export async function getPostedUrls(
+  auth: string,
+  apiUrl: string,
+  botUsername: string,
+): Promise<Set<string>> {
+  const res = await fetch(`${apiUrl}/c?usr=${botUsername}&limit=100`, {
+    headers: { Accept: "application/json", Authorization: `Basic ${auth}` },
+  });
+  if (!res.ok) return new Set();
+  const posts: { body: string }[] = await res.json();
+  const urls = new Set<string>();
+  for (const p of posts)
+    for (const u of p.body.match(/https?:\/\/[^\s]+/g) || []) urls.add(u);
+  return urls;
+}
+
+export type FeedItem = { link: string; commentsUrl?: string; body: string; tags: string };
+
+export async function rssBot(opts: {
+  envPrefix: string;
+  feedUrl: string;
+  itemRe?: RegExp;
+  parseItem: (xml: string) => FeedItem | null;
+  max?: number;
+}) {
+  const { apiUrl, auth, botUsername } = botInit(opts.envPrefix);
+  const posted = await getPostedUrls(auth, apiUrl, botUsername);
+  console.log(`Found ${posted.size} previously posted URLs`);
+  const res = await fetch(opts.feedUrl);
+  if (!res.ok) throw new Error(`Feed fetch failed: HTTP ${res.status}`);
+  const xml = await res.text();
+  const items = (xml.match(opts.itemRe ?? /<item>[\s\S]*?<\/item>/g) || [])
+    .map(opts.parseItem).filter((x): x is FeedItem => !!x);
+  const todo = items.filter((i) => !posted.has(i.link) && !(i.commentsUrl && posted.has(i.commentsUrl)));
+  console.log(`Found ${todo.length} new items to post`);
+  for (const it of todo.slice(0, opts.max ?? 10)) {
+    console.log(`Posting: ${it.body.slice(0, 60)}`);
+    await post(auth, apiUrl, it.body, it.tags);
+  }
+}
+
 export async function post(
   auth: string,
   apiUrl: string,
@@ -426,6 +467,29 @@ export async function pickCandidates(
     .map((p) => ({ p, c: Number(p.c_comments ?? 0), r: Math.random() }))
     .sort((a, b) => a.c - b.c || a.r - b.r)
     .map(({ p }) => p);
+}
+
+export async function personaBot(opts: {
+  envPrefix: string;
+  system: string;
+  maxTokens?: number;
+  minGapMin?: number;
+  maxReplies?: number;
+}) {
+  const { apiUrl, auth, botUsername } = botInit(opts.envPrefix);
+  const ageMin = (await getLastPostAge(auth, botUsername, apiUrl, { replies: true })) / 60_000;
+  if (ageMin < (opts.minGapMin ?? 240)) {
+    console.log(`Last reply ${Math.round(ageMin)}min ago, skipping`);
+    return;
+  }
+  const answered = await getAnsweredCids(auth, botUsername, apiUrl);
+  const candidates = await pickCandidates(auth, apiUrl, botUsername, answered);
+  console.log(`Found ${candidates.length} candidates`);
+  for (const p of candidates.slice(0, opts.maxReplies ?? 1)) {
+    const text = await claude(p.body, { system: opts.system, maxTokens: opts.maxTokens ?? 50 });
+    await reply(auth, apiUrl, p.cid, text);
+    console.log(`Replied to cid=${p.cid}: ${text.slice(0, 60)}...`);
+  }
 }
 
 // ---- Claude ----
