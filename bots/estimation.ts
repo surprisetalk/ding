@@ -1,18 +1,10 @@
-// Daily Fermi estimation bot for ding
-// Posts a question, reveals answer next day with closest guesser
+// Daily Fermi estimation bot — posts a question, reveals answer next day with closest guesser.
 
-const DING_API_URL = Deno.env.get("DING_API_URL") || "https://ding.bar";
-const BOT_EMAIL = Deno.env.get("BOT_ESTIMATION_EMAIL") || "";
-const BOT_PASSWORD = Deno.env.get("BOT_ESTIMATION_PASSWORD") || "";
+import { botInit, getJson, post, reply } from "../bots.ts";
 
-const auth = btoa(`${BOT_EMAIL}:${BOT_PASSWORD}`);
-const BOT_USERNAME = BOT_EMAIL.split("@")[0].replace(/-/g, "_");
+const { apiUrl, auth, botUsername } = botInit("ESTIMATION");
 
-interface Question {
-  q: string;
-  a: number;
-  unit: string;
-}
+interface Question { q: string; a: number; unit: string }
 
 const QUESTIONS: Question[] = [
   { q: "How many golf balls can fit in a school bus?", a: 500000, unit: "golf balls" },
@@ -69,78 +61,36 @@ const QUESTIONS: Question[] = [
 
 function parseNumber(s: string): number | null {
   const cleaned = s.replace(/,/g, "").trim();
-  // Scientific notation: 1e6, 1E6, 1x10^6, 1×10^6
-  const sciMatch = cleaned.match(/^([\d.]+)\s*[xX×]\s*10\s*\^\s*(\d+)$/);
-  if (sciMatch) return parseFloat(sciMatch[1]) * Math.pow(10, +sciMatch[2]);
-  // Suffixes: 1k, 1m, 1b, 1t
-  const suffixMatch = cleaned.match(/^([\d.]+)\s*([kmbt])$/i);
-  if (suffixMatch) {
+  const sci = cleaned.match(/^([\d.]+)\s*[xX×]\s*10\s*\^\s*(\d+)$/);
+  if (sci) return parseFloat(sci[1]) * Math.pow(10, +sci[2]);
+  const suf = cleaned.match(/^([\d.]+)\s*([kmbt])$/i);
+  if (suf) {
     const mult: Record<string, number> = { k: 1e3, m: 1e6, b: 1e9, t: 1e12 };
-    return parseFloat(suffixMatch[1]) * mult[suffixMatch[2].toLowerCase()];
+    return parseFloat(suf[1]) * mult[suf[2].toLowerCase()];
   }
   const n = parseFloat(cleaned);
   return isNaN(n) ? null : n;
 }
 
-// Log-distance: how many orders of magnitude apart
-function logDist(guess: number, actual: number): number {
-  if (guess <= 0 || actual <= 0) return Infinity;
-  return Math.abs(Math.log10(guess) - Math.log10(actual));
-}
-
-async function getRecentPosts(limit = 5): Promise<any[]> {
-  const res = await fetch(`${DING_API_URL}/c?usr=${BOT_USERNAME}&limit=${limit}`, {
-    headers: { Accept: "application/json", Authorization: `Basic ${auth}` },
-  });
-  if (!res.ok) throw new Error(`Failed to fetch recent posts: HTTP ${res.status} ${await res.text()}`);
-  return await res.json();
-}
-
-async function getPost(cid: number): Promise<any> {
-  const res = await fetch(`${DING_API_URL}/c/${cid}`, {
-    headers: { Accept: "application/json", Authorization: `Basic ${auth}` },
-  });
-  if (!res.ok) throw new Error(`Failed to fetch post cid=${cid}: HTTP ${res.status} ${await res.text()}`);
-  const items = await res.json();
-  return items[0] || null;
-}
-
-async function reply(parentCid: number, body: string): Promise<boolean> {
-  const formData = new FormData();
-  formData.append("body", body);
-  const res = await fetch(`${DING_API_URL}/c/${parentCid}`, {
-    method: "POST",
-    headers: { Authorization: `Basic ${auth}` },
-    body: formData,
-  });
-  return res.ok;
-}
+const logDist = (guess: number, actual: number) =>
+  guess <= 0 || actual <= 0 ? Infinity : Math.abs(Math.log10(guess) - Math.log10(actual));
 
 async function main() {
-  if (!BOT_EMAIL || !BOT_PASSWORD) {
-    console.error("Missing BOT_ESTIMATION_EMAIL or BOT_ESTIMATION_PASSWORD");
-    Deno.exit(1);
-  }
-
-  const posts = await getRecentPosts(5);
+  const posts = await getJson<any[]>(`/c?usr=${botUsername}&limit=5`, auth, apiUrl);
   const lastPost = posts[0];
-  const lastAge = lastPost ? Date.now() - new Date(lastPost.created_at).getTime() : Infinity;
-  const lastAgeHours = lastAge / 3_600_000;
+  const lastAgeHours = lastPost ? (Date.now() - new Date(lastPost.created_at).getTime()) / 3_600_000 : Infinity;
 
-  // Phase 2: Reveal yesterday's answer if it's been 20+ hours but less than 48
-  // (after 48h we skip reveal and just post a new question)
+  // Phase 2: Reveal yesterday's answer if 20–48h elapsed
   let revealed = false;
   if (lastPost && lastAgeHours >= 20 && lastAgeHours < 48) {
     const dayIndex = Math.floor(new Date(lastPost.created_at).getTime() / 86_400_000) % QUESTIONS.length;
     const question = QUESTIONS[dayIndex];
 
-    const post = await getPost(lastPost.cid);
-    if (post) {
-      const botReplies = (post.child_comments || []).filter(
-        (c: any) => c.created_by === BOT_USERNAME,
-      );
-      if (!botReplies.length) {
-        const playerReplies = (post.child_comments || []).filter((c: any) => c.created_by !== BOT_USERNAME);
+    const [threadPost] = await getJson<any[]>(`/c/${lastPost.cid}`, auth, apiUrl);
+    if (threadPost) {
+      const alreadyRevealed = (threadPost.child_comments || []).some((c: any) => c.created_by === botUsername);
+      if (!alreadyRevealed) {
+        const playerReplies = (threadPost.child_comments || []).filter((c: any) => c.created_by !== botUsername);
         const guesses = playerReplies
           .map((c: any) => {
             const n = parseNumber(c.body);
@@ -156,42 +106,23 @@ async function main() {
         if (winner) {
           reveal += `\n\nClosest guess: @${winner.user} with ${winner.guess.toLocaleString()} (${winner.dist < 0.5 ? "within half an order of magnitude!" : `${winner.dist.toFixed(1)} orders of magnitude off`})`;
         }
-        if (guesses.length > 1) {
-          reveal += `\n\n${guesses.length} total guesses`;
-        }
+        if (guesses.length > 1) reveal += `\n\n${guesses.length} total guesses`;
 
         console.log(`Revealing answer for cid=${lastPost.cid}`);
-        if (!await reply(lastPost.cid, reveal)) {
-          console.error(`Failed to post reveal for cid=${lastPost.cid}`);
-        }
+        await reply(auth, apiUrl, lastPost.cid, reveal);
         revealed = true;
       }
     }
   }
 
-  // Phase 1: Post new question — but not on the same run as a reveal
-  // (give players time to see the answer before a new question drops)
+  // Phase 1: Post new question (skip same run as a reveal)
   if (!revealed && lastAgeHours >= 20) {
     const dayIndex = Math.floor(Date.now() / 86_400_000) % QUESTIONS.length;
     const question = QUESTIONS[dayIndex];
     const dayNum = Math.floor(Date.now() / 86_400_000) - 20818;
-
     const body = `Estimation #${dayNum}\n\n${question.q}\n\nReply with your best guess (just a number)!`;
     console.log(`Posting: Estimation #${dayNum}`);
-
-    const formData = new FormData();
-    formData.append("body", body);
-    formData.append("tags", "#estimation #game #bot");
-
-    const res = await fetch(`${DING_API_URL}/c`, {
-      method: "POST",
-      headers: { Authorization: `Basic ${auth}` },
-      body: formData,
-    });
-    if (!res.ok) {
-      console.error(`Failed to post: HTTP ${res.status} ${await res.text()}`);
-      Deno.exit(1);
-    }
+    if (!await post(auth, apiUrl, body, "#estimation #game #bot")) Deno.exit(1);
     console.log("Posted!");
   } else {
     console.log(`Last post was ${lastAgeHours.toFixed(1)}h ago, skipping new question`);

@@ -1,6 +1,4 @@
-import { rssBot } from "../bots.ts";
-
-const m = (re: RegExp, s: string) => s.match(re)?.[1] || "";
+import { firstMatch as m, rssBot } from "../bots.ts";
 
 rssBot({
   envPrefix: "TILDES",

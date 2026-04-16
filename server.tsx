@@ -27,8 +27,6 @@ export const extractMentions = (b: string) =>
 export const extractImageUrl = (b: string) =>
   b.match(/https?:\/\/[^\s]+\.(?:jpe?g|png|gif|webp|svg)(?:\?[^\s]*)?/i)?.[0] || null;
 
-const isImageUrl = (u: string) => /\.(?:jpe?g|png|gif|webp|svg)(?:\?|$)/i.test(u);
-
 const extractDomain = (b: string) => {
   const u = extractFirstUrl(b);
   if (!u) return null;
@@ -44,7 +42,7 @@ const refreshScores = async (pid: string | number) => {
 const FLAG_THRESHOLD = 3;
 
 const resolveThumbnail = async (url: string) => {
-  if (isImageUrl(url)) return url;
+  if (/\.(?:jpe?g|png|gif|webp|svg)(?:\?|$)/i.test(url)) return url;
   try {
     const res = await fetch(url, { headers: { "User-Agent": "ding/1.0" }, signal: AbortSignal.timeout(3000) });
     const og = (await res.text()).match(/<meta[^>]+(?:property="og:image"|name="twitter:image")[^>]+content="([^"]+)"/i)
@@ -246,10 +244,6 @@ const ActiveFilters = ({ params, basePath = "/c" }: { params: URLSearchParams; b
     : <div class="active-filters" />;
 };
 
-const CommentCount = (c: any) => (
-  <span class="reaction"><a href={`/c/${c.cid}`}>» {c.comments || 0}</a></span>
-);
-
 const Reactions = (c: any) =>
   Object.entries({ "▲": 0, "▼": 0, ...(c.reaction_counts || {}) }).map(([k, v]) => (
     <form
@@ -274,7 +268,7 @@ const Comment = (c: any, user?: string) => (
       {formatLabels(c).map((l) => (
         <a key={l} href={`/c?${PFX[l[0]] ?? "tag"}=${l.slice(1)}`}>{l}</a>
       ))}
-      {CommentCount(c)}
+      <span class="reaction"><a href={`/c/${c.cid}`}>» {c.comments || 0}</a></span>
       {Reactions(c)}
     </div>
     <pre>{(c.c_flags >= FLAG_THRESHOLD && user !== c.created_by) ? "[flagged]" : (c.body || "[deleted by author]")}</pre>
@@ -311,7 +305,7 @@ const Post = (c: any, user?: string, p?: URLSearchParams) => {
             {l}
           </a>
         ))}
-        {CommentCount(c)}
+        <span class="reaction"><a href={`/c/${c.cid}`}>» {c.comments || 0}</a></span>
         {Reactions(c)}
       </div>
     </div>
@@ -749,34 +743,11 @@ app.post("/signup/resend", async (c) => {
 });
 
 app.get("/u", async (c) => {
-  // Try cookie auth first
   let name: string | undefined = (await getSignedCookie(c, cookieSecret, "name")) || undefined;
-
-  // Try Basic Auth if no cookie
-  if (!name) {
-    const authHeader = c.req.header("Authorization");
-    if (authHeader?.startsWith("Basic ")) {
-      try {
-        const decoded = atob(authHeader.slice(6));
-        const [email, ...rest] = decoded.split(":");
-        const password = rest.join(":");
-        if (email && password) {
-          const [usr] = await sql`
-            select *, password = crypt(${password}, password) AS is_password_correct
-            from usr where email = ${email} or name = ${email}
-          `;
-          if (usr?.is_password_correct) {
-            name = usr.name;
-            c.set("name", name!);
-          } else {
-            throw new HTTPException(401, { message: "Invalid credentials." });
-          }
-        }
-      } catch (_e) {
-        throw new HTTPException(401, { message: "Invalid auth header." });
-      }
-    }
-  } else {
+  if (name) c.set("name", name);
+  else if (c.req.header("Authorization")?.startsWith("Basic ")) {
+    name = (await basicAuthName(c)) ?? undefined;
+    if (!name) throw new HTTPException(401, { message: "Invalid credentials." });
     c.set("name", name);
   }
 
@@ -1243,20 +1214,7 @@ const POST_RATE_MAX = 10, POST_RATE_MS = 60_000;
 
 app.post("/c/:p?", async (c) => {
   const pid = c.req.param("p") || null;
-  let n = c.get("name");
-  if (!n) {
-    const a = c.req.header("Authorization");
-    if (a?.startsWith("Basic ")) {
-      try {
-        const decoded = atob(a.slice(6));
-        const [u, ...rest] = decoded.split(":");
-        const p = rest.join(":");
-        const [usr] =
-          await sql`select name from usr where (email=${u} or name=${u}) and password=crypt(${p}, password)`;
-        if (usr) n = usr.name;
-      } catch { /* ignore invalid auth */ }
-    }
-  }
+  const n = c.get("name") ?? (await basicAuthName(c)) ?? undefined;
   if (!n) return c.redirect(`/u?next=${encodeURIComponent(pid ? `/c/${pid}` : "/")}`);
 
   const now = Date.now();

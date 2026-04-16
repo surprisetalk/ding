@@ -1,4 +1,4 @@
-import { botInit, getAnsweredCids, reply } from "../bots.ts";
+import { botInit, getAnsweredCids, getJson, reply } from "../bots.ts";
 
 const { apiUrl, auth, botUsername } = botInit("SORTINGHAT");
 
@@ -11,13 +11,11 @@ const HOUSES = [
 
 async function main() {
   const answeredCids = await getAnsweredCids(auth, botUsername, apiUrl);
-
-  const res = await fetch(`${apiUrl}/c?tag=sortinghat&sort=new&limit=20`, {
-    headers: { Accept: "application/json", Authorization: `Basic ${auth}` },
-  });
-  if (!res.ok) throw new Error(`Failed to fetch #sortinghat posts: ${res.status}`);
-  const posts: { cid: number; created_by: string }[] = await res.json();
-
+  const posts = await getJson<{ cid: number; created_by: string }[]>(
+    `/c?tag=sortinghat&sort=new&limit=20`,
+    auth,
+    apiUrl,
+  );
   const unanswered = posts.filter((p) => p.created_by !== botUsername && !answeredCids.has(p.cid));
 
   for (const p of unanswered) {

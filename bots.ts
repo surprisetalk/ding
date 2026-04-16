@@ -18,19 +18,43 @@ export function botInit(envPrefix: string) {
   return { apiUrl, auth, botUsername };
 }
 
+// ---- HTTP helpers ----
+
+export async function getJson<T = any>(path: string, auth: string, apiUrl: string): Promise<T> {
+  const res = await fetch(`${apiUrl}${path}`, {
+    headers: { Accept: "application/json", Authorization: `Basic ${auth}` },
+  });
+  if (!res.ok) throw new Error(`GET ${path} → ${res.status}: ${await res.text()}`);
+  return res.json();
+}
+
+export async function postForm(
+  path: string,
+  fields: Record<string, string>,
+  auth: string,
+  apiUrl: string,
+): Promise<boolean> {
+  const body = new FormData();
+  for (const [k, v] of Object.entries(fields)) body.append(k, v);
+  const res = await fetch(`${apiUrl}${path}`, {
+    method: "POST",
+    headers: { Authorization: `Basic ${auth}` },
+    body,
+  });
+  if (!res.ok) console.error(`POST ${path} → ${res.status} ${await res.text()}`);
+  return res.ok;
+}
+
+export const firstMatch = (re: RegExp, s: string) => s.match(re)?.[1] || "";
+
 // ---- API helpers ----
 
-export async function getAnsweredCids(
-  auth: string,
-  botUsername: string,
-  apiUrl: string,
-): Promise<Set<number>> {
-  const res = await fetch(
-    `${apiUrl}/c?usr=${botUsername}&comments=1&limit=100`,
-    { headers: { Accept: "application/json", Authorization: `Basic ${auth}` } },
+export async function getAnsweredCids(auth: string, botUsername: string, apiUrl: string): Promise<Set<number>> {
+  const replies = await getJson<{ parent_cid: number }[]>(
+    `/c?usr=${botUsername}&comments=1&limit=100`,
+    auth,
+    apiUrl,
   );
-  if (!res.ok) throw new Error(`Failed to fetch answered CIDs: HTTP ${res.status} ${await res.text()}`);
-  const replies: { parent_cid: number }[] = await res.json();
   return new Set(replies.map((r) => r.parent_cid));
 }
 
@@ -41,28 +65,23 @@ export async function getLastPostAge(
   opts: { replies?: boolean } = {},
 ): Promise<number> {
   const qs = opts.replies ? "&comments=1" : "";
-  const res = await fetch(`${apiUrl}/c?usr=${botUsername}&limit=1${qs}`, {
-    headers: { Accept: "application/json", Authorization: `Basic ${auth}` },
-  });
-  if (!res.ok) throw new Error(`Failed to fetch recent posts: HTTP ${res.status} ${await res.text()}`);
-  const posts: { created_at: string }[] = await res.json();
+  const posts = await getJson<{ created_at: string }[]>(
+    `/c?usr=${botUsername}&limit=1${qs}`,
+    auth,
+    apiUrl,
+  );
   if (!posts.length) return Infinity;
   return Date.now() - new Date(posts[0].created_at).getTime();
 }
 
-export async function getPostedUrls(
-  auth: string,
-  apiUrl: string,
-  botUsername: string,
-): Promise<Set<string>> {
-  const res = await fetch(`${apiUrl}/c?usr=${botUsername}&limit=100`, {
-    headers: { Accept: "application/json", Authorization: `Basic ${auth}` },
-  });
-  if (!res.ok) return new Set();
-  const posts: { body: string }[] = await res.json();
+export async function getPostedUrls(auth: string, apiUrl: string, botUsername: string): Promise<Set<string>> {
+  const posts = await getJson<{ body: string }[]>(
+    `/c?usr=${botUsername}&limit=100`,
+    auth,
+    apiUrl,
+  ).catch(() => []);
   const urls = new Set<string>();
-  for (const p of posts)
-    for (const u of p.body.match(/https?:\/\/[^\s]+/g) || []) urls.add(u);
+  for (const p of posts) for (const u of p.body.match(/https?:\/\/[^\s]+/g) || []) urls.add(u);
   return urls;
 }
 
@@ -91,57 +110,23 @@ export async function rssBot(opts: {
   }
 }
 
-export async function post(
-  auth: string,
-  apiUrl: string,
-  body: string,
-  tags: string,
-): Promise<boolean> {
-  const formData = new FormData();
-  formData.append("body", body);
-  formData.append("tags", tags);
-  const res = await fetch(`${apiUrl}/c`, {
-    method: "POST",
-    headers: { Authorization: `Basic ${auth}` },
-    body: formData,
-  });
-  if (!res.ok) console.error(`Failed to post: HTTP ${res.status} ${await res.text()}`);
-  return res.ok;
-}
+export const post = (auth: string, apiUrl: string, body: string, tags: string) =>
+  postForm(`/c`, { body, tags }, auth, apiUrl);
 
-export async function reply(
-  auth: string,
-  apiUrl: string,
-  parentCid: number,
-  body: string,
-): Promise<boolean> {
-  const formData = new FormData();
-  formData.append("body", body);
-  const res = await fetch(`${apiUrl}/c/${parentCid}`, {
-    method: "POST",
-    headers: { Authorization: `Basic ${auth}` },
-    body: formData,
-  });
-  if (!res.ok) console.error(`Failed to reply to cid=${parentCid}: HTTP ${res.status}`);
-  return res.ok;
-}
+export const reply = (auth: string, apiUrl: string, parentCid: number, body: string) =>
+  postForm(`/c/${parentCid}`, { body }, auth, apiUrl);
 
 export async function fetchPost(
   auth: string,
   apiUrl: string,
   cid: number,
 ): Promise<{ cid: number; parent_cid: number | null; body: string; created_by: string; created_at: string } | null> {
-  const res = await fetch(`${apiUrl}/c/${cid}`, {
-    headers: { Accept: "application/json", Authorization: `Basic ${auth}` },
-  });
-  if (!res.ok) return null;
-  const items = await res.json();
+  const items = await getJson<any[]>(`/c/${cid}`, auth, apiUrl).catch(() => []);
   return items[0] || null;
 }
 
 export function firstLink(body: string): string | null {
-  const m = body.match(/https?:\/\/[^\s)]+/);
-  return m ? m[0] : null;
+  return body.match(/https?:\/\/[^\s)]+/)?.[0] ?? null;
 }
 
 export async function extractArticle(
@@ -178,8 +163,7 @@ export async function extractArticle(
 }
 
 export function extractImageUrl(body: string): string | null {
-  const m = body.match(/https?:\/\/[^\s]+\.(?:jpe?g|png|gif|webp|svg)(?:\?[^\s]*)?/i);
-  return m ? m[0] : null;
+  return body.match(/https?:\/\/[^\s]+\.(?:jpe?g|png|gif|webp|svg)(?:\?[^\s]*)?/i)?.[0] ?? null;
 }
 
 export async function resolveImageUrl(
@@ -247,7 +231,6 @@ export async function uploadToR2(
 
   const signedHeaderKeys = Object.keys(headers).sort().map((k) => k.toLowerCase());
   const signedHeaders = signedHeaderKeys.join(";");
-  const canonicalHeaders = signedHeaderKeys.map((k) => `${k}:${headers[k === "host" ? "Host" : k === "content-type" ? "Content-Type" : k] || headers[k]}\n`).join("");
 
   const canonicalRequest = [
     "PUT",
@@ -296,15 +279,13 @@ async function hmacSha256(key: ArrayBuffer | Uint8Array, data: string | Uint8Arr
 }
 
 async function hmacHex(key: ArrayBuffer, data: string): Promise<string> {
-  const sig = await hmacSha256(key, data);
-  return hex(new Uint8Array(sig));
+  return hex(new Uint8Array(await hmacSha256(key, data)));
 }
 
 async function sha256Hex(data: Uint8Array): Promise<string> {
   const buf = new ArrayBuffer(data.byteLength);
   new Uint8Array(buf).set(data);
-  const hash = await crypto.subtle.digest("SHA-256", buf);
-  return hex(new Uint8Array(hash));
+  return hex(new Uint8Array(await crypto.subtle.digest("SHA-256", buf)));
 }
 
 function hex(buf: Uint8Array): string {
@@ -319,7 +300,7 @@ async function getSignatureKey(key: string, dateStamp: string, region: string, s
   return k;
 }
 
-// ---- Syllable counting ----
+// ---- Syllables ----
 
 export function countSyllables(word: string): number {
   const w = word.toLowerCase().replace(/[^a-z]/g, "");
@@ -336,82 +317,13 @@ export function countSyllables(word: string): number {
     prevVowel = isVowel;
   }
 
-  // Silent e at end (but not "le" after consonant which adds a syllable)
   if (w.endsWith("e") && !w.endsWith("le") && w.length > 3) count--;
-  // -ed ending is usually silent unless preceded by t or d
   if (w.endsWith("ed") && w.length > 3 && !w.endsWith("ted") && !w.endsWith("ded")) count--;
-  // Handle -es
   if (w.endsWith("es") && w.length > 3 && !("shxz".includes(w[w.length - 3]))) count--;
-  // Common suffixes that are their own syllable
-  if (w.endsWith("tion") || w.endsWith("sion")) count++; // already counted, but tion is 1 not 2
-  // Diphthong corrections - these count as 2 when split across syllables
-  const diphthongs = ["ia", "io", "eo", "ua", "uo"];
-  for (const d of diphthongs) {
-    if (w.includes(d)) count++;
-  }
+  if (w.endsWith("tion") || w.endsWith("sion")) count++;
+  for (const d of ["ia", "io", "eo", "ua", "uo"]) if (w.includes(d)) count++;
 
   return Math.max(1, count);
-}
-
-export function countSyllablesInLine(text: string): number {
-  return text.split(/\s+/).filter(Boolean).reduce((sum, w) => sum + countSyllables(w), 0);
-}
-
-// ---- Stress detection ----
-
-const UNSTRESSED_WORDS = new Set([
-  "a", "an", "the", "and", "but", "or", "nor", "for", "yet", "so",
-  "in", "on", "at", "to", "of", "by", "up", "as", "if", "is", "am",
-  "are", "was", "were", "be", "been", "do", "does", "did", "has",
-  "have", "had", "may", "can", "will", "shall", "would", "could",
-  "should", "might", "must", "it", "its", "he", "she", "we", "they",
-  "me", "him", "her", "us", "them", "my", "his", "our", "your",
-  "their", "this", "that", "with", "from", "not", "no",
-]);
-
-export function guessStress(text: string): ("0" | "1")[] {
-  const words = text.toLowerCase().replace(/[^a-z\s'-]/g, "").split(/\s+/).filter(Boolean);
-  const pattern: ("0" | "1")[] = [];
-
-  for (const word of words) {
-    const syllCount = countSyllables(word);
-    if (syllCount === 1) {
-      pattern.push(UNSTRESSED_WORDS.has(word) ? "0" : "1");
-    } else {
-      // Multi-syllable: apply suffix-based stress rules
-      const stresses = guessWordStress(word, syllCount);
-      pattern.push(...stresses);
-    }
-  }
-  return pattern;
-}
-
-function guessWordStress(word: string, syllCount: number): ("0" | "1")[] {
-  const result: ("0" | "1")[] = new Array(syllCount).fill("0");
-
-  if (syllCount === 2) {
-    // Most 2-syllable English words stress first syllable
-    // Exceptions: words starting with common unstressed prefixes
-    if (/^(a|be|de|re|in|un|dis|mis|pre|pro|con|com|ex|en|em)/.test(word) && !word.endsWith("ment") && !word.endsWith("ness")) {
-      result[1] = "1";
-    } else {
-      result[0] = "1";
-    }
-  } else {
-    // 3+ syllables: stress rules based on suffixes
-    if (word.endsWith("tion") || word.endsWith("sion") || word.endsWith("ic") || word.endsWith("ical")) {
-      result[syllCount - 2] = "1"; // penultimate
-    } else if (word.endsWith("ity") || word.endsWith("ify")) {
-      result[Math.max(0, syllCount - 3)] = "1"; // antepenultimate
-    } else if (word.endsWith("ly")) {
-      result[Math.max(0, syllCount - 3)] = "1";
-    } else {
-      // Default: stress antepenultimate for 3+, penultimate for others
-      result[Math.max(0, syllCount - 3)] = "1";
-    }
-  }
-
-  return result;
 }
 
 // ---- Seeded RNG ----
@@ -430,10 +342,8 @@ export function todaySeed(): number {
 
 // ---- Candidate picking ----
 
-// Fetches a pool of top-level posts AND comments from the feed, filters out
-// the bot's own posts + already-answered cids, then ranks remaining candidates:
-// prefer posts with fewer replies (spreads bots across threads), random
-// tiebreak (different bots pick different items on the same run).
+// Fetches top-level posts + comments, filters bot's own posts + already-answered,
+// ranks: prefer posts with fewer replies (spreads bots across threads), random tiebreak.
 export async function pickCandidates(
   auth: string,
   apiUrl: string,
@@ -444,12 +354,8 @@ export async function pickCandidates(
   const pool = opts.pool ?? 50;
   const minBodyLen = opts.minBodyLen ?? 30;
   const [top, comments] = await Promise.all([
-    fetch(`${apiUrl}/c?sort=new&limit=${pool}`, {
-      headers: { Accept: "application/json", Authorization: `Basic ${auth}` },
-    }).then((r) => r.ok ? r.json() : []),
-    fetch(`${apiUrl}/c?sort=new&comments=1&limit=${pool}`, {
-      headers: { Accept: "application/json", Authorization: `Basic ${auth}` },
-    }).then((r) => r.ok ? r.json() : []),
+    getJson<any[]>(`/c?sort=new&limit=${pool}`, auth, apiUrl).catch(() => []),
+    getJson<any[]>(`/c?sort=new&comments=1&limit=${pool}`, auth, apiUrl).catch(() => []),
   ]);
   const seen = new Set<number>();
   const all = [...top, ...comments].filter((p: { cid: number }) => {

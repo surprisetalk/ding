@@ -1,12 +1,8 @@
-// Daily code golf bot for ding
-// Posts one programming challenge per day from a hardcoded bank
+// Daily code golf bot — posts one programming challenge per day from a hardcoded bank.
 
-const DING_API_URL = Deno.env.get("DING_API_URL") || "https://ding.bar";
-const BOT_EMAIL = Deno.env.get("BOT_CODEGOLF_EMAIL") || "";
-const BOT_PASSWORD = Deno.env.get("BOT_CODEGOLF_PASSWORD") || "";
+import { botInit, getLastPostAge, post } from "../bots.ts";
 
-const auth = btoa(`${BOT_EMAIL}:${BOT_PASSWORD}`);
-const BOT_USERNAME = BOT_EMAIL.split("@")[0].replace(/-/g, "_");
+const { apiUrl, auth, botUsername } = botInit("CODEGOLF");
 
 const PROBLEMS = [
   {
@@ -261,53 +257,17 @@ const PROBLEMS = [
   },
 ];
 
-async function getLastPostAge(): Promise<number> {
-  const res = await fetch(`${DING_API_URL}/c?usr=${BOT_USERNAME}&limit=1`, {
-    headers: { Accept: "application/json", Authorization: `Basic ${auth}` },
-  });
-  if (!res.ok) throw new Error(`Failed to fetch recent posts: HTTP ${res.status} ${await res.text()}`);
-  const posts: { created_at: string }[] = await res.json();
-  if (!posts.length) return Infinity;
-  return Date.now() - new Date(posts[0].created_at).getTime();
-}
-
 async function main() {
-  if (!BOT_EMAIL || !BOT_PASSWORD) {
-    console.error("Missing BOT_CODEGOLF_EMAIL or BOT_CODEGOLF_PASSWORD");
-    Deno.exit(1);
-  }
-
-  const ageMs = await getLastPostAge();
-  const ageHours = ageMs / 3_600_000;
+  const ageHours = (await getLastPostAge(auth, botUsername, apiUrl)) / 3_600_000;
   console.log(`Last post was ${ageHours.toFixed(1)}h ago`);
-
-  if (ageHours < 20) {
-    console.log("Too soon for a new challenge, skipping");
-    return;
-  }
+  if (ageHours < 20) { console.log("Too soon for a new challenge, skipping"); return; }
 
   const dayIndex = Math.floor(Date.now() / 86_400_000) % PROBLEMS.length;
   const problem = PROBLEMS[dayIndex];
-  const dayNum = Math.floor(Date.now() / 86_400_000) - 20818; // offset to start at Day 1 around mid-2027
-
+  const dayNum = Math.floor(Date.now() / 86_400_000) - 20818;
   const body = `Day ${dayNum}: ${problem.title} [${problem.difficulty}]\n\n${problem.body}\n\nReply with your solution in any language. Shortest wins!`;
-
   console.log(`Posting: Day ${dayNum}: ${problem.title}`);
-
-  const formData = new FormData();
-  formData.append("body", body);
-  formData.append("tags", "#codegolf #game #bot");
-
-  const res = await fetch(`${DING_API_URL}/c`, {
-    method: "POST",
-    headers: { Authorization: `Basic ${auth}` },
-    body: formData,
-  });
-
-  if (!res.ok) {
-    console.error(`Failed to post challenge: HTTP ${res.status} ${await res.text()}`);
-    Deno.exit(1);
-  }
+  if (!await post(auth, apiUrl, body, "#codegolf #game #bot")) Deno.exit(1);
   console.log("Posted!");
 }
 

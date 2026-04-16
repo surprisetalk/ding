@@ -1,29 +1,20 @@
-// Reddit r/hmmm image bot for ding
-// Posts images from r/hmmm subreddit
+// Reddit r/hmmm image bot — posts images from the r/hmmm subreddit.
 
-const DING_API_URL = Deno.env.get("DING_API_URL") || "https://ding.bar";
-const BOT_EMAIL = Deno.env.get("BOT_HMMM_EMAIL") || "";
-const BOT_PASSWORD = Deno.env.get("BOT_HMMM_PASSWORD") || "";
+import { botInit, getPostedUrls, post } from "../bots.ts";
 
-const auth = btoa(`${BOT_EMAIL}:${BOT_PASSWORD}`);
-
-// Derive username from email: bot-hmmm@ding.bar → bot_hmmm
-const BOT_USERNAME = BOT_EMAIL.split("@")[0].replace(/-/g, "_");
+const { apiUrl, auth, botUsername } = botInit("HMMM");
 
 const FEED_URL = "https://www.reddit.com/r/hmmm/.rss";
 const FETCH_TIMEOUT_MS = 15_000;
 
-// Reddit throttles aggressively; a descriptive, contact-bearing UA + a single
-// retry-on-429 keeps us well-behaved without hanging the workflow.
-async function redditFetch(url: string, init: RequestInit = {}): Promise<Response> {
+// Reddit throttles aggressively; descriptive UA + single retry on 429 is polite enough.
+async function redditFetch(url: string): Promise<Response> {
   for (let attempt = 0; attempt < 2; attempt++) {
     const res = await fetch(url, {
-      ...init,
       signal: AbortSignal.timeout(FETCH_TIMEOUT_MS),
       headers: {
         "User-Agent": "ding-bot/1.0 (+https://ding.bar; contact: taylor@ding.bar)",
         "Accept": "application/rss+xml, application/xml, text/xml, */*",
-        ...(init.headers || {}),
       },
     });
     if (res.status !== 429 || attempt === 1) return res;
@@ -34,143 +25,51 @@ async function redditFetch(url: string, init: RequestInit = {}): Promise<Respons
   throw new Error("unreachable");
 }
 
-// Fetch bot's latest posts to find watermark
-async function getPostedUrls(): Promise<Set<string>> {
-  const res = await fetch(`${DING_API_URL}/c?usr=${BOT_USERNAME}&limit=100`, {
-    headers: { Accept: "application/json", Authorization: `Basic ${auth}` },
-  });
-  if (!res.ok) return new Set();
-  const posts: { body: string }[] = await res.json();
-  const urls = new Set<string>();
-  for (const post of posts) {
-    const matches = post.body.match(/https?:\/\/[^\s]+/g) || [];
-    for (const url of matches) urls.add(url);
-  }
-  return urls;
-}
+interface RedditItem { title: string; link: string; imageUrl: string | null; author: string }
 
-interface RedditItem {
-  title: string;
-  link: string;
-  imageUrl: string | null;
-  author: string;
-}
-
-// Extract image URL from Reddit HTML content
 function extractImageUrl(html: string): string | null {
-  // Unescape HTML entities first
-  const unescaped = html
-    .replace(/&lt;/g, "<")
-    .replace(/&gt;/g, ">")
-    .replace(/&amp;/g, "&")
-    .replace(/&quot;/g, '"');
-
-  // Look for i.redd.it images (most common on r/hmmm)
-  const reddItMatch = unescaped.match(/https:\/\/i\.redd\.it\/[^\s"'<>]+/);
-  if (reddItMatch) return reddItMatch[0];
-
-  // Look for imgur images
-  const imgurMatch = unescaped.match(/https:\/\/i\.imgur\.com\/[^\s"'<>]+/);
-  if (imgurMatch) return imgurMatch[0];
-
-  // Fallback: any img src
-  const imgSrcMatch = unescaped.match(/<img[^>]+src="([^"]+)"/);
-  if (imgSrcMatch) return imgSrcMatch[1];
-
-  return null;
+  const unescaped = html.replace(/&lt;/g, "<").replace(/&gt;/g, ">").replace(/&amp;/g, "&").replace(/&quot;/g, '"');
+  return unescaped.match(/https:\/\/i\.redd\.it\/[^\s"'<>]+/)?.[0]
+    ?? unescaped.match(/https:\/\/i\.imgur\.com\/[^\s"'<>]+/)?.[0]
+    ?? unescaped.match(/<img[^>]+src="([^"]+)"/)?.[1]
+    ?? null;
 }
 
-// Parse Reddit Atom feed
 async function fetchRedditFeed(): Promise<RedditItem[]> {
   const res = await redditFetch(FEED_URL);
-  if (!res.ok) {
-    console.error(`Failed to fetch feed: ${res.status}`);
-    return [];
-  }
-
+  if (!res.ok) { console.error(`Failed to fetch feed: ${res.status}`); return []; }
   const xml = await res.text();
   const items: RedditItem[] = [];
-
-  // Reddit uses Atom format with <entry> elements
-  const entryMatches = xml.match(/<entry>[\s\S]*?<\/entry>/g) || [];
-  for (const entryXml of entryMatches) {
-    const title = entryXml.match(/<title>([\s\S]*?)<\/title>/)?.[1]
-      ?.replace(/&lt;/g, "<")
-      .replace(/&gt;/g, ">")
-      .replace(/&amp;/g, "&")
-      .trim() || "";
-
-    // Atom uses <link href="..."/> format
-    const link = entryXml.match(/<link[^>]+href="([^"]+)"/)?.[1] || "";
-
-    // Content contains the HTML with image
-    const content = entryXml.match(/<content[^>]*>([\s\S]*?)<\/content>/)?.[1] || "";
+  for (const entry of xml.match(/<entry>[\s\S]*?<\/entry>/g) || []) {
+    const title = entry.match(/<title>([\s\S]*?)<\/title>/)?.[1]
+      ?.replace(/&lt;/g, "<").replace(/&gt;/g, ">").replace(/&amp;/g, "&").trim() || "";
+    const link = entry.match(/<link[^>]+href="([^"]+)"/)?.[1] || "";
+    const content = entry.match(/<content[^>]*>([\s\S]*?)<\/content>/)?.[1] || "";
     const imageUrl = extractImageUrl(content);
-
-    // Author is in <author><name>/u/username</name></author>
-    const author = entryXml.match(/<author>[\s\S]*?<name>([^<]+)<\/name>/)?.[1]
-      ?.trim() || "";
-
-    if (title && link)
-      items.push({ title, link, imageUrl, author });
+    const author = entry.match(/<author>[\s\S]*?<name>([^<]+)<\/name>/)?.[1]?.trim() || "";
+    if (title && link) items.push({ title, link, imageUrl, author });
   }
-
   return items;
 }
 
-// Post a single item to ding
-async function postItem(item: RedditItem): Promise<boolean> {
-  const lines = [
-    item.title,
-    "",
-    item.link,
-  ];
-
-  // Add image URL if found
-  if (item.imageUrl)
-    lines.push("", item.imageUrl);
-
-  // Attribution
-  lines.push("", `via ${item.author} on r/hmmm`);
-
-  const body = lines.join("\n");
-  const tags = "#hmmm #reddit #bot";
-
-  const formData = new FormData();
-  formData.append("body", body);
-  formData.append("tags", tags);
-
-  const res = await fetch(`${DING_API_URL}/c`, {
-    method: "POST",
-    headers: { Authorization: `Basic ${auth}` },
-    body: formData,
-  });
-
-  return res.ok;
-}
-
-// Main
 async function main() {
-  if (!BOT_EMAIL || !BOT_PASSWORD) {
-    console.error("Missing BOT_HMMM_EMAIL or BOT_HMMM_PASSWORD");
-    Deno.exit(1);
-  }
-
-  const postedUrls = await getPostedUrls();
+  const postedUrls = await getPostedUrls(auth, apiUrl, botUsername);
   console.log(`Found ${postedUrls.size} previously posted URLs`);
 
   const items = await fetchRedditFeed();
   console.log(`Fetched ${items.length} items from r/hmmm`);
 
-  // Filter to new items only (dedup by Reddit post URL)
-  const newItems = items.filter((item) => !postedUrls.has(item.link));
+  const newItems = items.filter((i) => !postedUrls.has(i.link));
   console.log(`Found ${newItems.length} new items to post`);
 
-  // Post up to 3 per run (be polite; cron fires every 5 min)
   for (const item of newItems.slice(0, 3)) {
+    const lines = [item.title, "", item.link];
+    if (item.imageUrl) lines.push("", item.imageUrl);
+    lines.push("", `via ${item.author} on r/hmmm`);
     console.log(`Posting: ${item.title.slice(0, 60)}...`);
-    const ok = await postItem(item);
-    if (!ok) console.error(`Failed to post: ${item.title}`);
+    if (!await post(auth, apiUrl, lines.join("\n"), "#hmmm #reddit #bot")) {
+      console.error(`Failed to post: ${item.title}`);
+    }
   }
 }
 

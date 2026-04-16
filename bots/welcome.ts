@@ -1,4 +1,4 @@
-import { botInit, post } from "../bots.ts";
+import { botInit, getJson, post } from "../bots.ts";
 
 const MAX_PER_RUN = 10;
 
@@ -6,19 +6,15 @@ async function main() {
   const { apiUrl, auth, botUsername } = botInit("WELCOME");
 
   const [users, mine] = await Promise.all([
-    fetch(`${apiUrl}/us?limit=200`, {
-      headers: { Accept: "application/json", Authorization: `Basic ${auth}` },
-    }).then((r) => r.ok ? r.json() : []),
-    fetch(`${apiUrl}/c?usr=${botUsername}&limit=200`, {
-      headers: { Accept: "application/json", Authorization: `Basic ${auth}` },
-    }).then((r) => r.ok ? r.json() : []),
+    getJson<{ name: string }[]>(`/us?limit=200`, auth, apiUrl).catch(() => []),
+    getJson<{ body?: string }[]>(`/c?usr=${botUsername}&limit=200`, auth, apiUrl).catch(() => []),
   ]);
 
   const welcomed = new Set<string>();
-  for (const p of mine as { body?: string }[])
+  for (const p of mine)
     for (const m of (p.body ?? "").matchAll(/@(\w+)/g)) welcomed.add(m[1].toLowerCase());
 
-  const todo = (users as { name: string }[])
+  const todo = users
     .filter((u) => u.name.toLowerCase() !== botUsername.toLowerCase() && !welcomed.has(u.name.toLowerCase()))
     .reverse()
     .slice(0, MAX_PER_RUN);

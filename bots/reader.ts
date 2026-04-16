@@ -1,4 +1,4 @@
-import { botInit, extractArticle, extractImageUrl, firstLink, getAnsweredCids, reply } from "../bots.ts";
+import { botInit, extractArticle, extractImageUrl, firstLink, getAnsweredCids, getJson, reply } from "../bots.ts";
 
 const MAX_CHARS = 5000;
 
@@ -7,12 +7,8 @@ async function main() {
   const answered = await getAnsweredCids(auth, botUsername, apiUrl);
 
   const [top, comments] = await Promise.all([
-    fetch(`${apiUrl}/c?sort=new&limit=50`, {
-      headers: { Accept: "application/json", Authorization: `Basic ${auth}` },
-    }).then((r) => r.ok ? r.json() : []),
-    fetch(`${apiUrl}/c?sort=new&comments=1&limit=50`, {
-      headers: { Accept: "application/json", Authorization: `Basic ${auth}` },
-    }).then((r) => r.ok ? r.json() : []),
+    getJson<any[]>(`/c?sort=new&limit=50`, auth, apiUrl).catch(() => []),
+    getJson<any[]>(`/c?sort=new&comments=1&limit=50`, auth, apiUrl).catch(() => []),
   ]);
   const seen = new Set<number>();
   const posts: { cid: number; body: string; created_by: string }[] = [...top, ...comments]
@@ -25,9 +21,7 @@ async function main() {
     try {
       const h = new URL(url).hostname;
       if (h === "ding.bar" || h.endsWith(".ding.bar")) return false;
-    } catch {
-      return false;
-    }
+    } catch { return false; }
     if (extractImageUrl(p.body)) return false;
     return true;
   });

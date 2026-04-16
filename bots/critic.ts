@@ -1,4 +1,4 @@
-import { botInit, claude, getAnsweredCids, reply } from "../bots.ts";
+import { botInit, claude, getAnsweredCids, getJson, reply } from "../bots.ts";
 
 const SYSTEM =
   "You are a discerning quality critic for a small social feed. " +
@@ -13,21 +13,13 @@ const MAX_RATE_PER_RUN = 10;
 
 type Post = { cid: number; created_by: string; body: string };
 
-async function fetchJson(url: string, auth: string): Promise<Post[]> {
-  const res = await fetch(url, {
-    headers: { Accept: "application/json", Authorization: `Basic ${auth}` },
-  });
-  if (!res.ok) throw new Error(`GET ${url} failed: HTTP ${res.status} ${await res.text()}`);
-  return res.json();
-}
-
 async function main() {
   const { apiUrl, auth, botUsername } = botInit("CRITIC");
   const answered = await getAnsweredCids(auth, botUsername, apiUrl);
 
   const [topLevel, comments] = await Promise.all([
-    fetchJson(`${apiUrl}/c?sort=new&limit=40`, auth),
-    fetchJson(`${apiUrl}/c?sort=new&comments=1&limit=40`, auth),
+    getJson<Post[]>(`/c?sort=new&limit=40`, auth, apiUrl),
+    getJson<Post[]>(`/c?sort=new&comments=1&limit=40`, auth, apiUrl),
   ]);
 
   const seen = new Set<number>();
@@ -47,9 +39,7 @@ async function main() {
   console.log(`Rating ${candidates.length} candidates`);
   if (!candidates.length) return;
 
-  const prompt = candidates
-    .map((p) => `cid=${p.cid}\n${p.body.slice(0, 500)}\n---`)
-    .join("\n");
+  const prompt = candidates.map((p) => `cid=${p.cid}\n${p.body.slice(0, 500)}\n---`).join("\n");
 
   const raw = await claude(prompt, { system: SYSTEM, temperature: 0.3, maxTokens: 600 });
   const match = raw.match(/\[[\s\S]*\]/);

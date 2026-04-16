@@ -1,4 +1,4 @@
-import { botInit, getAnsweredCids, reply, resolveTextContent } from "../bots.ts";
+import { botInit, getAnsweredCids, getJson, reply, resolveTextContent } from "../bots.ts";
 
 const { apiUrl, auth, botUsername } = botInit("COWSAY");
 
@@ -90,12 +90,11 @@ const ANIMAL_KEYS = ["cow", "tux", "stegosaurus", "dragon"];
 
 async function main() {
   const answeredCids = await getAnsweredCids(auth, botUsername, apiUrl);
-
-  const res = await fetch(`${apiUrl}/c?tag=cowsay&sort=new&limit=20`, {
-    headers: { Accept: "application/json", Authorization: `Basic ${auth}` },
-  });
-  if (!res.ok) throw new Error(`Failed to fetch #cowsay posts: ${res.status}`);
-  const posts: { cid: number; parent_cid: number | null; created_by: string; body: string }[] = await res.json();
+  const posts = await getJson<{ cid: number; parent_cid: number | null; created_by: string; body: string }[]>(
+    `/c?tag=cowsay&sort=new&limit=20`,
+    auth,
+    apiUrl,
+  );
 
   const unanswered = posts.filter((p) => p.created_by !== botUsername && !answeredCids.has(p.cid));
   let replies = 0;
