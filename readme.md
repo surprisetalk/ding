@@ -36,6 +36,7 @@ prereqs: [deno](https://deno.com/), `postgresql`, `postgresql-contrib`, & `postg
 psql -d postgres -c "create database ding"
 psql -d ding -x < db.sql
 deno serve --watch -A --env server.tsx
+git config core.hooksPath .githooks  # enable pre-commit hook
 ```
 
 ## tests

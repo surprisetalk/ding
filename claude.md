@@ -21,6 +21,9 @@ deno run -A bots/hn.ts
 # Database setup
 psql -d postgres -c "create database ding"
 psql -d ding -x < db.sql
+
+# Enable pre-commit hook (one-time per clone)
+git config core.hooksPath .githooks
 ```
 
 ## Architecture
