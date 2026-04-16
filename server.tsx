@@ -1,13 +1,13 @@
-// deno-lint-ignore-file no-explicit-any
 //// IMPORTS ///////////////////////////////////////////////////////////////////
 
 import { Context, Hono } from "@hono/hono";
+import { Fragment } from "@hono/hono/jsx";
 import { HTTPException } from "@hono/hono/http-exception";
 import { some } from "@hono/hono/combine";
 import { createMiddleware } from "@hono/hono/factory";
 import { logger } from "@hono/hono/logger";
 import { basicAuth } from "@hono/hono/basic-auth";
-import { html } from "@hono/hono/html";
+import { html, raw } from "@hono/hono/html";
 import { deleteCookie, getSignedCookie, setSignedCookie } from "@hono/hono/cookie";
 import { serveStatic } from "@hono/hono/deno";
 import pg from "postgres";
@@ -20,17 +20,21 @@ import Stripe from "stripe";
 const escapeXml = (s: string) =>
   s.replace(/[&<>"']/g, (m) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&apos;" }[m]!));
 const extractFirstUrl = (b: string) => b.match(/https?:\/\/[^\s]+/)?.[0] || null;
-export const extractLinks = (b: string) =>
-  [...b.matchAll(/https:\/\/ding\.bar\/c\/(\d+)/g)].map(m => parseInt(m[1]));
-export const extractMentions = (b: string) =>
-  [...new Set([...b.matchAll(/@([0-9a-zA-Z_]{4,32})/g)].map(m => m[1].toLowerCase()))];
+export const extractLinks = (b: string) => [...b.matchAll(/https:\/\/ding\.bar\/c\/(\d+)/g)].map((m) => parseInt(m[1]));
+export const extractMentions = (
+  b: string,
+) => [...new Set([...b.matchAll(/@([0-9a-zA-Z_]{4,32})/g)].map((m) => m[1].toLowerCase()))];
 export const extractImageUrl = (b: string) =>
   b.match(/https?:\/\/[^\s]+\.(?:jpe?g|png|gif|webp|svg)(?:\?[^\s]*)?/i)?.[0] || null;
 
 const extractDomain = (b: string) => {
   const u = extractFirstUrl(b);
   if (!u) return null;
-  try { return new URL(u).hostname; } catch { return null; }
+  try {
+    return new URL(u).hostname;
+  } catch {
+    return null;
+  }
 };
 
 const refreshScores = async (pid: string | number) => {
@@ -104,7 +108,9 @@ const buildAdditiveLink = (p: URLSearchParams | undefined, k: string, v: string)
 
 //// EMAIL TOKEN ///////////////////////////////////////////////////////////////
 
-const SECRET = Deno.env.get("EMAIL_TOKEN_SECRET") ?? (() => { throw new Error("EMAIL_TOKEN_SECRET required") })();
+const SECRET = Deno.env.get("EMAIL_TOKEN_SECRET") ?? (() => {
+  throw new Error("EMAIL_TOKEN_SECRET required");
+})();
 
 export const emailToken = async (ts: Date, email: string) => {
   const epoch = Math.floor(ts.getTime() / 1000);
@@ -144,7 +150,9 @@ const sendVerify = async (email: string) => {
     to: email,
     from: Deno.env.get("RESEND_FROM_EMAIL") ?? "noreply@ding.bar",
     subject: "Verify your email",
-    text: `Welcome to ding.\n\nPlease verify your email: https://ding.bar/password?email=${encodeURIComponent(email)}&token=${encodeURIComponent(token)}`,
+    text: `Welcome to ding.\n\nPlease verify your email: https://ding.bar/password?email=${
+      encodeURIComponent(email)
+    }&token=${encodeURIComponent(token)}`,
   });
   if (error) {
     console.error(`Could not send verification email to ${email}:`, error);
@@ -208,7 +216,7 @@ const SortToggle = ({ sort, baseHref, title }: { sort: string; baseHref: string;
       <span style="text-overflow:hidden;overflow:hidden;opacity:0.5;">{". ".repeat(100)}</span>
       <span style="font-size:0.85rem;">
         {["hot", "new", "top"].map((s, i) => (
-          <>{i > 0 && " • "}{sort === s ? s : <a href={href(s)}>{s}</a>}</>
+          <Fragment key={s}>{i > 0 && " • "}{sort === s ? s : <a href={href(s)}>{s}</a>}</Fragment>
         ))}
       </span>
     </nav>
@@ -265,10 +273,10 @@ const Comment = (c: any, user?: string) => (
       <a href={`/u/${c.created_by}`}>@{c.created_by || "unknown"}</a>
       {c.body && user == c.created_by && <a href={`/c/${c.cid}/delete`}>delete</a>}
       <a href={`/c/${c.cid}`}>reply</a>
-      {formatLabels(c).map((l) => (
-        <a key={l} href={`/c?${PFX[l[0]] ?? "tag"}=${l.slice(1)}`}>{l}</a>
-      ))}
-      <span class="reaction"><a href={`/c/${c.cid}`}>» {c.comments || 0}</a></span>
+      {formatLabels(c).map((l) => <a key={l} href={`/c?${PFX[l[0]] ?? "tag"}=${l.slice(1)}`}>{l}</a>)}
+      <span class="reaction">
+        <a href={`/c/${c.cid}`}>» {c.comments || 0}</a>
+      </span>
       {Reactions(c)}
     </div>
     <pre>{(c.c_flags >= FLAG_THRESHOLD && user !== c.created_by) ? "[flagged]" : (c.body || "[deleted by author]")}</pre>
@@ -282,34 +290,40 @@ const defaultThumb =
 const Post = (c: any, user?: string, p?: URLSearchParams) => {
   const linkUrl = (c.body && extractFirstUrl(c.body)) || null;
   return (
-  <>
-    <a href={linkUrl ?? `/c/${c.cid}`} class="thumb" {...(linkUrl ? { target: "_blank", rel: "noopener" } : {})}>
-      <img src={c.thumb ? `/img?url=${encodeURIComponent(c.thumb)}` : defaultThumb} loading="lazy" onerror={`this.onerror=null;this.src='${defaultThumb}'`} />
-    </a>
-    <div class="post-content">
-      <span>
-        <a href={`/c/${c.cid}`}>
-          {c.body
-            ? (c.body.trim().split("\n")[0].slice(0, 60) + (c.body.length > 60 ? "…" : "")).padEnd(40, " .")
-            : "[deleted by author]"}
-        </a>
-      </span>
-      <div>
-        <a href={`/c/${c.cid}`}>{new Date(c.created_at).toLocaleDateString()}</a>
-        {c.parent_cid && <a href={`/c/${c.parent_cid}`}>parent</a>}
-        <a href={`/u/${c.created_by}`}>@{c.created_by}</a>
-        {c.body && user == c.created_by && <a href={`/c/${c.cid}/delete`}>delete</a>}
-        <a href={`/c/${c.cid}`}>reply</a>
-        {formatLabels(c).map((l) => (
-          <a key={l} href={buildAdditiveLink(p, PFX[l[0]] ?? "tag", l.slice(1))}>
-            {l}
+    <>
+      <a href={linkUrl ?? `/c/${c.cid}`} class="thumb" {...(linkUrl ? { target: "_blank", rel: "noopener" } : {})}>
+        <img
+          src={c.thumb ? `/img?url=${encodeURIComponent(c.thumb)}` : defaultThumb}
+          loading="lazy"
+          onerror={`this.onerror=null;this.src='${defaultThumb}'`}
+        />
+      </a>
+      <div class="post-content">
+        <span>
+          <a href={`/c/${c.cid}`}>
+            {c.body
+              ? (c.body.trim().split("\n")[0].slice(0, 60) + (c.body.length > 60 ? "…" : "")).padEnd(40, " .")
+              : "[deleted by author]"}
           </a>
-        ))}
-        <span class="reaction"><a href={`/c/${c.cid}`}>» {c.comments || 0}</a></span>
-        {Reactions(c)}
+        </span>
+        <div>
+          <a href={`/c/${c.cid}`}>{new Date(c.created_at).toLocaleDateString()}</a>
+          {c.parent_cid && <a href={`/c/${c.parent_cid}`}>parent</a>}
+          <a href={`/u/${c.created_by}`}>@{c.created_by}</a>
+          {c.body && user == c.created_by && <a href={`/c/${c.cid}/delete`}>delete</a>}
+          <a href={`/c/${c.cid}`}>reply</a>
+          {formatLabels(c).map((l) => (
+            <a key={l} href={buildAdditiveLink(p, PFX[l[0]] ?? "tag", l.slice(1))}>
+              {l}
+            </a>
+          ))}
+          <span class="reaction">
+            <a href={`/c/${c.cid}`}>» {c.comments || 0}</a>
+          </span>
+          {Reactions(c)}
+        </div>
       </div>
-    </div>
-  </>
+    </>
   );
 };
 
@@ -341,8 +355,9 @@ const basicAuthName = async (c: Context): Promise<string | null> => {
   if (!a?.startsWith("Basic ")) return null;
   try {
     const [u, ...rest] = atob(a.slice(6)).split(":");
-    const [usr] =
-      await sql`select name from usr where (email=${u} or name=${u}) and password=crypt(${rest.join(":")}, password)`;
+    const [usr] = await sql`select name from usr where (email=${u} or name=${u}) and password=crypt(${
+      rest.join(":")
+    }, password)`;
     return usr?.name ?? null;
   } catch {
     return null;
@@ -391,6 +406,55 @@ app.use("*", async (c, next) => {
     `;
     unread = row?.c || 0;
   }
+  const scriptBody = `
+    document.querySelectorAll("pre").forEach(x => {
+      x.innerHTML = x.innerHTML.replace(/(https?:\\/\\/\\S+)/g, u => {
+        const isImg = /\\.(jpe?g|png|gif|webp|svg)(\\?.*)?$/i.test(u) || /^https?:\\/\\/(i\\.redd\\.it|i\\.imgur\\.com|pbs\\.twimg\\.com)\\//i.test(u);
+        return isImg ? '<a href="'+u+'">'+u+'</a><br><img src="'+u+'" loading="lazy" style="max-width:100%;max-height:400px;">' : '<a href="'+u+'">'+u+'</a>';
+      });
+    });
+    const fr = document.getElementById("search-form");
+    if (fr) fr.onsubmit = e => {
+      e.preventDefault();
+      const v = fr.querySelector('input[name="search"]').value, p = new URLSearchParams();
+      v.split(/\\s+/).filter(Boolean).forEach(t => {
+        const k = {"#":"tag","*":"org","@":"usr","~":"www"}[t[0]];
+        if (k) p.append(k, t.slice(1).toLowerCase()); else p.set("q", (p.get("q") ? p.get("q") + " " : "") + t);
+      });
+      window.location.href = "/c?" + p;
+    };
+    ${
+    n
+      ? `
+    (async () => {
+      if (!("Notification" in window)) return;
+      if (Notification.permission === "default") {
+        const b = document.createElement("button");
+        b.textContent = "🔔 enable notifications";
+        b.style.cssText = "position:fixed;bottom:0.5rem;right:0.5rem;font-size:0.75rem;opacity:0.7;z-index:10;";
+        b.onclick = async () => { await Notification.requestPermission(); b.remove(); };
+        document.body.appendChild(b);
+      }
+      let last = ${unread};
+      setInterval(async () => {
+        try {
+          const r = await fetch("/n/unread", { credentials: "same-origin" });
+          if (!r.ok) return;
+          const d = await r.json();
+          if (d.count > last && Notification.permission === "granted") {
+            (d.latest || []).slice(0, d.count - last).forEach(x => {
+              const nn = new Notification("ding", { body: x.title });
+              nn.onclick = () => { window.open(x.url, "_blank"); nn.close(); };
+            });
+          }
+          last = d.count;
+        } catch {}
+      }, 60000);
+    })();
+    `
+      : ""
+  }
+  `;
   c.setRenderer((content: any, props?: any) =>
     c.html(html`
       <!DOCTYPE html>
@@ -407,7 +471,13 @@ app.use("*", async (c, next) => {
             <section>
               <a href="/" style="letter-spacing:10px;font-weight:700;width:100%;">▢ding</a>
               <a href="/o/new" style="letter-spacing:2px;font-size:0.875rem;opacity:0.8;"> +org </a>
-              ${n ? html`<a href="/n" style="letter-spacing:2px;font-size:0.875rem;opacity:0.8;"> inbox${unread ? ` (${unread})` : ""} </a>` : ""}
+              ${n
+                ? html`
+                  <a href="/n" style="letter-spacing:2px;font-size:0.875rem;opacity:0.8;"> inbox${unread
+                    ? ` (${unread})`
+                    : ""} </a>
+                `
+                : ""}
               <a href="/u" style="letter-spacing:2px;font-size:0.875rem;opacity:0.8;">${c.get("name")
                 ? "@" + c.get("name")
                 : "account"}</a>
@@ -417,49 +487,7 @@ app.use("*", async (c, next) => {
           </header>
           <main>${content}</main>
           <script>
-          document.querySelectorAll("pre").forEach(x => {
-            x.innerHTML = x.innerHTML.replace(/(https?:\\/\\/\\S+)/g, u => {
-              const isImg = /\\.(jpe?g|png|gif|webp|svg)(\\?.*)?$/i.test(u) || /^https?:\\/\\/(i\\.redd\\.it|i\\.imgur\\.com|pbs\\.twimg\\.com)\\//i.test(u);
-              return isImg ? '<a href="'+u+'">'+u+'</a><br><img src="'+u+'" loading="lazy" style="max-width:100%;max-height:400px;">' : '<a href="'+u+'">'+u+'</a>';
-            });
-          });
-          const fr = document.getElementById("search-form");
-          if (fr) fr.onsubmit = e => {
-            e.preventDefault();
-            const v = fr.querySelector('input[name="search"]').value, p = new URLSearchParams();
-            v.split(/\\s+/).filter(Boolean).forEach(t => {
-              const k = {"#":"tag","*":"org","@":"usr","~":"www"}[t[0]];
-              if (k) p.append(k, t.slice(1).toLowerCase()); else p.set("q", (p.get("q") ? p.get("q") + " " : "") + t);
-            });
-            window.location.href = "/c?" + p;
-          };
-${n ? html`
-          (async () => {
-            if (!("Notification" in window)) return;
-            if (Notification.permission === "default") {
-              const b = document.createElement("button");
-              b.textContent = "🔔 enable notifications";
-              b.style.cssText = "position:fixed;bottom:0.5rem;right:0.5rem;font-size:0.75rem;opacity:0.7;z-index:10;";
-              b.onclick = async () => { await Notification.requestPermission(); b.remove(); };
-              document.body.appendChild(b);
-            }
-            let last = ${unread};
-            setInterval(async () => {
-              try {
-                const r = await fetch("/n/unread", { credentials: "same-origin" });
-                if (!r.ok) return;
-                const d = await r.json();
-                if (d.count > last && Notification.permission === "granted") {
-                  (d.latest || []).slice(0, d.count - last).forEach(x => {
-                    const nn = new Notification("ding", { body: x.title });
-                    nn.onclick = () => { window.open(x.url, "_blank"); nn.close(); };
-                  });
-                }
-                last = d.count;
-              } catch {}
-            }, 60000);
-          })();
-          ` : ""}
+          ${raw(scriptBody)}
           </script>
         </body>
       </html>
@@ -478,7 +506,12 @@ app.onError((err, c) => {
   if (h === "api") return c.json({ error: msg }, 500);
   if (h === "rss") return c.text(msg, 500);
   c.status(500);
-  return (c as any).render(<section><p>{msg}</p></section>, { title: "error" });
+  return (c as any).render(
+    <section>
+      <p>{msg}</p>
+    </section>,
+    { title: "error" },
+  );
 });
 
 app.get("/", async (c) => {
@@ -508,18 +541,16 @@ app.get("/", async (c) => {
       array(select jsonb_build_object('body', ch.body, 'created_by', ch.created_by, 'cid', ch.cid, 'created_at', ch.created_at, 'c_flags', ch.c_flags,
         'comments', (select count(*) from com c2 where c2.parent_cid = ch.cid and char_length(c2.body) > 1),
         'reaction_counts', (select coalesce(jsonb_object_agg(body, cnt), '{}') from (select body, count(*) as cnt from com where parent_cid = ch.cid and char_length(body) = 1 group by body) r),
-        'user_reactions', array(select body from com where parent_cid = ch.cid and char_length(body) = 1 and created_by = ${name || ""})
+        'user_reactions', array(select body from com where parent_cid = ch.cid and char_length(body) = 1 and created_by = ${
+    name || ""
+  })
       ) from com ch where ch.parent_cid = c.cid and char_length(ch.body) > 1 order by ch.created_at desc) as child_comments
     from com c where parent_cid is null and orgs <@ ${rT}::text[] and (usrs = '{}' or ${name || ""}::text = any(usrs))
     ${tags.length ? sql`and tags @> ${tags}::text[]` : sql``}
     ${orgs.length ? sql`and orgs @> ${orgs}::text[]` : sql``}
     ${usrs.length ? sql`and usrs @> ${usrs}::text[]` : sql``}
     order by ${
-    s === "new"
-      ? sql`created_at desc`
-      : s === "top"
-      ? sql`reaction_count desc, created_at desc`
-      : sql`score desc`
+    s === "new" ? sql`created_at desc` : s === "top" ? sql`reaction_count desc, created_at desc` : sql`score desc`
   }
     offset ${p * 25} limit 25
   `;
@@ -582,8 +613,11 @@ app.post("/login", async (c) => {
   const [u] =
     await sql`select name, email, email_verified_at, (password = crypt(${password}, password)) as ok from usr where email=${email}`;
   if (!u?.ok) throw new HTTPException(401);
-  if (!u.email_verified_at && !(await getSignedCookie(c, cookieSecret, "name")))
-    sendVerify(u.email).catch((err) => console.error(`/login resend failed for ${u.email}:`, err?.response?.body || err));
+  if (!u.email_verified_at && !(await getSignedCookie(c, cookieSecret, "name"))) {
+    sendVerify(u.email).catch((err) =>
+      console.error(`/login resend failed for ${u.email}:`, err?.response?.body || err)
+    );
+  }
   await setSignedCookie(c, "name", u.name, cookieSecret);
   return c.redirect(c.req.query("next")?.startsWith("/") ? c.req.query("next")! : "/u");
 });
@@ -660,7 +694,9 @@ app.get("/signup", (c) => {
   const messages: Record<string, any> = {
     name_taken: <p>That username is already taken. Pick another.</p>,
     already_verified: (
-      <p>That email is already registered. <a href="/forgot">Forgot your password?</a></p>
+      <p>
+        That email is already registered. <a href="/forgot">Forgot your password?</a>
+      </p>
     ),
     email_failed: (
       <p>
@@ -801,7 +837,8 @@ app.post("/u", authed, async (c) => {
   return c.redirect("/u");
 });
 
-const notifQuery = (name: string, orgs_r: string[]) => sql`
+const notifQuery = (name: string, orgs_r: string[]) =>
+  sql`
   select c.*, (c.created_at > u.last_seen_at) as unread,
     case when ${name}::text = any(c.usrs) then 'mention' else 'reply' end as kind
   from com c
@@ -826,20 +863,22 @@ app.get("/n", authed, async (c) => {
     <>
       <section>
         <h2>notifications</h2>
-        <p style="font-size:0.75rem;opacity:0.6;margin:0.25rem 0 1rem 0;">mentions and replies. unread items are highlighted.</p>
+        <p style="font-size:0.75rem;opacity:0.6;margin:0.25rem 0 1rem 0;">
+          mentions and replies. unread items are highlighted.
+        </p>
       </section>
       <section>
-        {items.length === 0
-          ? <p style="opacity:0.6;">no notifications yet.</p>
-          : items.map((i: any) => (
-            <div
-              key={i.cid}
-              style={`border-left: 3px solid ${i.unread ? "currentColor" : "transparent"}; padding-left: 0.5rem; margin-bottom: 0.5rem;`}
-            >
-              <div style="font-size:0.75rem;opacity:0.6;">{i.kind}</div>
-              {Comment(i, name)}
-            </div>
-          ))}
+        {items.length === 0 ? <p style="opacity:0.6;">no notifications yet.</p> : items.map((i: any) => (
+          <div
+            key={i.cid}
+            style={`border-left: 3px solid ${
+              i.unread ? "currentColor" : "transparent"
+            }; padding-left: 0.5rem; margin-bottom: 0.5rem;`}
+          >
+            <div style="font-size:0.75rem;opacity:0.6;">{i.kind}</div>
+            {Comment(i, name)}
+          </div>
+        ))}
       </section>
     </>,
     { title: "notifications" },
@@ -1103,13 +1142,14 @@ app.post("/o/:name/invite", authed, async (c) => {
     items: [{ id: sub.items.data[0].id, quantity: newQty }],
   });
   try {
-    if (existing) {
+    if (existing)
       await sql`update usr set orgs_r = array_append(orgs_r, ${org.name}), orgs_w = array_append(orgs_w, ${org.name}) where name = ${existing.name}`;
-    } else {
+    else {
       const newName = crypto.randomUUID().replace(/-/g, "").slice(0, 12);
-      await sql`insert into usr (name, email, bio, invited_by, orgs_r, orgs_w) values (${newName}, ${email}, '...', ${c.get(
-        "name",
-      )!}, ${[org.name]}, ${[org.name]})`;
+      await sql`insert into usr (name, email, bio, invited_by, orgs_r, orgs_w) values (${newName}, ${email}, '...', ${c
+        .get(
+          "name",
+        )!}, ${[org.name]}, ${[org.name]})`;
       sendVerify(email);
     }
   } catch (err) {
@@ -1131,7 +1171,8 @@ app.post("/o/:name/remove", authed, async (c) => {
   const viewer = c.get("name");
   const isOwner = org.created_by === viewer;
   const isSelfLeave = paramName === viewer;
-  if (isOwner && isSelfLeave) throw new HTTPException(400, { message: "Owner cannot leave their own org — transfer or delete it first" });
+  if (isOwner && isSelfLeave)
+    throw new HTTPException(400, { message: "Owner cannot leave their own org — transfer or delete it first" });
   if (!isOwner && !isSelfLeave) throw new HTTPException(403, { message: "Only owner or self can remove" });
 
   const [member] = await sql`select name from usr where name = ${paramName} and ${org.name} = any(orgs_r)`;
@@ -1148,7 +1189,9 @@ app.post("/o/:name/remove", authed, async (c) => {
     await sql`update usr set orgs_r = array_remove(orgs_r, ${org.name}), orgs_w = array_remove(orgs_w, ${org.name}) where name = ${paramName}`;
   } catch (err) {
     console.error(
-      `DRIFT remove: decremented ${org.stripe_sub_id} to qty=${qty - 1} but SQL update for ${paramName} in ${org.name} failed.`,
+      `DRIFT remove: decremented ${org.stripe_sub_id} to qty=${
+        qty - 1
+      } but SQL update for ${paramName} in ${org.name} failed.`,
       err,
     );
     throw err;
@@ -1234,7 +1277,8 @@ app.post("/c/:p?", async (c) => {
   let tags: string[], orgs: string[], usrs: string[], prm: any = null;
 
   if (pid) {
-    [prm] = await sql`select tags, orgs, usrs, created_by, parent_cid as prm_parent, domain from com where cid = ${pid}`;
+    [prm] =
+      await sql`select tags, orgs, usrs, created_by, parent_cid as prm_parent, domain from com where cid = ${pid}`;
     if (!prm || !prm.orgs.every((t: any) => usr.orgs_r.includes(t)) || (prm.usrs.length && !prm.usrs.includes(n)))
       throw new HTTPException(403);
     tags = prm.tags;
@@ -1244,12 +1288,15 @@ app.post("/c/:p?", async (c) => {
     if (isReaction(b)) {
       if (prm.created_by === n)
         return c.redirect((prm.prm_parent ? `/c/${prm.prm_parent}#${pid}` : `/c/${pid}`) + "?err=self-react");
-      const [existing] = await sql`select cid from com where parent_cid = ${pid} and created_by = ${n} and body = ${b} and char_length(body) = 1 limit 1`;
+      const [existing] =
+        await sql`select cid from com where parent_cid = ${pid} and created_by = ${n} and body = ${b} and char_length(body) = 1 limit 1`;
       if (existing) {
-        await sql.begin((tx: any) => Promise.all([
-          tx`delete from com where cid = ${existing.cid}`,
-          tx`update com set c_reactions = c_reactions || hstore(${b}, greatest(coalesce((c_reactions->${b})::int,0)-1, 0)::text) where cid = ${pid}`,
-        ]));
+        await sql.begin((tx: any) =>
+          Promise.all([
+            tx`delete from com where cid = ${existing.cid}`,
+            tx`update com set c_reactions = c_reactions || hstore(${b}, greatest(coalesce((c_reactions->${b})::int,0)-1, 0)::text) where cid = ${pid}`,
+          ])
+        );
         await refreshScores(pid);
         return c.redirect(prm.prm_parent ? `/c/${prm.prm_parent}#${pid}` : `/c/${pid}`);
       }
@@ -1318,7 +1365,9 @@ app.get("/c/:cid?", async (c) => {
       array(select jsonb_build_object('body', ch.body, 'created_by', ch.created_by, 'cid', ch.cid, 'created_at', ch.created_at, 'tags', ch.tags, 'orgs', ch.orgs, 'usrs', ch.usrs, 'c_flags', ch.c_flags,
         'comments', (select count(*) from com c2 where c2.parent_cid = ch.cid and char_length(c2.body) > 1),
         'reaction_counts', (select coalesce(jsonb_object_agg(body, cnt), '{}') from (select body, count(*) as cnt from com where parent_cid = ch.cid and char_length(body) = 1 group by body) r),
-        'user_reactions', array(select body from com where parent_cid = ch.cid and char_length(body) = 1 and created_by = ${n || ""})
+        'user_reactions', array(select body from com where parent_cid = ch.cid and char_length(body) = 1 and created_by = ${
+    n || ""
+  })
       ) from com ch where ch.parent_cid = c.cid and char_length(ch.body) > 1 order by ch.created_at desc) as child_comments
     from com c where ${
     cid
@@ -1328,7 +1377,9 @@ app.get("/c/:cid?", async (c) => {
     ${usrs.length ? sql`and created_by = any(${usrs}::citext[])` : sql``}
     and tags @> ${tags}::text[] and orgs <@ ${rT}::text[] and (usrs = '{}' or ${n || ""}::text = any(usrs))
     ${orgs.length ? sql`and orgs && ${orgs}::text[]` : sql``}
-    ${mens.length ? sql`and (usrs && ${mens}::text[] or mentions && ${mens.map((m) => m.toLowerCase())}::text[])` : sql``}
+    ${
+    mens.length ? sql`and (usrs && ${mens}::text[] or mentions && ${mens.map((m) => m.toLowerCase())}::text[])` : sql``
+  }
     ${www.length ? sql`and body ~* ${www.join("|")}` : sql``}
     ${q.replies_to ? sql`and parent_cid in (select cid from com where created_by = ${q.replies_to})` : sql``}
     ${q.reactions ? sql`and char_length(body) = 1` : sql``}
@@ -1362,15 +1413,21 @@ app.get("/c/:cid?", async (c) => {
     const singleOrg = onlyFilter && orgs.length === 1 && !tags.length && !usrs.length ? orgs[0] : null;
     const singleUsr = onlyFilter && usrs.length === 1 && !tags.length && !orgs.length ? usrs[0] : null;
     const tagCount = singleTag
-      ? ((await sql`select count(*)::int as count from com where ${singleTag} = any(tags) and orgs <@ ${rT}::text[] and (usrs = '{}' or ${n || ""}::text = any(usrs))`)[0].count)
+      ? ((await sql`select count(*)::int as count from com where ${singleTag} = any(tags) and orgs <@ ${rT}::text[] and (usrs = '{}' or ${
+        n || ""
+      }::text = any(usrs))`)[0].count)
       : null;
     const orgInfo = singleOrg
-      ? (await sql`select (select count(*)::int from usr where ${singleOrg} = any(orgs_r)) as member_count, (select created_by from org where name = ${singleOrg}) as created_by`)[0]
+      ? (await sql`select (select count(*)::int from usr where ${singleOrg} = any(orgs_r)) as member_count, (select created_by from org where name = ${singleOrg}) as created_by`)[
+        0
+      ]
       : null;
     const orgMembers = orgInfo?.member_count ?? null;
     const orgCreatedBy = orgInfo?.created_by ?? null;
     const usrRow = singleUsr
-      ? (await sql`select u.name, u.bio, (select count(*)::int from com where created_by = ${singleUsr} and parent_cid is null and orgs <@ ${rT}::text[]) as post_count from usr u where u.name = ${singleUsr}`)[0]
+      ? (await sql`select u.name, u.bio, (select count(*)::int from com where created_by = ${singleUsr} and parent_cid is null and orgs <@ ${rT}::text[]) as post_count from usr u where u.name = ${singleUsr}`)[
+        0
+      ]
       : null;
     const usrPostCount = usrRow?.post_count ?? null;
     const userMatches = q.q
@@ -1404,7 +1461,8 @@ app.get("/c/:cid?", async (c) => {
                 {orgCreatedBy && (
                   <>
                     {" · "}created by <a href={`/u/${orgCreatedBy}`}>@{orgCreatedBy}</a>
-                    {" · "}<a href={`/o/${singleOrg}`}>settings</a>
+                    {" · "}
+                    <a href={`/o/${singleOrg}`}>settings</a>
                   </>
                 )}
               </p>
@@ -1417,7 +1475,8 @@ app.get("/c/:cid?", async (c) => {
             <div style="margin:1rem 0;">
               <h2 style="margin:0;">@{singleUsr}</h2>
               <p style="font-size:0.875rem;opacity:0.6;margin:0.25rem 0;">
-                {usrPostCount} post{usrPostCount === 1 ? "" : "s"}{" · "}
+                {usrPostCount} post{usrPostCount === 1 ? "" : "s"}
+                {" · "}
                 <a href={`/u/${singleUsr}`}>profile</a>
               </p>
               <p style="font-size:0.75rem;opacity:0.5;margin:0.25rem 0 0 0;">
@@ -1427,10 +1486,11 @@ app.get("/c/:cid?", async (c) => {
           )}
           {!singleTag && !singleOrg && !singleUsr && meta && <h2>{meta}</h2>}
           {q.q && userMatches.length > 0 && (
-            <div class="user-matches" style="display:flex;flex-wrap:wrap;gap:0.5rem;margin:0.5rem 0;font-size:0.875rem;">
-              {userMatches.map((u: any) => (
-                <a key={u.name} href={`/c?usr=${u.name}`}>@{u.name}</a>
-              ))}
+            <div
+              class="user-matches"
+              style="display:flex;flex-wrap:wrap;gap:0.5rem;margin:0.5rem 0;font-size:0.875rem;"
+            >
+              {userMatches.map((u: any) => <a key={u.name} href={`/c?usr=${u.name}`}>@{u.name}</a>)}
             </div>
           )}
           <SortToggle sort={s} baseHref={`/c?${cur}`} title="results" />
@@ -1453,10 +1513,17 @@ app.get("/c/:cid?", async (c) => {
 
   const post = items[0];
   if (!post) return notFound();
-  const backlinks = await sql`select cid, body, created_at from com where parent_cid is null and ${post.cid} = any(links) and orgs <@ ${rT}::text[] and (usrs = '{}' or ${n || ""}::text = any(usrs)) order by created_at desc limit 5`;
+  const backlinks =
+    await sql`select cid, body, created_at from com where parent_cid is null and ${post.cid} = any(links) and orgs <@ ${rT}::text[] and (usrs = '{}' or ${
+      n || ""
+    }::text = any(usrs)) order by created_at desc limit 5`;
   return (c as any).render(
     <>
-      {q.err === "self-react" && <section><p style="color:#c44;margin:0;">you cannot react to your own post</p></section>}
+      {q.err === "self-react" && (
+        <section>
+          <p style="color:#c44;margin:0;">you cannot react to your own post</p>
+        </section>
+      )}
       <section>
         {Comment({ ...post, child_comments: (post.child_comments || []).filter((r: any) => isReaction(r.body)) }, n)}
       </section>
@@ -1509,7 +1576,9 @@ app.get("/img", async (c) => {
   if (!res.ok) throw new HTTPException(502, { message: `upstream ${res.status}` });
   const ct = res.headers.get("content-type") || "image/png";
   if (!ct.startsWith("image/")) throw new HTTPException(400, { message: "not an image" });
-  return new Response(res.body, { headers: { "Content-Type": ct, "Cache-Control": "public, max-age=604800, immutable" } });
+  return new Response(res.body, {
+    headers: { "Content-Type": ct, "Cache-Control": "public, max-age=604800, immutable" },
+  });
 });
 
 app.use("/*", serveStatic({ root: "./public" }));
