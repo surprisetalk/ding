@@ -1,4 +1,4 @@
-import { botInit, claude, getAnsweredCids, getJson, reply } from "../bots.ts";
+import { botInit, claude, getAnsweredCids, getJson, isLinkPost, reply } from "../bots.ts";
 
 const SYSTEM = "You are a discerning quality critic for a small social feed. " +
   'For each post, rate it: "up" if it\'s genuinely interesting, funny, thoughtful, or well-crafted; ' +
@@ -32,7 +32,8 @@ async function main() {
     p.created_by !== botUsername &&
     !answered.has(p.cid) &&
     p.body.length > 1 &&
-    p.body.replace(/https?:\S+/g, "").trim().length >= 20
+    p.body.replace(/https?:\S+/g, "").trim().length >= 20 &&
+    !isLinkPost(p.body)
   ).slice(0, MAX_RATE_PER_RUN);
 
   console.log(`Rating ${candidates.length} candidates`);

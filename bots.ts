@@ -129,6 +129,11 @@ export function firstLink(body: string): string | null {
   return body.match(/https?:\/\/[^\s)]+/)?.[0] ?? null;
 }
 
+export function isLinkPost(body: string, threshold = 140): boolean {
+  if (!/https?:\/\//.test(body)) return false;
+  return body.replace(/https?:\S+/g, "").trim().length < threshold;
+}
+
 export async function extractArticle(
   url: string,
 ): Promise<{ title: string; text: string } | null> {
@@ -351,10 +356,11 @@ export async function pickCandidates(
   apiUrl: string,
   botUsername: string,
   answered: Set<number>,
-  opts: { pool?: number; minBodyLen?: number } = {},
+  opts: { pool?: number; minBodyLen?: number; excludeLinkPosts?: boolean } = {},
 ): Promise<{ cid: number; parent_cid: number | null; body: string; created_by: string; c_comments: number }[]> {
   const pool = opts.pool ?? 50;
   const minBodyLen = opts.minBodyLen ?? 30;
+  const excludeLinkPosts = opts.excludeLinkPosts ?? true;
   const [top, comments] = await Promise.all([
     getJson<any[]>(`/c?sort=new&limit=${pool}`, auth, apiUrl).catch(() => []),
     getJson<any[]>(`/c?sort=new&comments=1&limit=${pool}`, auth, apiUrl).catch(() => []),
@@ -370,7 +376,8 @@ export async function pickCandidates(
       p.created_by !== botUsername &&
       !answered.has(p.cid) &&
       p.body.length > 1 &&
-      p.body.replace(/https?:\S+/g, "").trim().length >= minBodyLen
+      p.body.replace(/https?:\S+/g, "").trim().length >= minBodyLen &&
+      (!excludeLinkPosts || !isLinkPost(p.body))
     )
     .map((p) => ({ p, c: Number(p.c_comments ?? 0), r: Math.random() }))
     .sort((a, b) => a.c - b.c || a.r - b.r)
