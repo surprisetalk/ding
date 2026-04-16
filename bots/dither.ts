@@ -12,16 +12,34 @@ const BRAILLE_MAP = [
 ];
 
 async function toBraille(imageBytes: Uint8Array): Promise<string> {
-  const cols = 80;
-  const rows = 40;
+  const cols = 40;
+  const rows = 20;
   const w = cols * 2;
   const h = rows * 4;
 
-  const { data: pixels } = await sharp(imageBytes)
+  const { data } = await sharp(imageBytes)
     .resize(w, h, { fit: "fill" })
     .grayscale()
+    .normalize()
     .raw()
     .toBuffer({ resolveWithObject: true });
+
+  const buf = new Float32Array(data);
+  for (let y = 0; y < h; y++) {
+    for (let x = 0; x < w; x++) {
+      const i = y * w + x;
+      const old = buf[i];
+      const nw = old < 128 ? 0 : 255;
+      buf[i] = nw;
+      const err = old - nw;
+      if (x + 1 < w) buf[i + 1] += err * 7 / 16;
+      if (y + 1 < h) {
+        if (x > 0) buf[i + w - 1] += err * 3 / 16;
+        buf[i + w] += err * 5 / 16;
+        if (x + 1 < w) buf[i + w + 1] += err * 1 / 16;
+      }
+    }
+  }
 
   const lines: string[] = [];
   for (let by = 0; by < rows; by++) {
@@ -30,9 +48,7 @@ async function toBraille(imageBytes: Uint8Array): Promise<string> {
       let code = 0;
       for (let r = 0; r < 4; r++) {
         for (let c = 0; c < 2; c++) {
-          const px = bx * 2 + c;
-          const py = by * 4 + r;
-          if (pixels[py * w + px] < 128) code |= BRAILLE_MAP[r][c];
+          if (buf[(by * 4 + r) * w + (bx * 2 + c)] < 128) code |= BRAILLE_MAP[r][c];
         }
       }
       line += String.fromCodePoint(0x2800 + code);
