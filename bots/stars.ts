@@ -9,10 +9,12 @@ function generate(): { name: string; grid: string } {
   const W = 30, H = 15;
   const cells: string[][] = Array.from({ length: H }, () => Array(W).fill(" "));
 
-  for (let y = 0; y < H; y++)
-    for (let x = 0; x < W; x++)
+  for (let y = 0; y < H; y++) {
+    for (let x = 0; x < W; x++) {
       if (rng() < 0.06)
         cells[y][x] = STAR_CHARS[Math.floor(rng() * STAR_CHARS.length)];
+    }
+  }
 
   const nameLen = 2 + Math.floor(rng() * 2);
   const name = Array.from({ length: nameLen }, () => SYLLABLES[Math.floor(rng() * SYLLABLES.length)]).join("");

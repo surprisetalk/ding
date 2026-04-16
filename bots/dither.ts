@@ -47,9 +47,8 @@ async function toBraille(imageBytes: Uint8Array): Promise<string> {
     for (let bx = 0; bx < cols; bx++) {
       let code = 0;
       for (let r = 0; r < 4; r++) {
-        for (let c = 0; c < 2; c++) {
+        for (let c = 0; c < 2; c++)
           if (buf[(by * 4 + r) * w + (bx * 2 + c)] < 128) code |= BRAILLE_MAP[r][c];
-        }
       }
       line += String.fromCodePoint(0x2800 + code);
     }
@@ -80,7 +79,10 @@ async function main() {
 
     console.log(`cid=${post.cid}: processing ${imageUrl}`);
     const imgRes = await fetch(imageUrl);
-    if (!imgRes.ok) { console.error(`Failed to fetch image: HTTP ${imgRes.status}`); continue; }
+    if (!imgRes.ok) {
+      console.error(`Failed to fetch image: HTTP ${imgRes.status}`);
+      continue;
+    }
     const imageBytes = new Uint8Array(await imgRes.arrayBuffer());
 
     const braille = await toBraille(imageBytes);

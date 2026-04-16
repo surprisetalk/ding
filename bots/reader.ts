@@ -21,7 +21,9 @@ async function main() {
     try {
       const h = new URL(url).hostname;
       if (h === "ding.bar" || h.endsWith(".ding.bar")) return false;
-    } catch { return false; }
+    } catch {
+      return false;
+    }
     if (extractImageUrl(p.body)) return false;
     return true;
   });

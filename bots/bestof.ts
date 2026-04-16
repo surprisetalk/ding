@@ -30,7 +30,11 @@ async function fetchRecent(windowMs: number, maxPages: number): Promise<Post[]> 
     }
     if (items.length < 100) return out;
   }
-  throw new Error(`fetchRecent hit maxPages=${maxPages} before reaching cutoff ${new Date(cutoff).toISOString()} — digest would be truncated`);
+  throw new Error(
+    `fetchRecent hit maxPages=${maxPages} before reaching cutoff ${
+      new Date(cutoff).toISOString()
+    } — digest would be truncated`,
+  );
 }
 
 type Period = {
@@ -42,14 +46,28 @@ type Period = {
 };
 
 const PERIODS: Period[] = [
-  { tag: "daily", windowMs: DAY, minGapMs: 20 * 3_600_000, maxPages: 2,
-    label: (d) => d.toLocaleString("en-US", { month: "short", day: "numeric" }) },
-  { tag: "weekly", windowMs: 7 * DAY, minGapMs: 6 * DAY, maxPages: 5,
-    label: (d) => `week of ${d.toLocaleString("en-US", { month: "short", day: "numeric" })}` },
-  { tag: "monthly", windowMs: 30 * DAY, minGapMs: 28 * DAY, maxPages: 15,
-    label: (d) => d.toLocaleString("en-US", { month: "long", year: "numeric" }) },
-  { tag: "yearly", windowMs: 365 * DAY, minGapMs: 360 * DAY, maxPages: 50,
-    label: (d) => String(d.getFullYear()) },
+  {
+    tag: "daily",
+    windowMs: DAY,
+    minGapMs: 20 * 3_600_000,
+    maxPages: 2,
+    label: (d) => d.toLocaleString("en-US", { month: "short", day: "numeric" }),
+  },
+  {
+    tag: "weekly",
+    windowMs: 7 * DAY,
+    minGapMs: 6 * DAY,
+    maxPages: 5,
+    label: (d) => `week of ${d.toLocaleString("en-US", { month: "short", day: "numeric" })}`,
+  },
+  {
+    tag: "monthly",
+    windowMs: 30 * DAY,
+    minGapMs: 28 * DAY,
+    maxPages: 15,
+    label: (d) => d.toLocaleString("en-US", { month: "long", year: "numeric" }),
+  },
+  { tag: "yearly", windowMs: 365 * DAY, minGapMs: 360 * DAY, maxPages: 50, label: (d) => String(d.getFullYear()) },
 ];
 
 const EXCLUDED_TAGS = new Set(["bot", "bestof", "daily", "weekly", "monthly", "yearly"]);
@@ -90,15 +108,23 @@ async function digest(period: Period) {
   const us = topBy(posts, (p) => [p.created_by]);
 
   const sections: string[] = [];
-  if (ps.length) sections.push("Top posts\n" + ps.map((p, i) =>
-    `${i + 1}. ${p.body.trim().split("\n")[0].slice(0, 80)} (${p.reaction_count} ▲) — /c/${p.cid}`
-  ).join("\n"));
-  if (ts.length) sections.push("Top tags\n" + ts.map((t, i) =>
-    `${i + 1}. #${t.k} (${t.reactions} ▲ across ${t.count} posts)`
-  ).join("\n"));
-  if (us.length) sections.push("Top users\n" + us.map((u, i) =>
-    `${i + 1}. @${u.k} (${u.reactions} ▲ across ${u.count} posts)`
-  ).join("\n"));
+  if (ps.length) {
+    sections.push(
+      "Top posts\n" +
+        ps.map((p, i) => `${i + 1}. ${p.body.trim().split("\n")[0].slice(0, 80)} (${p.reaction_count} ▲) — /c/${p.cid}`)
+          .join("\n"),
+    );
+  }
+  if (ts.length) {
+    sections.push(
+      "Top tags\n" + ts.map((t, i) => `${i + 1}. #${t.k} (${t.reactions} ▲ across ${t.count} posts)`).join("\n"),
+    );
+  }
+  if (us.length) {
+    sections.push(
+      "Top users\n" + us.map((u, i) => `${i + 1}. @${u.k} (${u.reactions} ▲ across ${u.count} posts)`).join("\n"),
+    );
+  }
 
   const body = `BestOf — ${period.label(new Date())}\n\n${sections.join("\n\n")}`;
   console.log(`[${period.tag}] posting digest (${posts.length} posts in window)`);
@@ -123,12 +149,15 @@ async function monthlyPredictions() {
     const lastMonth = new Date(last.created_at);
     if (lastMonth.getMonth() === (now.getMonth() - 1 + 12) % 12) {
       console.log(`Following up on last month's predictions (cid=${last.cid})`);
-      await p(`/c/${last.cid}`, { body: `Time's up! How did we do?\n\nReply to your original prediction with how it turned out.` });
+      await p(`/c/${last.cid}`, {
+        body: `Time's up! How did we do?\n\nReply to your original prediction with how it turned out.`,
+      });
     }
   }
 
   const monthName = now.toLocaleString("en-US", { month: "long", year: "numeric" });
-  let body = `Predictions for ${monthName}\n\nWhat do you think will happen this month in tech, science, or the world?\nReply with your predictions. We'll check back next month!`;
+  let body =
+    `Predictions for ${monthName}\n\nWhat do you think will happen this month in tech, science, or the world?\nReply with your predictions. We'll check back next month!`;
   if (last) body += `\n\nLast month's predictions: /c/${last.cid}`;
 
   console.log(`Posting predictions thread for ${monthName}`);

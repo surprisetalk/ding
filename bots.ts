@@ -208,7 +208,9 @@ export async function uploadToR2(
   const publicUrl = Deno.env.get("R2_PUBLIC_URL");
 
   if (!endpoint || !accessKey || !secretKey || !bucket || !publicUrl) {
-    throw new Error("Missing R2 environment variables (R2_ENDPOINT, R2_ACCESS_KEY_ID, R2_SECRET_ACCESS_KEY, R2_BUCKET, R2_PUBLIC_URL)");
+    throw new Error(
+      "Missing R2 environment variables (R2_ENDPOINT, R2_ACCESS_KEY_ID, R2_SECRET_ACCESS_KEY, R2_BUCKET, R2_PUBLIC_URL)",
+    );
   }
 
   const now = new Date();
@@ -365,10 +367,10 @@ export async function pickCandidates(
   });
   return all
     .filter((p: { cid: number; created_by: string; body: string }) =>
-      p.created_by !== botUsername
-      && !answered.has(p.cid)
-      && p.body.length > 1
-      && p.body.replace(/https?:\S+/g, "").trim().length >= minBodyLen
+      p.created_by !== botUsername &&
+      !answered.has(p.cid) &&
+      p.body.length > 1 &&
+      p.body.replace(/https?:\S+/g, "").trim().length >= minBodyLen
     )
     .map((p) => ({ p, c: Number(p.c_comments ?? 0), r: Math.random() }))
     .sort((a, b) => a.c - b.c || a.r - b.r)

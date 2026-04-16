@@ -4,8 +4,7 @@ import { botInit, getAnsweredCids, getJson, reply } from "../bots.ts";
 
 const { apiUrl, auth, botUsername } = botInit("DICE");
 
-const rollDice = (n: number, sides: number) =>
-  Array.from({ length: n }, () => Math.floor(Math.random() * sides) + 1);
+const rollDice = (n: number, sides: number) => Array.from({ length: n }, () => Math.floor(Math.random() * sides) + 1);
 
 function parseAndRoll(body: string): string | null {
   const lines: string[] = [];
@@ -21,8 +20,13 @@ function parseAndRoll(body: string): string | null {
 
     const rolls = rollDice(n, sides);
     let kept = rolls, dropNote = "";
-    if (keep === "kh") { kept = [...rolls].sort((a, b) => b - a).slice(0, keepN); dropNote = ` (kept highest ${keepN})`; }
-    else if (keep === "kl") { kept = [...rolls].sort((a, b) => a - b).slice(0, keepN); dropNote = ` (kept lowest ${keepN})`; }
+    if (keep === "kh") {
+      kept = [...rolls].sort((a, b) => b - a).slice(0, keepN);
+      dropNote = ` (kept highest ${keepN})`;
+    } else if (keep === "kl") {
+      kept = [...rolls].sort((a, b) => a - b).slice(0, keepN);
+      dropNote = ` (kept lowest ${keepN})`;
+    }
 
     const sum = kept.reduce((a, b) => a + b, 0) + mod;
     const modStr = mod > 0 ? ` + ${mod}` : mod < 0 ? ` - ${Math.abs(mod)}` : "";
@@ -54,7 +58,10 @@ async function main() {
 
   for (const post of todo.slice(0, 10)) {
     const result = parseAndRoll(post.body);
-    if (!result) { console.log(`No dice notation in cid=${post.cid}, skipping`); continue; }
+    if (!result) {
+      console.log(`No dice notation in cid=${post.cid}, skipping`);
+      continue;
+    }
     console.log(`Rolling for cid=${post.cid}`);
     await reply(auth, apiUrl, post.cid, result);
   }

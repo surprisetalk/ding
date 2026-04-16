@@ -3,25 +3,82 @@ import { botInit, countSyllables, getAnsweredCids, getJson, reply } from "../bot
 const { apiUrl, auth, botUsername } = botInit("PENTAMETER");
 
 const UNSTRESSED = new Set([
-  "a", "an", "the", "and", "but", "or", "nor", "for", "yet", "so",
-  "in", "on", "at", "to", "of", "by", "up", "as", "if", "is", "am",
-  "are", "was", "were", "be", "been", "do", "does", "did", "has",
-  "have", "had", "may", "can", "will", "shall", "would", "could",
-  "should", "might", "must", "it", "its", "he", "she", "we", "they",
-  "me", "him", "her", "us", "them", "my", "his", "our", "your",
-  "their", "this", "that", "with", "from", "not", "no",
+  "a",
+  "an",
+  "the",
+  "and",
+  "but",
+  "or",
+  "nor",
+  "for",
+  "yet",
+  "so",
+  "in",
+  "on",
+  "at",
+  "to",
+  "of",
+  "by",
+  "up",
+  "as",
+  "if",
+  "is",
+  "am",
+  "are",
+  "was",
+  "were",
+  "be",
+  "been",
+  "do",
+  "does",
+  "did",
+  "has",
+  "have",
+  "had",
+  "may",
+  "can",
+  "will",
+  "shall",
+  "would",
+  "could",
+  "should",
+  "might",
+  "must",
+  "it",
+  "its",
+  "he",
+  "she",
+  "we",
+  "they",
+  "me",
+  "him",
+  "her",
+  "us",
+  "them",
+  "my",
+  "his",
+  "our",
+  "your",
+  "their",
+  "this",
+  "that",
+  "with",
+  "from",
+  "not",
+  "no",
 ]);
 
 function wordStress(word: string, syll: number): ("0" | "1")[] {
   const r: ("0" | "1")[] = new Array(syll).fill("0");
   if (syll === 2) {
-    if (/^(a|be|de|re|in|un|dis|mis|pre|pro|con|com|ex|en|em)/.test(word) && !word.endsWith("ment") && !word.endsWith("ness")) r[1] = "1";
-    else r[0] = "1";
-  } else if (word.endsWith("tion") || word.endsWith("sion") || word.endsWith("ic") || word.endsWith("ical")) {
+    if (
+      /^(a|be|de|re|in|un|dis|mis|pre|pro|con|com|ex|en|em)/.test(word) && !word.endsWith("ment") &&
+      !word.endsWith("ness")
+    ) { r[1] = "1"; } else { r[0] = "1"; }
+  } else if (word.endsWith("tion") || word.endsWith("sion") || word.endsWith("ic") || word.endsWith("ical"))
     r[syll - 2] = "1";
-  } else {
+  else
     r[Math.max(0, syll - 3)] = "1";
-  }
   return r;
 }
 

@@ -1,7 +1,14 @@
-import { botInit, claude, getAnsweredCids, getLastPostAge, pickCandidates, reply, resolveTextContent } from "../bots.ts";
+import {
+  botInit,
+  claude,
+  getAnsweredCids,
+  getLastPostAge,
+  pickCandidates,
+  reply,
+  resolveTextContent,
+} from "../bots.ts";
 
-const SYSTEM =
-  "Rewrite the user's text using only the thousand most common English words, " +
+const SYSTEM = "Rewrite the user's text using only the thousand most common English words, " +
   "in the style of xkcd's Up Goer Five / Thing Explainer. " +
   "Keep the original meaning. Short sentences. Replace technical or uncommon words " +
   "with plain-word paraphrases (e.g. 'computer' → 'thinking box', 'rocket' → 'up-goer', " +

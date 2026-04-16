@@ -1,13 +1,12 @@
 import { botInit, claude, getAnsweredCids, getJson, reply } from "../bots.ts";
 
-const SYSTEM =
-  "You are a discerning quality critic for a small social feed. " +
-  "For each post, rate it: \"up\" if it's genuinely interesting, funny, thoughtful, or well-crafted; " +
-  "\"down\" if it's spammy, mean-spirited, lazy, or incoherent; " +
-  "\"skip\" if it's neutral/unremarkable. " +
-  "Most posts should be \"skip\" — be stingy with both up and down. " +
+const SYSTEM = "You are a discerning quality critic for a small social feed. " +
+  'For each post, rate it: "up" if it\'s genuinely interesting, funny, thoughtful, or well-crafted; ' +
+  '"down" if it\'s spammy, mean-spirited, lazy, or incoherent; ' +
+  '"skip" if it\'s neutral/unremarkable. ' +
+  'Most posts should be "skip" — be stingy with both up and down. ' +
   "Return ONLY a JSON array, no prose, no markdown fences: " +
-  "[{\"cid\":123,\"verdict\":\"up\"},{\"cid\":124,\"verdict\":\"skip\"}]";
+  '[{"cid":123,"verdict":"up"},{"cid":124,"verdict":"skip"}]';
 
 const MAX_RATE_PER_RUN = 10;
 
@@ -30,10 +29,10 @@ async function main() {
   });
 
   const candidates = all.filter((p) =>
-    p.created_by !== botUsername
-    && !answered.has(p.cid)
-    && p.body.length > 1
-    && p.body.replace(/https?:\S+/g, "").trim().length >= 20
+    p.created_by !== botUsername &&
+    !answered.has(p.cid) &&
+    p.body.length > 1 &&
+    p.body.replace(/https?:\S+/g, "").trim().length >= 20
   ).slice(0, MAX_RATE_PER_RUN);
 
   console.log(`Rating ${candidates.length} candidates`);

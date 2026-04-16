@@ -33,9 +33,7 @@ async function main() {
   const posts = await getJson<Post[]>(`/c?sort=new&limit=50`, auth, apiUrl);
   const answered = await getAnsweredCids(auth, botUsername, apiUrl);
 
-  const eligible = posts.filter((p) =>
-    p.created_by !== botUsername && !answered.has(p.cid) && !hasBotMention(p)
-  );
+  const eligible = posts.filter((p) => p.created_by !== botUsername && !answered.has(p.cid) && !hasBotMention(p));
 
   const imagePosts = eligible.filter((p) => extractImageUrl(p.body));
   const textPosts = eligible.filter((p) => !extractImageUrl(p.body));

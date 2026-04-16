@@ -4,7 +4,11 @@ import { botInit, getJson, post, reply } from "../bots.ts";
 
 const { apiUrl, auth, botUsername } = botInit("ESTIMATION");
 
-interface Question { q: string; a: number; unit: string }
+interface Question {
+  q: string;
+  a: number;
+  unit: string;
+}
 
 const QUESTIONS: Question[] = [
   { q: "How many golf balls can fit in a school bus?", a: 500000, unit: "golf balls" },
@@ -104,7 +108,11 @@ async function main() {
 
         let reveal = `Answer: ${question.a.toLocaleString()} ${question.unit}`;
         if (winner) {
-          reveal += `\n\nClosest guess: @${winner.user} with ${winner.guess.toLocaleString()} (${winner.dist < 0.5 ? "within half an order of magnitude!" : `${winner.dist.toFixed(1)} orders of magnitude off`})`;
+          reveal += `\n\nClosest guess: @${winner.user} with ${winner.guess.toLocaleString()} (${
+            winner.dist < 0.5
+              ? "within half an order of magnitude!"
+              : `${winner.dist.toFixed(1)} orders of magnitude off`
+          })`;
         }
         if (guesses.length > 1) reveal += `\n\n${guesses.length} total guesses`;
 

@@ -1,4 +1,4 @@
-import { botInit, getLastPostAge, post, uploadToR2, seededRng, todaySeed } from "../bots.ts";
+import { botInit, getLastPostAge, post, seededRng, todaySeed, uploadToR2 } from "../bots.ts";
 
 const { apiUrl, auth, botUsername } = botInit("GEOMETRY");
 
@@ -22,12 +22,13 @@ function concentricCircles(frame: number, totalFrames: number, rng: () => number
   const cx = W / 2, cy = H / 2;
   const phase = (frame / totalFrames) * Math.PI * 2;
   const spacing = 8 + Math.floor(rng() * 12);
-  for (let y = 0; y < H; y++)
+  for (let y = 0; y < H; y++) {
     for (let x = 0; x < W; x++) {
       const d = Math.sqrt((x - cx) ** 2 + (y - cy) ** 2);
       const ring = Math.floor((d + phase * spacing) / spacing);
       pixels[y * W + x] = (ring % (PALETTE_SIZE - 1)) + 1;
     }
+  }
   return pixels;
 }
 
@@ -42,7 +43,7 @@ function rotatingPolygon(frame: number, totalFrames: number, rng: () => number):
     const a = angle + (i / sides) * Math.PI * 2;
     verts.push([cx + Math.cos(a) * radius, cy + Math.sin(a) * radius]);
   }
-  for (let y = 0; y < H; y++)
+  for (let y = 0; y < H; y++) {
     for (let x = 0; x < W; x++) {
       let inside = false;
       for (let i = 0, j = sides - 1; i < sides; j = i++) {
@@ -55,6 +56,7 @@ function rotatingPolygon(frame: number, totalFrames: number, rng: () => number):
         pixels[y * W + x] = (Math.floor(d / 10) % (PALETTE_SIZE - 1)) + 1;
       }
     }
+  }
   return pixels;
 }
 
@@ -63,7 +65,7 @@ function spiral(frame: number, totalFrames: number, rng: () => number): Uint8Arr
   const cx = W / 2, cy = H / 2;
   const phase = (frame / totalFrames) * Math.PI * 2;
   const arms = 2 + Math.floor(rng() * 4);
-  for (let y = 0; y < H; y++)
+  for (let y = 0; y < H; y++) {
     for (let x = 0; x < W; x++) {
       const dx = x - cx, dy = y - cy;
       const d = Math.sqrt(dx * dx + dy * dy);
@@ -71,6 +73,7 @@ function spiral(frame: number, totalFrames: number, rng: () => number): Uint8Arr
       const v = Math.floor((a * arms / (Math.PI * 2) + d / 15) * 2) % PALETTE_SIZE;
       pixels[y * W + x] = ((v % (PALETTE_SIZE - 1)) + PALETTE_SIZE) % (PALETTE_SIZE - 1) + 1;
     }
+  }
   return pixels;
 }
 
@@ -78,12 +81,13 @@ function checkerboard(frame: number, totalFrames: number, rng: () => number): Ui
   const pixels = new Uint8Array(W * H);
   const size = 16 + Math.floor(rng() * 16);
   const offset = Math.floor((frame / totalFrames) * size);
-  for (let y = 0; y < H; y++)
+  for (let y = 0; y < H; y++) {
     for (let x = 0; x < W; x++) {
       const cx = Math.floor((x + offset) / size);
       const cy = Math.floor((y + offset) / size);
       pixels[y * W + x] = ((cx + cy) % 2 === 0) ? 1 : (((cx * 3 + cy * 7) % (PALETTE_SIZE - 1)) + 1);
     }
+  }
   return pixels;
 }
 
@@ -93,7 +97,7 @@ function moire(frame: number, totalFrames: number, rng: () => number): Uint8Arra
   const freq = 0.05 + rng() * 0.05;
   const cx1 = W / 2, cy1 = H / 2;
   const cx2 = W / 2 + Math.cos(phase) * 40, cy2 = H / 2 + Math.sin(phase) * 40;
-  for (let y = 0; y < H; y++)
+  for (let y = 0; y < H; y++) {
     for (let x = 0; x < W; x++) {
       const d1 = Math.sqrt((x - cx1) ** 2 + (y - cy1) ** 2);
       const d2 = Math.sqrt((x - cx2) ** 2 + (y - cy2) ** 2);
@@ -101,6 +105,7 @@ function moire(frame: number, totalFrames: number, rng: () => number): Uint8Arra
       const idx = Math.floor(((v + 2) / 4) * (PALETTE_SIZE - 1)) + 1;
       pixels[y * W + x] = Math.min(PALETTE_SIZE - 1, Math.max(1, idx));
     }
+  }
   return pixels;
 }
 
@@ -142,9 +147,9 @@ function lzwCompress(pixels: Uint8Array, minCodeSize: number): Uint8Array {
   let current = String(pixels[0]);
   for (let i = 1; i < pixels.length; i++) {
     const next = current + "," + pixels[i];
-    if (table.has(next)) {
+    if (table.has(next))
       current = next;
-    } else {
+    else {
       writeBits(table.get(current)!, codeSize);
       if (nextCode < 4096) {
         table.set(next, nextCode++);
@@ -233,9 +238,8 @@ async function main() {
   const frameCount = 8 + Math.floor(rng() * 9);
 
   const frames: Uint8Array[] = [];
-  for (let f = 0; f < frameCount; f++) {
+  for (let f = 0; f < frameCount; f++)
     frames.push(patternFn(f, frameCount, seededRng(seed)));
-  }
 
   const gif = encodeGif(frames, palette, 10);
   const date = new Date().toISOString().slice(0, 10);

@@ -25,19 +25,27 @@ async function redditFetch(url: string): Promise<Response> {
   throw new Error("unreachable");
 }
 
-interface RedditItem { title: string; link: string; imageUrl: string | null; author: string }
+interface RedditItem {
+  title: string;
+  link: string;
+  imageUrl: string | null;
+  author: string;
+}
 
 function extractImageUrl(html: string): string | null {
   const unescaped = html.replace(/&lt;/g, "<").replace(/&gt;/g, ">").replace(/&amp;/g, "&").replace(/&quot;/g, '"');
-  return unescaped.match(/https:\/\/i\.redd\.it\/[^\s"'<>]+/)?.[0]
-    ?? unescaped.match(/https:\/\/i\.imgur\.com\/[^\s"'<>]+/)?.[0]
-    ?? unescaped.match(/<img[^>]+src="([^"]+)"/)?.[1]
-    ?? null;
+  return unescaped.match(/https:\/\/i\.redd\.it\/[^\s"'<>]+/)?.[0] ??
+    unescaped.match(/https:\/\/i\.imgur\.com\/[^\s"'<>]+/)?.[0] ??
+    unescaped.match(/<img[^>]+src="([^"]+)"/)?.[1] ??
+    null;
 }
 
 async function fetchRedditFeed(): Promise<RedditItem[]> {
   const res = await redditFetch(FEED_URL);
-  if (!res.ok) { console.error(`Failed to fetch feed: ${res.status}`); return []; }
+  if (!res.ok) {
+    console.error(`Failed to fetch feed: ${res.status}`);
+    return [];
+  }
   const xml = await res.text();
   const items: RedditItem[] = [];
   for (const entry of xml.match(/<entry>[\s\S]*?<\/entry>/g) || []) {
@@ -67,9 +75,8 @@ async function main() {
     if (item.imageUrl) lines.push("", item.imageUrl);
     lines.push("", `via ${item.author} on r/hmmm`);
     console.log(`Posting: ${item.title.slice(0, 60)}...`);
-    if (!await post(auth, apiUrl, lines.join("\n"), "#hmmm #reddit #bot")) {
+    if (!await post(auth, apiUrl, lines.join("\n"), "#hmmm #reddit #bot"))
       console.error(`Failed to post: ${item.title}`);
-    }
   }
 }
 

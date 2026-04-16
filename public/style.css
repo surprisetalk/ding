@@ -227,5 +227,7 @@ h2 {
   margin: 0;
 }
 
-a.thumb { -webkit-touch-callout: none; user-select: none; }
-
+a.thumb {
+  -webkit-touch-callout: none;
+  user-select: none;
+}

@@ -27,13 +27,18 @@ async function pixelsort(imageBytes: Uint8Array): Promise<Uint8Array> {
       const i = (y * w + x) * 3;
       const bright = x < w ? luminance(pixels[i], pixels[i + 1], pixels[i + 2]) : 0;
 
-      if (bright > THRESHOLD && runStart === -1) {
+      if (bright > THRESHOLD && runStart === -1)
         runStart = x;
-      } else if ((bright <= THRESHOLD || x === w) && runStart !== -1) {
+      else if ((bright <= THRESHOLD || x === w) && runStart !== -1) {
         const run: { r: number; g: number; b: number; lum: number }[] = [];
         for (let rx = runStart; rx < x; rx++) {
           const ri = (y * w + rx) * 3;
-          run.push({ r: pixels[ri], g: pixels[ri + 1], b: pixels[ri + 2], lum: luminance(pixels[ri], pixels[ri + 1], pixels[ri + 2]) });
+          run.push({
+            r: pixels[ri],
+            g: pixels[ri + 1],
+            b: pixels[ri + 2],
+            lum: luminance(pixels[ri], pixels[ri + 1], pixels[ri + 2]),
+          });
         }
         run.sort((a, b) => a.lum - b.lum);
         for (let j = 0; j < run.length; j++) {
@@ -72,7 +77,10 @@ async function main() {
 
     console.log(`cid=${post.cid}: processing ${imageUrl}`);
     const imgRes = await fetch(imageUrl);
-    if (!imgRes.ok) { console.error(`Failed to fetch image: HTTP ${imgRes.status}`); continue; }
+    if (!imgRes.ok) {
+      console.error(`Failed to fetch image: HTTP ${imgRes.status}`);
+      continue;
+    }
     const imageBytes = new Uint8Array(await imgRes.arrayBuffer());
 
     const pngBytes = await pixelsort(imageBytes);

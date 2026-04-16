@@ -10,7 +10,9 @@ async function main() {
     return;
   }
 
-  const listRes = await fetch("https://commons.wikimedia.org/w/api.php?action=query&list=categorymembers&cmtitle=Category:Animations_of_mathematics&cmtype=file&cmlimit=500&format=json");
+  const listRes = await fetch(
+    "https://commons.wikimedia.org/w/api.php?action=query&list=categorymembers&cmtitle=Category:Animations_of_mathematics&cmtype=file&cmlimit=500&format=json",
+  );
   if (!listRes.ok) throw new Error(`Wikimedia category list: HTTP ${listRes.status}`);
   const listData = await listRes.json();
   const members = listData.query?.categorymembers;
@@ -19,7 +21,11 @@ async function main() {
   const dayIndex = Math.floor(Date.now() / 86_400_000) % members.length;
   const title = members[dayIndex].title as string;
 
-  const infoRes = await fetch(`https://commons.wikimedia.org/w/api.php?action=query&titles=${encodeURIComponent(title)}&prop=imageinfo&iiprop=url&format=json`);
+  const infoRes = await fetch(
+    `https://commons.wikimedia.org/w/api.php?action=query&titles=${
+      encodeURIComponent(title)
+    }&prop=imageinfo&iiprop=url&format=json`,
+  );
   if (!infoRes.ok) throw new Error(`Wikimedia imageinfo: HTTP ${infoRes.status}`);
   const infoData = await infoRes.json();
   const pages = infoData.query.pages;

@@ -14,8 +14,10 @@ function findHaiku(text: string): [string, string, string] | null {
     if (lineIdx > 2) return null;
     syllables += countSyllables(word);
     lines[lineIdx].push(word);
-    if (syllables === target[lineIdx]) { lineIdx++; syllables = 0; }
-    else if (syllables > target[lineIdx]) return null;
+    if (syllables === target[lineIdx]) {
+      lineIdx++;
+      syllables = 0;
+    } else if (syllables > target[lineIdx]) { return null; }
   }
 
   if (lineIdx !== 3) return null;

@@ -71,9 +71,9 @@ function cowsay(text: string, animalKey: string): string {
   const bottom = " " + "-".repeat(maxLen + 2);
 
   let bubble: string;
-  if (lines.length === 1) {
+  if (lines.length === 1)
     bubble = `${border}\n< ${lines[0].padEnd(maxLen)} >\n${bottom}`;
-  } else {
+  else {
     const mid = lines.map((l, i) => {
       const pad = l.padEnd(maxLen);
       if (i === 0) return `/ ${pad} \\`;

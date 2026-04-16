@@ -3,7 +3,15 @@ import sharp from "npm:sharp@0.33";
 
 const { apiUrl, auth, botUsername } = botInit("LOWPOLY");
 
-function sampleColor(pixels: Uint8Array, w: number, h: number, channels: number, cx: number, cy: number, radius: number): [number, number, number] {
+function sampleColor(
+  pixels: Uint8Array,
+  w: number,
+  h: number,
+  channels: number,
+  cx: number,
+  cy: number,
+  radius: number,
+): [number, number, number] {
   let r = 0, g = 0, b = 0, count = 0;
   const x0 = Math.max(0, Math.floor(cx - radius));
   const x1 = Math.min(w - 1, Math.ceil(cx + radius));
@@ -72,12 +80,18 @@ async function lowpoly(imageBytes: Uint8Array): Promise<string> {
         const p0 = points[i0], p1 = points[i1], p2 = points[i2];
         const [cx, cy] = triangleCentroid(p0, p1, p2);
         const [cr, cg, cb] = sampleColor(pixels, w, h, channels, cx, cy, Math.min(cellW, cellH) * 0.3);
-        polys.push(`<polygon points="${p0[0].toFixed(1)},${p0[1].toFixed(1)} ${p1[0].toFixed(1)},${p1[1].toFixed(1)} ${p2[0].toFixed(1)},${p2[1].toFixed(1)}" fill="rgb(${cr},${cg},${cb})" stroke="rgb(${cr},${cg},${cb})" stroke-width="0.5"/>`);
+        polys.push(
+          `<polygon points="${p0[0].toFixed(1)},${p0[1].toFixed(1)} ${p1[0].toFixed(1)},${p1[1].toFixed(1)} ${
+            p2[0].toFixed(1)
+          },${p2[1].toFixed(1)}" fill="rgb(${cr},${cg},${cb})" stroke="rgb(${cr},${cg},${cb})" stroke-width="0.5"/>`,
+        );
       }
     }
   }
 
-  return `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 ${w} ${h}" width="${w}" height="${h}">\n${polys.join("\n")}\n</svg>`;
+  return `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 ${w} ${h}" width="${w}" height="${h}">\n${
+    polys.join("\n")
+  }\n</svg>`;
 }
 
 async function main() {
@@ -102,7 +116,10 @@ async function main() {
 
     console.log(`cid=${post.cid}: processing ${imageUrl}`);
     const imgRes = await fetch(imageUrl);
-    if (!imgRes.ok) { console.error(`Failed to fetch image: HTTP ${imgRes.status}`); continue; }
+    if (!imgRes.ok) {
+      console.error(`Failed to fetch image: HTTP ${imgRes.status}`);
+      continue;
+    }
     const imageBytes = new Uint8Array(await imgRes.arrayBuffer());
 
     const svg = await lowpoly(imageBytes);

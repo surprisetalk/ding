@@ -3,7 +3,11 @@ import { botInit, getJson, post } from "../bots.ts";
 const { auth, botUsername, apiUrl } = botInit("ARXIV");
 const CATEGORIES = ["cs"];
 
-interface ArxivItem { title: string; link: string; category: string }
+interface ArxivItem {
+  title: string;
+  link: string;
+  category: string;
+}
 
 async function fetchArxivFeed(category: string): Promise<ArxivItem[]> {
   const res = await fetch(`https://rss.arxiv.org/rss/${category}`);
@@ -21,8 +25,7 @@ async function fetchArxivFeed(category: string): Promise<ArxivItem[]> {
   return items;
 }
 
-const categoryToTags = (category: string) =>
-  category.toLowerCase().split(".").map((t) => `#${t}`).join(" ");
+const categoryToTags = (category: string) => category.toLowerCase().split(".").map((t) => `#${t}`).join(" ");
 
 async function hasDigestForToday(category: string): Promise<boolean> {
   const posts = await getJson<{ body: string; created_at: string }[]>(

@@ -5,7 +5,9 @@ const { apiUrl, auth, botUsername } = botInit("MUSEUM");
 async function fetchArtwork(): Promise<{ title: string; creator: string; imageUrl: string; url: string } | null> {
   for (let attempt = 0; attempt < 2; attempt++) {
     const skip = Math.floor(Math.random() * (attempt === 0 ? 5000 : 1000));
-    const res = await fetch(`https://openaccess-api.clevelandart.org/api/artworks/?has_image=1&cc0=1&type=Painting&limit=1&skip=${skip}`);
+    const res = await fetch(
+      `https://openaccess-api.clevelandart.org/api/artworks/?has_image=1&cc0=1&type=Painting&limit=1&skip=${skip}`,
+    );
     if (!res.ok) throw new Error(`Cleveland API: HTTP ${res.status}`);
     const data = await res.json();
     const artwork = data.data?.[0];

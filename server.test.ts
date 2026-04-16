@@ -300,7 +300,9 @@ Deno.test(
 
     await t.step("GET /verify with valid token sets email_verified_at for signup user", async () => {
       const tok = await emailToken(new Date(), "fresh@example.com");
-      const res = await app.request(`/verify?email=${encodeURIComponent("fresh@example.com")}&token=${encodeURIComponent(tok)}`);
+      const res = await app.request(
+        `/verify?email=${encodeURIComponent("fresh@example.com")}&token=${encodeURIComponent(tok)}`,
+      );
       assertEquals(res.status < 400, true);
       const [u] = await sql`select email_verified_at from usr where name = 'fresh_user'`;
       assertEquals(u.email_verified_at !== null, true);
@@ -508,7 +510,11 @@ Deno.test(
         type: "checkout.session.completed",
         data: { object: { subscription: "sub_webhook", metadata: { orgName: "WebhookOrg", creatorName: "john_doe" } } },
       });
-      const res = await app.request("/api/stripe-webhook", { method: "POST", body, headers: { "stripe-signature": "valid" } });
+      const res = await app.request("/api/stripe-webhook", {
+        method: "POST",
+        body,
+        headers: { "stripe-signature": "valid" },
+      });
       assertEquals(res.status, 200);
 
       const [org] = await sql`select * from org where name = 'WebhookOrg'`;
@@ -580,7 +586,8 @@ Deno.test(
       const res = await app.request("/o/TestOrg/invite", { method: "POST", body, headers: authHeaders });
       assertEquals(res.status, 302);
 
-      const [usr] = await sql`select name, password, email_verified_at, orgs_r, orgs_w, invited_by from usr where email = 'newbie@example.com'`;
+      const [usr] =
+        await sql`select name, password, email_verified_at, orgs_r, orgs_w, invited_by from usr where email = 'newbie@example.com'`;
       assertEquals(typeof usr.name, "string");
       assertEquals(usr.password, null);
       assertEquals(usr.email_verified_at, null);
@@ -725,7 +732,11 @@ Deno.test(
     };
 
     await t.step("POST /c root happy path", async () => {
-      const res = await app.request("/c", { method: "POST", body: fd({ body: "hello world", tags: "#pub" }), headers: jAuth });
+      const res = await app.request("/c", {
+        method: "POST",
+        body: fd({ body: "hello world", tags: "#pub" }),
+        headers: jAuth,
+      });
       assertEquals(res.status, 302);
       const cid = cidFromLocation(res.headers.get("location")!);
       const [row] = await sql`select body, tags, orgs, thumb from com where cid = ${cid}`;
@@ -741,12 +752,20 @@ Deno.test(
     });
 
     await t.step("POST /c root 403 when *org not in orgs_w", async () => {
-      const res = await app.request("/c", { method: "POST", body: fd({ body: "x", tags: "#pub *nonmember" }), headers: jAuth });
+      const res = await app.request("/c", {
+        method: "POST",
+        body: fd({ body: "x", tags: "#pub *nonmember" }),
+        headers: jAuth,
+      });
       assertEquals(res.status, 403);
     });
 
     await t.step("POST /c root 302 when *org IS in orgs_w", async () => {
-      const res = await app.request("/c", { method: "POST", body: fd({ body: "y", tags: "#pub *secret" }), headers: jAuth });
+      const res = await app.request("/c", {
+        method: "POST",
+        body: fd({ body: "y", tags: "#pub *secret" }),
+        headers: jAuth,
+      });
       assertEquals(res.status, 302);
       const cid = cidFromLocation(res.headers.get("location")!);
       const [row] = await sql`select orgs from com where cid = ${cid}`;
@@ -760,7 +779,11 @@ Deno.test(
     });
 
     await t.step("POST /c root extracts thumbnail from image URL", async () => {
-      const res = await app.request("/c", { method: "POST", body: fd({ body: "look https://example.com/pic.jpg", tags: "#pub" }), headers: jAuth });
+      const res = await app.request("/c", {
+        method: "POST",
+        body: fd({ body: "look https://example.com/pic.jpg", tags: "#pub" }),
+        headers: jAuth,
+      });
       assertEquals(res.status, 302);
       const cid = cidFromLocation(res.headers.get("location")!);
       const [row] = await sql`select thumb from com where cid = ${cid}`;
@@ -785,7 +808,8 @@ Deno.test(
     });
 
     await t.step("POST /c/:p flag updates c_flags, records flagger, no com row", async () => {
-      const [seed] = await sql`insert into com (created_by, body, tags) values ('BugHunter42', 'flag me', '{humor}') returning cid`;
+      const [seed] =
+        await sql`insert into com (created_by, body, tags) values ('BugHunter42', 'flag me', '{humor}') returning cid`;
       const [childrenBefore] = await sql`select count(*)::int as n from com where parent_cid = ${seed.cid}`;
       const res = await app.request(`/c/${seed.cid}`, { method: "POST", body: fd({ body: "flag" }), headers: jAuth });
       assertEquals(res.status, 302);
@@ -798,7 +822,8 @@ Deno.test(
     });
 
     await t.step("POST /c/:p flag is idempotent per-user", async () => {
-      const [seed] = await sql`insert into com (created_by, body, tags) values ('BugHunter42', 'flag once', '{humor}') returning cid`;
+      const [seed] =
+        await sql`insert into com (created_by, body, tags) values ('BugHunter42', 'flag once', '{humor}') returning cid`;
       await app.request(`/c/${seed.cid}`, { method: "POST", body: fd({ body: "flag" }), headers: jAuth });
       await app.request(`/c/${seed.cid}`, { method: "POST", body: fd({ body: "flag" }), headers: jAuth });
       const [row] = await sql`select c_flags, flaggers from com where cid = ${seed.cid}`;
@@ -807,8 +832,13 @@ Deno.test(
     });
 
     await t.step("POST /c/:p self-flag blocked with err=self-flag", async () => {
-      const [seed] = await sql`insert into com (created_by, body, tags) values ('jane_doe', 'mine', '{humor}') returning cid`;
-      const res = await app.request(`/c/${seed.cid}`, { method: "POST", body: fd({ body: "flag" }), headers: janeAuth });
+      const [seed] =
+        await sql`insert into com (created_by, body, tags) values ('jane_doe', 'mine', '{humor}') returning cid`;
+      const res = await app.request(`/c/${seed.cid}`, {
+        method: "POST",
+        body: fd({ body: "flag" }),
+        headers: janeAuth,
+      });
       assertEquals(res.status, 302);
       assertEquals(res.headers.get("location")?.includes("err=self-flag"), true);
       const [row] = await sql`select c_flags, flaggers from com where cid = ${seed.cid}`;
@@ -817,7 +847,8 @@ Deno.test(
     });
 
     await t.step("GET /c/:cid hides body when c_flags >= threshold for non-author", async () => {
-      const [seed] = await sql`insert into com (created_by, body, tags, c_flags, flaggers) values ('BugHunter42', 'secret body text', '{humor}', 3, '{a,b,c}') returning cid`;
+      const [seed] =
+        await sql`insert into com (created_by, body, tags, c_flags, flaggers) values ('BugHunter42', 'secret body text', '{humor}', 3, '{a,b,c}') returning cid`;
       const res = await app.request(`/c/${seed.cid}`, { headers: jAuth });
       const html = await res.text();
       assertEquals(html.includes("<pre>[flagged]</pre>"), true);
@@ -830,7 +861,8 @@ Deno.test(
     });
 
     await t.step("POST /c/:cid/delete owner soft-deletes", async () => {
-      const [seed] = await sql`insert into com (created_by, body, tags) values ('john_doe', 'to delete', '{humor}') returning cid`;
+      const [seed] =
+        await sql`insert into com (created_by, body, tags) values ('john_doe', 'to delete', '{humor}') returning cid`;
       const res = await app.request(`/c/${seed.cid}/delete`, { method: "POST", body: new FormData(), headers: jAuth });
       assertEquals(res.status, 302);
       assertEquals(res.headers.get("location"), "/");
@@ -847,7 +879,10 @@ Deno.test(
     });
 
     await t.step("GET /c/355 returns 200 for member (positive private access)", async () => {
-      const boot = await app.request("/login", { method: "POST", body: fd({ email: "john@example.com", password: "password1!" }) });
+      const boot = await app.request("/login", {
+        method: "POST",
+        body: fd({ email: "john@example.com", password: "password1!" }),
+      });
       const setCookie = boot.headers.get("set-cookie");
       if (!setCookie) throw new Error("no set-cookie on login");
       const cookie = setCookie.split(";")[0];
@@ -859,7 +894,11 @@ Deno.test(
       await sql`insert into org (name, created_by, stripe_sub_id) values ('WipeMe', 'john_doe', 'sub_wipe')`;
       await sql`update usr set orgs_r = array_append(orgs_r, 'WipeMe'), orgs_w = array_append(orgs_w, 'WipeMe') where name = 'john_doe'`;
       const body = JSON.stringify({ type: "customer.subscription.deleted", data: { object: { id: "sub_wipe" } } });
-      const res = await app.request("/api/stripe-webhook", { method: "POST", body, headers: { "stripe-signature": "valid" } });
+      const res = await app.request("/api/stripe-webhook", {
+        method: "POST",
+        body,
+        headers: { "stripe-signature": "valid" },
+      });
       assertEquals(res.status, 200);
       assertEquals(await res.text(), "Received");
       const [{ count }] = await sql`select count(*)::int as count from org where name = 'WipeMe'`;
@@ -873,7 +912,11 @@ Deno.test(
 
     await t.step("POST /api/stripe-webhook invalid signature returns 400", async () => {
       const body = JSON.stringify({ type: "customer.subscription.deleted", data: { object: { id: "whatever" } } });
-      const res = await app.request("/api/stripe-webhook", { method: "POST", body, headers: { "stripe-signature": "bad" } });
+      const res = await app.request("/api/stripe-webhook", {
+        method: "POST",
+        body,
+        headers: { "stripe-signature": "bad" },
+      });
       assertEquals(res.status, 400);
     });
 
@@ -881,7 +924,9 @@ Deno.test(
       await sql`insert into usr (name, email, bio, invited_by, email_verified_at) values ('verify_me', 'verify@example.com', 'bio', 'john_doe', null)`;
       await sql`insert into usr (name, email, bio, invited_by, email_verified_at) values ('canary_me', 'canary@example.com', 'bio', 'john_doe', null)`;
       const tok = await emailToken(new Date(), "verify@example.com");
-      const res = await app.request(`/verify?email=${encodeURIComponent("verify@example.com")}&token=${encodeURIComponent(tok)}`);
+      const res = await app.request(
+        `/verify?email=${encodeURIComponent("verify@example.com")}&token=${encodeURIComponent(tok)}`,
+      );
       assertEquals(res.status, 302);
       assertEquals(res.headers.get("location"), "/u");
       const [row] = await sql`select email_verified_at from usr where name = 'verify_me'`;
@@ -892,14 +937,17 @@ Deno.test(
 
     await t.step("GET /verify rejects valid token with wrong email", async () => {
       const tok = await emailToken(new Date(), "verify@example.com");
-      const res = await app.request(`/verify?email=${encodeURIComponent("canary@example.com")}&token=${encodeURIComponent(tok)}`);
+      const res = await app.request(
+        `/verify?email=${encodeURIComponent("canary@example.com")}&token=${encodeURIComponent(tok)}`,
+      );
       assertEquals(res.status, 400);
       const [canary] = await sql`select email_verified_at from usr where name = 'canary_me'`;
       assertEquals(canary.email_verified_at, null);
     });
 
     await t.step("POST /c/:p reaction toggle removes on second click", async () => {
-      const [seed] = await sql`insert into com (created_by, body, tags) values ('BugHunter42', 'toggle test', '{humor}') returning cid`;
+      const [seed] =
+        await sql`insert into com (created_by, body, tags) values ('BugHunter42', 'toggle test', '{humor}') returning cid`;
       const res1 = await app.request(`/c/${seed.cid}`, { method: "POST", body: fd({ body: "👍" }), headers: janeAuth });
       assertEquals(res1.status, 302);
       const [after1] = await sql`select (c_reactions->'👍') as r from com where cid = ${seed.cid}`;
@@ -908,12 +956,14 @@ Deno.test(
       assertEquals(res2.status, 302);
       const [after2] = await sql`select (c_reactions->'👍') as r from com where cid = ${seed.cid}`;
       assertEquals(after2.r, "0");
-      const [gone] = await sql`select count(*)::int as c from com where parent_cid = ${seed.cid} and body = '👍' and created_by = 'jane_doe'`;
+      const [gone] =
+        await sql`select count(*)::int as c from com where parent_cid = ${seed.cid} and body = '👍' and created_by = 'jane_doe'`;
       assertEquals(gone.c, 0);
     });
 
     await t.step("POST /c/:p self-reaction blocked with error feedback", async () => {
-      const [seed] = await sql`insert into com (created_by, body, tags) values ('jane_doe', 'jane own post', '{humor}') returning cid`;
+      const [seed] =
+        await sql`insert into com (created_by, body, tags) values ('jane_doe', 'jane own post', '{humor}') returning cid`;
       const res = await app.request(`/c/${seed.cid}`, { method: "POST", body: fd({ body: "▲" }), headers: janeAuth });
       assertEquals(res.status, 302);
       assertEquals(res.headers.get("location")?.includes("err=self-react"), true);
@@ -924,8 +974,11 @@ Deno.test(
     });
 
     await t.step("GET /c/:cid shows backlinks from posts linking to it", async () => {
-      const [p1] = await sql`insert into com (created_by, body, tags) values ('john_doe', 'target post', '{backtest}') returning cid`;
-      const [p2] = await sql`insert into com (created_by, body, tags, links) values ('john_doe', ${"check out https://ding.bar/c/" + p1.cid + " cool"}, '{backtest}', ${[p1.cid]}) returning cid`;
+      const [p1] =
+        await sql`insert into com (created_by, body, tags) values ('john_doe', 'target post', '{backtest}') returning cid`;
+      const [p2] = await sql`insert into com (created_by, body, tags, links) values ('john_doe', ${
+        "check out https://ding.bar/c/" + p1.cid + " cool"
+      }, '{backtest}', ${[p1.cid]}) returning cid`;
       const res = await app.request(`/c/${p1.cid}`);
       assertEquals(res.status, 200);
       const text = await res.text();
@@ -934,7 +987,8 @@ Deno.test(
     });
 
     await t.step("GET /c/:cid no backlinks when no posts link to it", async () => {
-      const [p] = await sql`insert into com (created_by, body, tags) values ('john_doe', 'lonely post', '{uniquetag_xyz}') returning cid`;
+      const [p] =
+        await sql`insert into com (created_by, body, tags) values ('john_doe', 'lonely post', '{uniquetag_xyz}') returning cid`;
       const res = await app.request(`/c/${p.cid}`);
       assertEquals(res.status, 200);
       const text = await res.text();
@@ -942,9 +996,12 @@ Deno.test(
     });
 
     await t.step("GET /c/:cid no false backlink match on similar cid", async () => {
-      const [p1] = await sql`insert into com (created_by, body, tags) values ('john_doe', 'post A', '{advtest}') returning cid`;
+      const [p1] =
+        await sql`insert into com (created_by, body, tags) values ('john_doe', 'post A', '{advtest}') returning cid`;
       const fakeCid = p1.cid * 10 + 9;
-      const [p2] = await sql`insert into com (created_by, body, tags, links) values ('john_doe', ${"see https://ding.bar/c/" + fakeCid}, '{advtest}', ${[fakeCid]}) returning cid`;
+      const [p2] = await sql`insert into com (created_by, body, tags, links) values ('john_doe', ${
+        "see https://ding.bar/c/" + fakeCid
+      }, '{advtest}', ${[fakeCid]}) returning cid`;
       const res = await app.request(`/c/${p1.cid}`);
       assertEquals(res.status, 200);
       const text = await res.text();
@@ -955,10 +1012,18 @@ Deno.test(
       await sql`insert into usr (name, email, password, bio, invited_by, email_verified_at) values ('rate_tester', 'rate@example.com', 'hashed:rate!', 'bio', 'john_doe', now())`;
       const auth = { Authorization: "Basic " + btoa("rate@example.com:rate!") };
       for (let i = 0; i < 10; i++) {
-        const res = await app.request("/c", { method: "POST", body: fd({ body: `post ${i}`, tags: "#pub" }), headers: auth });
+        const res = await app.request("/c", {
+          method: "POST",
+          body: fd({ body: `post ${i}`, tags: "#pub" }),
+          headers: auth,
+        });
         assertEquals(res.status, 302);
       }
-      const res = await app.request("/c", { method: "POST", body: fd({ body: "overflow", tags: "#pub" }), headers: auth });
+      const res = await app.request("/c", {
+        method: "POST",
+        body: fd({ body: "overflow", tags: "#pub" }),
+        headers: auth,
+      });
       assertEquals(res.status, 429);
     });
   }),
@@ -970,7 +1035,8 @@ Deno.test(
   "recommendation scoring",
   pglite((sql) => async (t) => {
     const mkPost = async (author: string, body: string, tags: string[], domain: string | null = null) => {
-      const [r] = await sql`insert into com (created_by, body, tags, domain) values (${author}, ${body}, ${tags}, ${domain}) returning cid`;
+      const [r] =
+        await sql`insert into com (created_by, body, tags, domain) values (${author}, ${body}, ${tags}, ${domain}) returning cid`;
       await sql`select refresh_score(array(select cid from com where created_by = ${author}))`;
       return r.cid as number;
     };
@@ -997,7 +1063,9 @@ Deno.test(
       return new Date(r.score).getTime();
     };
     const mkUser = async (name: string) => {
-      await sql`insert into usr (name, email, password, bio, email_verified_at, invited_by) values (${name}, ${name + "@x.com"}, 'x', 'x', now(), 'john_doe') on conflict do nothing`;
+      await sql`insert into usr (name, email, password, bio, email_verified_at, invited_by) values (${name}, ${
+        name + "@x.com"
+      }, 'x', 'x', now(), 'john_doe') on conflict do nothing`;
     };
 
     await t.step("heavily-upvoted author ranks above new author", async () => {
@@ -1052,7 +1120,9 @@ Deno.test(
       for (const u of ["origauth", "repostr", "upvtr1", "upvtr2", "upvtr3"]) await mkUser(u);
       const original = await mkPost("origauth", "original content", ["nn"]);
       for (const v of ["upvtr1", "upvtr2", "upvtr3"]) await react(v, original, "▲");
-      const [r] = await sql`insert into com (created_by, body, tags, links) values ('repostr', 'see this', '{oo}', ${[original]}::int[]) returning cid`;
+      const [r] = await sql`insert into com (created_by, body, tags, links) values ('repostr', 'see this', '{oo}', ${[
+        original,
+      ]}::int[]) returning cid`;
       await sql`select refresh_score(array[${r.cid}]::int[])`;
       const fresh = await mkPost("repostr", "own thought", ["pp"]);
       assertEquals((await score(r.cid as number)) < (await score(fresh)), true);
@@ -1152,7 +1222,10 @@ Deno.test(
       const post = items[0];
       assertEquals(post.cid, rootCid);
       assertEquals(post.child_comments.length, 2);
-      assertEquals(post.child_comments[0].created_by === "john_doe" || post.child_comments[0].created_by === "jane_doe", true);
+      assertEquals(
+        post.child_comments[0].created_by === "john_doe" || post.child_comments[0].created_by === "jane_doe",
+        true,
+      );
       assertEquals(typeof post.child_comments[0].cid, "number");
       assertEquals(typeof post.child_comments[0].created_at, "string");
     });
@@ -1175,7 +1248,8 @@ Deno.test(
       assertEquals(res.status, 302);
 
       // Verify reply exists
-      const [reply] = await sql`select body, created_by, parent_cid from com where created_by = 'bot_test' and parent_cid = ${playerComment.cid}`;
+      const [reply] =
+        await sql`select body, created_by, parent_cid from com where created_by = 'bot_test' and parent_cid = ${playerComment.cid}`;
       assertEquals(reply.created_by, "bot_test");
       assertEquals(reply.body.includes("Correct!"), true);
     });
@@ -1210,12 +1284,16 @@ Deno.test(
 
       // User replies
       const r2 = await app.request(`/c/${rootCid}`, {
-        method: "POST", body: fd({ body: "my answer" }), headers: jAuth,
+        method: "POST",
+        body: fd({ body: "my answer" }),
+        headers: jAuth,
       });
 
       // Bot grades
       await app.request(`/c/${rootCid}`, {
-        method: "POST", body: fd({ body: "@john_doe Correct!" }), headers: botAuth,
+        method: "POST",
+        body: fd({ body: "@john_doe Correct!" }),
+        headers: botAuth,
       });
 
       // Now fetch and check: bot can see its own reply in child_comments
@@ -1231,7 +1309,8 @@ Deno.test(
 
     await t.step("bot reply inherits parent tags/orgs", async () => {
       // Use DB directly to avoid rate limiter (which is in-memory and shared across test suites)
-      const [root] = await sql`insert into com (created_by, body, tags) values ('bot_test', 'tagged post', '{alpha,beta}') returning cid`;
+      const [root] =
+        await sql`insert into com (created_by, body, tags) values ('bot_test', 'tagged post', '{alpha,beta}') returning cid`;
       await sql`insert into com (parent_cid, created_by, body, tags, orgs, usrs) values (${root.cid}, 'john_doe', 'reply inherits tags', '{alpha,beta}', '{}', '{}')`;
       const [reply] = await sql`select tags from com where parent_cid = ${root.cid} and created_by = 'john_doe'`;
       assertEquals(reply.tags, ["alpha", "beta"]);
@@ -1239,7 +1318,8 @@ Deno.test(
 
     await t.step("reactions don't appear in child_comments", async () => {
       // Seed directly to avoid rate limiter
-      const [root] = await sql`insert into com (created_by, body, tags) values ('bot_test', 'react to me', '{test}') returning cid`;
+      const [root] =
+        await sql`insert into com (created_by, body, tags) values ('bot_test', 'react to me', '{test}') returning cid`;
       // Add reaction via DB
       await sql`insert into com (parent_cid, created_by, body, tags, orgs, usrs) values (${root.cid}, 'john_doe', '▲', '{test}', '{}', '{}')`;
       await sql`update com set c_reactions = c_reactions || hstore('▲', '1') where cid = ${root.cid}`;
