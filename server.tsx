@@ -10,10 +10,86 @@ import { basicAuth } from "@hono/hono/basic-auth";
 import { html, raw } from "@hono/hono/html";
 import { deleteCookie, getSignedCookie, setSignedCookie } from "@hono/hono/cookie";
 import { serveStatic } from "@hono/hono/deno";
+import type { HtmlEscapedString } from "@hono/hono/utils/html";
 import pg from "postgres";
 import { Resend } from "resend";
 export const resend = new Resend(Deno.env.get("RESEND_API_KEY") ?? "");
 import Stripe from "stripe";
+
+declare module "@hono/hono" {
+  interface ContextRenderer {
+    (
+      content: string | HtmlEscapedString | Promise<string | HtmlEscapedString>,
+      props?: { title?: string },
+    ): Response | Promise<Response>;
+  }
+}
+
+//// TYPES /////////////////////////////////////////////////////////////////////
+
+export type Usr = {
+  name: string;
+  email: string;
+  password: string | null;
+  bio: string;
+  email_verified_at: Date | null;
+  invited_by: string;
+  orgs_r: string[];
+  orgs_w: string[];
+  last_seen_at: Date;
+  created_at: Date;
+  ok?: boolean;
+  post_count?: number;
+};
+
+export type Org = {
+  name: string;
+  created_by: string;
+  stripe_sub_id: string | null;
+  created_at: Date;
+};
+
+export type ChildCom = {
+  cid: number;
+  parent_cid: number | null;
+  body: string;
+  created_by: string;
+  created_at: string;
+  tags?: string[];
+  orgs?: string[];
+  usrs?: string[];
+  c_flags: number;
+  comments: number;
+  reaction_counts: Record<string, number>;
+  user_reactions: string[];
+};
+
+export type Com = {
+  cid: number;
+  parent_cid: number | null;
+  created_by: string;
+  tags: string[];
+  orgs: string[];
+  usrs: string[];
+  mentions: string[];
+  body: string;
+  links: number[];
+  thumb: string | null;
+  created_at: string;
+  c_comments: number;
+  c_reactions: Record<string, string>;
+  c_flags: number;
+  flaggers: string[];
+  domain: string | null;
+  score: string;
+  comments?: number;
+  reaction_count?: number;
+  reaction_counts?: Record<string, number>;
+  user_reactions?: string[];
+  child_comments?: ChildCom[];
+  unread?: boolean;
+  kind?: "mention" | "reply";
+};
 
 //// CONSTANTS & HELPERS ///////////////////////////////////////////////////////
 
@@ -90,10 +166,10 @@ export const decodeLabels = (p: URLSearchParams) => {
   return res.filter(Boolean).join(" ");
 };
 
-export const formatLabels = (c: any) => [
-  ...(c.tags || []).map((t: any) => `#${t}`),
-  ...(c.orgs || []).map((t: any) => `*${t}`),
-  ...(c.usrs || []).map((t: any) => `@${t}`),
+export const formatLabels = (c: { tags?: string[]; orgs?: string[]; usrs?: string[] }) => [
+  ...(c.tags || []).map((t) => `#${t}`),
+  ...(c.orgs || []).map((t) => `*${t}`),
+  ...(c.usrs || []).map((t) => `@${t}`),
 ];
 
 const buildFilterTitle = (p: URLSearchParams) =>
@@ -134,13 +210,19 @@ const validateEmailToken = async (token: string, email: string, maxAge = 1728000
 
 //// POSTGRES //////////////////////////////////////////////////////////////////
 
-export let sql: any = pg(Deno.env.get(`DATABASE_URL`)?.replace(/flycast/, "internal")!, { database: "ding" });
-export const setSql = (s: typeof sql) => (sql = s);
+type Sql = ReturnType<typeof pg>;
+export let sql: Sql = pg(Deno.env.get(`DATABASE_URL`)?.replace(/flycast/, "internal")!, { database: "ding" });
+export const setSql = (s: Sql) => (sql = s);
 
 //// RESEND ///////////////////////////////////////////////////////////////////
 
 if (!Deno.env.get(`RESEND_API_KEY`))
   console.warn("RESEND_API_KEY is missing. Verification + password reset emails will fail.");
+
+const resendErrBody = (err: unknown) => {
+  const r = (err as { response?: { body?: unknown } })?.response;
+  return r?.body ?? err;
+};
 
 const sendVerify = async (email: string) => {
   if (!Deno.env.get(`RESEND_API_KEY`))
@@ -169,14 +251,12 @@ if (!isStripeConfigured)
   console.warn("STRIPE_SECRET_KEY is missing, invalid, or still a placeholder. org features will fail.");
 
 export const stripe = new Stripe(isStripeConfigured ? stripeKey : "sk_test_placeholder", {
-  // @ts-ignore: stripe version types
-  apiVersion: "2024-12-18.acacia",
   httpClient: Stripe.createFetchHttpClient(),
 });
 
 //// COMPONENTS ////////////////////////////////////////////////////////////////
 
-const User = (u: Record<string, any>, viewerName?: string) => {
+const User = (u: Usr, viewerName?: string) => {
   const isOwner = viewerName && viewerName == u.name;
   return (
     <div class="user">
@@ -252,7 +332,7 @@ const ActiveFilters = ({ params, basePath = "/c" }: { params: URLSearchParams; b
     : <div class="active-filters" />;
 };
 
-const Reactions = (c: any) =>
+const Reactions = (c: Com | ChildCom) =>
   Object.entries({ "▲": 0, "▼": 0, ...(c.reaction_counts || {}) }).map(([k, v]) => (
     <form
       key={k}
@@ -265,8 +345,8 @@ const Reactions = (c: any) =>
     </form>
   ));
 
-const Comment = (c: any, user?: string) => (
-  <div key={c.cid} class="comment" id={c.cid}>
+const Comment = (c: Com | ChildCom, user?: string) => (
+  <div key={c.cid} class="comment" id={String(c.cid)}>
     <div>
       {c.created_at && <a href={`/c/${c.cid}`}>{new Date(c.created_at).toLocaleDateString()}</a>}
       {c.parent_cid && <a href={`/c/${c.parent_cid}`}>parent</a>}
@@ -280,14 +360,16 @@ const Comment = (c: any, user?: string) => (
       {Reactions(c)}
     </div>
     <pre>{(c.c_flags >= FLAG_THRESHOLD && user !== c.created_by) ? "[flagged]" : (c.body || "[deleted by author]")}</pre>
-    <div style="padding-left:1rem">{c?.child_comments?.map((ch: any) => Comment(ch, user))}</div>
+    <div style="padding-left:1rem">
+      {(c as Com).child_comments?.map((ch) => Comment(ch, user))}
+    </div>
   </div>
 );
 
 const defaultThumb =
   "data:image/svg+xml,%3Csvg xmlns=%27http://www.w3.org/2000/svg%27 viewBox=%270 0 1 1%27%3E%3Crect fill=%27%23333%27 width=%271%27 height=%271%27/%3E%3C/svg%3E";
 
-const Post = (c: any, user?: string, p?: URLSearchParams) => {
+const Post = (c: Com, user?: string, p?: URLSearchParams) => {
   const linkUrl = (c.body && extractFirstUrl(c.body)) || null;
   return (
     <>
@@ -455,7 +537,7 @@ app.use("*", async (c, next) => {
       : ""
   }
   `;
-  c.setRenderer((content: any, props?: any) =>
+  c.setRenderer((content, props) =>
     c.html(html`
       <!DOCTYPE html>
       <html>
@@ -500,13 +582,13 @@ app.get("/robots.txt", (c) => c.text("User-agent: *\\nDisallow: /*?*\\nCrawl-del
 app.get("/sitemap.txt", (c) => c.text("https://ding.bar/"));
 
 app.onError((err, c) => {
-  if (err instanceof HTTPException) return (err as any).getResponse();
+  if (err instanceof HTTPException) return err.getResponse();
   console.error(err);
   const msg = "Sorry, this computer is мᎥｓβ𝕖𝓱𝐀𝓋𝓲𝓷g.", h = host(c);
   if (h === "api") return c.json({ error: msg }, 500);
   if (h === "rss") return c.text(msg, 500);
   c.status(500);
-  return (c as any).render(
+  return c.render(
     <section>
       <p>{msg}</p>
     </section>,
@@ -520,7 +602,7 @@ app.get("/", async (c) => {
   const rT = viewer?.orgs_r || [], wT = viewer?.orgs_w || [];
   const tags = c.req.queries("tag") || [], orgs = c.req.queries("org") || [], usrs = c.req.queries("usr") || [];
 
-  const presets = await sql`
+  const presets = await sql<{ tag: string }[]>`
     select distinct on (tag) tag from (
       select '*' || unnest(${wT}::text[]) as tag, 1 as pri
       union all select '#' || unnest(tags), 2 from com where created_by = ${name || ""} and parent_cid is null
@@ -556,7 +638,7 @@ app.get("/", async (c) => {
   `;
 
   const cur = new URL(c.req.url).searchParams, meta = buildFilterTitle(cur);
-  return (c as any).render(
+  return c.render(
     <>
       <section>
         <form method="post" action="/c">
@@ -569,13 +651,13 @@ app.get("/", async (c) => {
         <ActiveFilters params={cur} basePath="/" />
         {presets.length > 0 && (
           <div class="tag-presets">
-            {presets.map((t: any) => (
+            {presets.map((t: { tag: string }) => (
               <a
                 key={t.tag}
                 href={buildAdditiveLink(
                   cur,
-                  (t.tag as string)[0] === "*" ? "org" : (t.tag as string)[0] === "@" ? "usr" : "tag",
-                  (t.tag as string).slice(1),
+                  t.tag[0] === "*" ? "org" : t.tag[0] === "@" ? "usr" : "tag",
+                  t.tag.slice(1),
                 )}
                 class="tag-preset"
               >
@@ -593,7 +675,7 @@ app.get("/", async (c) => {
               no posts. <a href="/">go home.</a>
             </p>
           )
-          : <div class="posts">{items.map((i: any) => Post(i, name, cur))}</div>}
+          : <div class="posts">{items.map((i) => Post(i as Com, name, cur))}</div>}
       </section>
       <section>
         <div style="margin-top:2rem;">
@@ -633,7 +715,7 @@ app.get("/verify", async (c) => {
 });
 
 app.get("/forgot", (c) =>
-  (c as any).render(
+  c.render(
     <section>
       {c.req.query("sent") !== undefined
         ? (
@@ -658,7 +740,7 @@ app.post("/forgot", async (c) => {
 });
 
 app.get("/password", (c) =>
-  (c as any).render(
+  c.render(
     <section>
       <form method="post" action="/password">
         <input name="token" value={c.req.query("token")} type="hidden" />
@@ -691,7 +773,7 @@ app.post("/invite", authed, async (c) => {
 
 app.get("/signup", (c) => {
   const err = c.req.query("error"), prefillEmail = c.req.query("email") ?? "";
-  const messages: Record<string, any> = {
+  const messages: Record<string, HtmlEscapedString | Promise<HtmlEscapedString>> = {
     name_taken: <p>That username is already taken. Pick another.</p>,
     already_verified: (
       <p>
@@ -705,7 +787,7 @@ app.get("/signup", (c) => {
     ),
     conflict: <p>Username or email already taken.</p>,
   };
-  return (c as any).render(
+  return c.render(
     <section>
       <h2>sign up</h2>
       {c.req.query("ok") !== undefined && <p>Check your email for a verification link.</p>}
@@ -757,8 +839,8 @@ app.post("/signup", async (c) => {
   try {
     await sendVerify(newUsr.email);
     return c.redirect("/signup?ok");
-  } catch (err: any) {
-    console.error(`/signup email_failed for ${newUsr.email}:`, err?.response?.body || err);
+  } catch (err) {
+    console.error(`/signup email_failed for ${newUsr.email}:`, resendErrBody(err));
     return c.redirect(`/signup?error=email_failed${qs}`);
   }
 });
@@ -772,8 +854,8 @@ app.post("/signup/resend", async (c) => {
   try {
     await sendVerify(u.email);
     return c.redirect("/signup?resent");
-  } catch (err: any) {
-    console.error(`/signup/resend email_failed for ${email}:`, err?.response?.body || err);
+  } catch (err) {
+    console.error(`/signup/resend email_failed for ${email}:`, resendErrBody(err));
     return c.redirect(`/signup?error=email_failed${qs}`);
   }
 });
@@ -791,7 +873,7 @@ app.get("/u", async (c) => {
 
   if (!name) {
     const action = next ? `/login?next=${encodeURIComponent(next)}` : "/login";
-    return (c as any).render(
+    return c.render(
       <section>
         <h2>login</h2>
         <form method="post" action={action}>
@@ -815,9 +897,9 @@ app.get("/u", async (c) => {
   `;
   if (!usr) return notFound();
   if (!usr.password) return c.redirect("/password");
-  return (c as any).render(
+  return c.render(
     <>
-      <section>{User(usr, name)}</section>
+      <section>{User(usr as unknown as Usr, name)}</section>
       <section>
         <form method="post" action="/u">
           <textarea name="bio" rows={6} placeholder="bio">
@@ -859,7 +941,7 @@ app.get("/n", authed, async (c) => {
   const items = await notifQuery(name, usr?.orgs_r || []);
   await sql`update usr set last_seen_at = now() where name = ${name}`;
   if (host(c) === "api") return c.json(items);
-  return (c as any).render(
+  return c.render(
     <>
       <section>
         <h2>notifications</h2>
@@ -868,17 +950,20 @@ app.get("/n", authed, async (c) => {
         </p>
       </section>
       <section>
-        {items.length === 0 ? <p style="opacity:0.6;">no notifications yet.</p> : items.map((i: any) => (
-          <div
-            key={i.cid}
-            style={`border-left: 3px solid ${
-              i.unread ? "currentColor" : "transparent"
-            }; padding-left: 0.5rem; margin-bottom: 0.5rem;`}
-          >
-            <div style="font-size:0.75rem;opacity:0.6;">{i.kind}</div>
-            {Comment(i, name)}
-          </div>
-        ))}
+        {items.length === 0 ? <p style="opacity:0.6;">no notifications yet.</p> : items.map((i) => {
+          const item = i as Com;
+          return (
+            <div
+              key={item.cid}
+              style={`border-left: 3px solid ${
+                item.unread ? "currentColor" : "transparent"
+              }; padding-left: 0.5rem; margin-bottom: 0.5rem;`}
+            >
+              <div style="font-size:0.75rem;opacity:0.6;">{item.kind}</div>
+              {Comment(item, name)}
+            </div>
+          );
+        })}
       </section>
     </>,
     { title: "notifications" },
@@ -903,7 +988,7 @@ app.get("/n/unread", authed, async (c) => {
   `;
   return c.json({
     count: rows.length,
-    latest: rows.map((r: any) => ({
+    latest: rows.map((r) => ({
       title: `@${r.created_by}: ${(r.body || "").trim().slice(0, 80)}`,
       url: `/c/${r.parent_cid || r.cid}#${r.cid}`,
     })),
@@ -925,7 +1010,7 @@ app.get("/u/:name", async (c) => {
     case "api":
       return c.json(usr, 200);
     default:
-      return (c as any).render(<section>{User(usr, viewerName)}</section>, { title: usr.name });
+      return c.render(<section>{User(usr as Usr, viewerName)}</section>, { title: usr.name });
   }
 });
 
@@ -936,7 +1021,7 @@ app.get("/us", async (c) => {
 });
 
 app.get("/o/new", authed, (c) =>
-  (c as any).render(
+  c.render(
     <section>
       <h2>
         <span style="margin-right: 0.5rem;">▢</span>create an organization
@@ -1038,16 +1123,16 @@ app.get("/o/success", authed, async (c) => {
 
 app.get("/o/:name", async (c) => {
   const [org, hasAccess, members] = await Promise.all([
-    sql`select * from org where name = ${c.req.param("name")}`.then((r: any) => r[0]),
+    sql`select * from org where name = ${c.req.param("name")}`.then((r) => r[0]),
     sql`select true from usr where true and name = ${c.get("name") ?? ""} and ${c.req.param("name")} = any(orgs_r)`
-      .then((r: any) => r[0]),
+      .then((r) => r[0]),
     sql`select name from usr where ${c.req.param("name")} = any(orgs_r)`,
   ]);
   if (!org) return notFound();
   if (!hasAccess) throw new HTTPException(403, { message: "Access denied" });
 
   const viewer = c.get("name") ?? "";
-  return (c as any).render(
+  return c.render(
     <section>
       <h2>*{org.name}</h2>
       <p style="font-size: 0.875rem; opacity: 0.5; margin: 0.5rem 0 1.5rem 0;">
@@ -1059,7 +1144,7 @@ app.get("/o/:name", async (c) => {
             members ({members.length})
           </h3>
           <div style="display: flex; flex-direction: column; gap: 0.5rem;">
-            {members.map((m: any) => (
+            {members.map((m) => (
               <div style="display: flex; align-items: center; justify-content: space-between; font-size: 0.875rem;">
                 <a href={`/u/${m.name}`}>@{m.name}</a>
                 {org.created_by === viewer && m.name !== viewer && (
@@ -1125,7 +1210,7 @@ app.get("/o/:name", async (c) => {
 
 app.post("/o/:name/invite", authed, async (c) => {
   const [org, { email }] = await Promise.all([
-    sql`select * from org where name = ${c.req.param("name")}`.then((r: any) => r[0]),
+    sql`select * from org where name = ${c.req.param("name")}`.then((r) => r[0]),
     form(c),
   ]);
   if (!org) return notFound();
@@ -1164,7 +1249,7 @@ app.post("/o/:name/invite", authed, async (c) => {
 
 app.post("/o/:name/remove", authed, async (c) => {
   const [org, { name: paramName }] = await Promise.all([
-    sql`select * from org where name = ${c.req.param("name")}`.then((r: any) => r[0]),
+    sql`select * from org where name = ${c.req.param("name")}`.then((r) => r[0]),
     form(c),
   ]);
   if (!org) return notFound();
@@ -1219,10 +1304,9 @@ app.post("/api/stripe-webhook", async (c) => {
     const sub = event.data.object;
     const [org] = await sql`select name from org where stripe_sub_id = ${sub.id}`;
     if (org) {
-      await sql.begin(async (sql: any) => {
-        // @ts-ignore: postgres.js transaction types
+      await sql.begin(async (tx) => {
+        const sql = tx as unknown as Sql;
         await sql`update usr set orgs_r = array_remove(orgs_r, ${org.name}), orgs_w = array_remove(orgs_w, ${org.name})`;
-        // @ts-ignore: postgres.js transaction types
         await sql`delete from org where name = ${org.name}`;
       });
     }
@@ -1233,7 +1317,7 @@ app.post("/api/stripe-webhook", async (c) => {
 app.get("/c/:cid/delete", authed, async (c) => {
   const [cm] = await sql`select body from com where cid = ${c.req.param("cid")} and created_by = ${c.get("name")!}`;
   if (!cm) return notFound();
-  return (c as any).render(
+  return c.render(
     <section>
       <h2>Delete?</h2>
       <pre>{cm.body.slice(0, 200)}</pre>
@@ -1274,12 +1358,22 @@ app.post("/c/:p?", async (c) => {
   const f = await c.req.formData(),
     b = f.get("body")?.toString() || "",
     [usr] = await sql`select orgs_w, orgs_r from usr where name = ${n}`;
-  let tags: string[], orgs: string[], usrs: string[], prm: any = null;
+  let tags: string[], orgs: string[], usrs: string[];
+  type Prm = {
+    tags: string[];
+    orgs: string[];
+    usrs: string[];
+    created_by: string;
+    prm_parent: number | null;
+    domain: string | null;
+  };
+  let prm: Prm | undefined;
 
   if (pid) {
-    [prm] =
-      await sql`select tags, orgs, usrs, created_by, parent_cid as prm_parent, domain from com where cid = ${pid}`;
-    if (!prm || !prm.orgs.every((t: any) => usr.orgs_r.includes(t)) || (prm.usrs.length && !prm.usrs.includes(n)))
+    [prm] = await sql<
+      Prm[]
+    >`select tags, orgs, usrs, created_by, parent_cid as prm_parent, domain from com where cid = ${pid}`;
+    if (!prm || !prm.orgs.every((t) => usr.orgs_r.includes(t)) || (prm.usrs.length && !prm.usrs.includes(n)))
       throw new HTTPException(403);
     tags = prm.tags;
     orgs = prm.orgs;
@@ -1291,12 +1385,13 @@ app.post("/c/:p?", async (c) => {
       const [existing] =
         await sql`select cid from com where parent_cid = ${pid} and created_by = ${n} and body = ${b} and char_length(body) = 1 limit 1`;
       if (existing) {
-        await sql.begin((tx: any) =>
-          Promise.all([
-            tx`delete from com where cid = ${existing.cid}`,
-            tx`update com set c_reactions = c_reactions || hstore(${b}, greatest(coalesce((c_reactions->${b})::int,0)-1, 0)::text) where cid = ${pid}`,
-          ])
-        );
+        await sql.begin((tx) => {
+          const sql = tx as unknown as Sql;
+          return Promise.all([
+            sql`delete from com where cid = ${existing.cid}`,
+            sql`update com set c_reactions = c_reactions || hstore(${b}, greatest(coalesce((c_reactions->${b})::int,0)-1, 0)::text) where cid = ${pid}`,
+          ]);
+        });
         await refreshScores(pid);
         return c.redirect(prm.prm_parent ? `/c/${prm.prm_parent}#${pid}` : `/c/${pid}`);
       }
@@ -1395,7 +1490,7 @@ app.get("/c/:cid?", async (c) => {
   if (host(c) === "rss") {
     return c.text(
       `<?xml version="1.0"?><rss version="2.0"><channel><title>ding</title><link>https://ding.bar/</link>${
-        items.map((i: any) =>
+        items.map((i) =>
           `<item><title>${escapeXml(i.body.slice(0, 60))}</title><link>https://ding.bar/c/${i.cid}</link><pubDate>${
             new Date(i.created_at).toUTCString()
           }</pubDate></item>`
@@ -1436,7 +1531,7 @@ app.get("/c/:cid?", async (c) => {
                    order by (name ilike ${q.q + "%"}) desc, length(name) asc
                    limit 5`
       : [];
-    return (c as any).render(
+    return c.render(
       <>
         <section>
           <form id="search-form" method="get" action="/c" style="display:flex;gap:0.5rem;">
@@ -1490,13 +1585,13 @@ app.get("/c/:cid?", async (c) => {
               class="user-matches"
               style="display:flex;flex-wrap:wrap;gap:0.5rem;margin:0.5rem 0;font-size:0.875rem;"
             >
-              {userMatches.map((u: any) => <a key={u.name} href={`/c?usr=${u.name}`}>@{u.name}</a>)}
+              {userMatches.map((u) => <a key={u.name} href={`/c?usr=${u.name}`}>@{u.name}</a>)}
             </div>
           )}
           <SortToggle sort={s} baseHref={`/c?${cur}`} title="results" />
         </section>
         <section>
-          <div class="posts">{items.map((i: any) => Post(i, n, cur))}</div>
+          <div class="posts">{items.map((i) => Post(i as Com, n, cur))}</div>
         </section>
         <section>
           <div style="margin-top:2rem;">
@@ -1517,7 +1612,7 @@ app.get("/c/:cid?", async (c) => {
     await sql`select cid, body, created_at from com where parent_cid is null and ${post.cid} = any(links) and orgs <@ ${rT}::text[] and (usrs = '{}' or ${
       n || ""
     }::text = any(usrs)) order by created_at desc limit 5`;
-  return (c as any).render(
+  return c.render(
     <>
       {q.err === "self-react" && (
         <section>
@@ -1525,7 +1620,10 @@ app.get("/c/:cid?", async (c) => {
         </section>
       )}
       <section>
-        {Comment({ ...post, child_comments: (post.child_comments || []).filter((r: any) => isReaction(r.body)) }, n)}
+        {Comment(
+          { ...post, child_comments: (post.child_comments || []).filter((r: ChildCom) => isReaction(r.body)) } as Com,
+          n,
+        )}
       </section>
       <section>
         {n
@@ -1551,12 +1649,12 @@ app.get("/c/:cid?", async (c) => {
         <SortToggle sort={s} baseHref={`/c/${cid}`} title="comments" />
       </section>
       <section>
-        {(post.child_comments || []).filter((r: any) => !isReaction(r.body)).map((r: any) => Comment(r, n))}
+        {(post.child_comments || []).filter((r: ChildCom) => !isReaction(r.body)).map((r: ChildCom) => Comment(r, n))}
       </section>
       {backlinks.length > 0 && (
         <section>
           <h3 style="margin:0 0 0.5rem 0;font-size:0.875rem;opacity:0.6;">backlinks</h3>
-          {backlinks.map((bl: any) => (
+          {backlinks.map((bl) => (
             <div key={bl.cid} style="margin:0.25rem 0;">
               <a href={`/c/${bl.cid}`}>{bl.body.trim().split("\n")[0].slice(0, 60)}</a>
             </div>

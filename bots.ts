@@ -20,7 +20,7 @@ export function botInit(envPrefix: string) {
 
 // ---- HTTP helpers ----
 
-export async function getJson<T = any>(path: string, auth: string, apiUrl: string): Promise<T> {
+export async function getJson<T = unknown>(path: string, auth: string, apiUrl: string): Promise<T> {
   const res = await fetch(`${apiUrl}${path}`, {
     headers: { Accept: "application/json", Authorization: `Basic ${auth}` },
   });
@@ -116,12 +116,14 @@ export const post = (auth: string, apiUrl: string, body: string, tags: string) =
 export const reply = (auth: string, apiUrl: string, parentCid: number, body: string) =>
   postForm(`/c/${parentCid}`, { body }, auth, apiUrl);
 
+export type Post = { cid: number; parent_cid: number | null; body: string; created_by: string; created_at: string };
+
 export async function fetchPost(
   auth: string,
   apiUrl: string,
   cid: number,
-): Promise<{ cid: number; parent_cid: number | null; body: string; created_by: string; created_at: string } | null> {
-  const items = await getJson<any[]>(`/c/${cid}`, auth, apiUrl).catch(() => []);
+): Promise<Post | null> {
+  const items = await getJson<Post[]>(`/c/${cid}`, auth, apiUrl).catch(() => [] as Post[]);
   return items[0] || null;
 }
 
@@ -145,16 +147,12 @@ export async function extractArticle(
   const ct = res.headers.get("content-type") || "";
   if (!ct.includes("html")) return null;
   const html = await res.text();
-  // deno-lint-ignore no-explicit-any
-  const doc = (parseHTML(html) as any).document;
-  // deno-lint-ignore no-explicit-any
-  const article = new Readability(doc as any).parse();
+  const doc = parseHTML(html).document as unknown as Document;
+  const article = new Readability(doc).parse();
   if (!article?.content) return null;
-  // deno-lint-ignore no-explicit-any
-  const cdoc = (parseHTML(`<div id=__r>${article.content}</div>`) as any).document;
+  const cdoc = parseHTML(`<div id=__r>${article.content}</div>`).document as unknown as Document;
   const paras: string[] = [];
-  // deno-lint-ignore no-explicit-any
-  cdoc.querySelectorAll("p, h1, h2, h3, h4, h5, h6, li, blockquote, pre").forEach((el: any) => {
+  cdoc.querySelectorAll("p, h1, h2, h3, h4, h5, h6, li, blockquote, pre").forEach((el: Element) => {
     const t = (el.textContent || "").replace(/[ \t\u00a0]+/g, " ").replace(/\s*\n\s*/g, " ").trim();
     if (!t) return;
     const tag = el.tagName.toLowerCase();
@@ -349,6 +347,14 @@ export function todaySeed(): number {
 
 // ---- Candidate picking ----
 
+export type Candidate = {
+  cid: number;
+  parent_cid: number | null;
+  body: string;
+  created_by: string;
+  c_comments: number;
+};
+
 // Fetches top-level posts + comments, filters bot's own posts + already-answered,
 // ranks: prefer posts with fewer replies (spreads bots across threads), random tiebreak.
 export async function pickCandidates(
@@ -357,22 +363,22 @@ export async function pickCandidates(
   botUsername: string,
   answered: Set<number>,
   opts: { pool?: number; minBodyLen?: number; excludeLinkPosts?: boolean } = {},
-): Promise<{ cid: number; parent_cid: number | null; body: string; created_by: string; c_comments: number }[]> {
+): Promise<Candidate[]> {
   const pool = opts.pool ?? 50;
   const minBodyLen = opts.minBodyLen ?? 30;
   const excludeLinkPosts = opts.excludeLinkPosts ?? true;
   const [top, comments] = await Promise.all([
-    getJson<any[]>(`/c?sort=new&limit=${pool}`, auth, apiUrl).catch(() => []),
-    getJson<any[]>(`/c?sort=new&comments=1&limit=${pool}`, auth, apiUrl).catch(() => []),
+    getJson<Candidate[]>(`/c?sort=new&limit=${pool}`, auth, apiUrl).catch(() => [] as Candidate[]),
+    getJson<Candidate[]>(`/c?sort=new&comments=1&limit=${pool}`, auth, apiUrl).catch(() => [] as Candidate[]),
   ]);
   const seen = new Set<number>();
-  const all = [...top, ...comments].filter((p: { cid: number }) => {
+  const all = [...top, ...comments].filter((p) => {
     if (seen.has(p.cid)) return false;
     seen.add(p.cid);
     return true;
   });
   return all
-    .filter((p: { cid: number; created_by: string; body: string }) =>
+    .filter((p) =>
       p.created_by !== botUsername &&
       !answered.has(p.cid) &&
       p.body.length > 1 &&

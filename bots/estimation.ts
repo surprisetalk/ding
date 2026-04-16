@@ -79,8 +79,11 @@ function parseNumber(s: string): number | null {
 const logDist = (guess: number, actual: number) =>
   guess <= 0 || actual <= 0 ? Infinity : Math.abs(Math.log10(guess) - Math.log10(actual));
 
+type ThreadPost = { cid: number; created_at: string; child_comments?: ChildComment[] };
+type ChildComment = { cid: number; body: string; created_by: string };
+
 async function main() {
-  const posts = await getJson<any[]>(`/c?usr=${botUsername}&limit=5`, auth, apiUrl);
+  const posts = await getJson<ThreadPost[]>(`/c?usr=${botUsername}&limit=5`, auth, apiUrl);
   const lastPost = posts[0];
   const lastAgeHours = lastPost ? (Date.now() - new Date(lastPost.created_at).getTime()) / 3_600_000 : Infinity;
 
@@ -90,17 +93,17 @@ async function main() {
     const dayIndex = Math.floor(new Date(lastPost.created_at).getTime() / 86_400_000) % QUESTIONS.length;
     const question = QUESTIONS[dayIndex];
 
-    const [threadPost] = await getJson<any[]>(`/c/${lastPost.cid}`, auth, apiUrl);
+    const [threadPost] = await getJson<ThreadPost[]>(`/c/${lastPost.cid}`, auth, apiUrl);
     if (threadPost) {
-      const alreadyRevealed = (threadPost.child_comments || []).some((c: any) => c.created_by === botUsername);
+      const alreadyRevealed = (threadPost.child_comments || []).some((c) => c.created_by === botUsername);
       if (!alreadyRevealed) {
-        const playerReplies = (threadPost.child_comments || []).filter((c: any) => c.created_by !== botUsername);
+        const playerReplies = (threadPost.child_comments || []).filter((c) => c.created_by !== botUsername);
         const guesses = playerReplies
-          .map((c: any) => {
+          .map((c) => {
             const n = parseNumber(c.body);
             return n !== null ? { user: c.created_by, guess: n, dist: logDist(n, question.a) } : null;
           })
-          .filter(Boolean) as { user: string; guess: number; dist: number }[];
+          .filter((g): g is { user: string; guess: number; dist: number } => g !== null);
         console.log(`Parsed ${guesses.length}/${playerReplies.length} guesses`);
 
         guesses.sort((a, b) => a.dist - b.dist);

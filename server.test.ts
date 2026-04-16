@@ -23,10 +23,50 @@ import app, {
   stripe,
 } from "./server.tsx";
 
+//// MOCK SHAPES ///////////////////////////////////////////////////////////////
+// Tests monkey-patch Resend and Stripe with narrow stubs; these SDKs don't
+// expose testable-mock types, so we define the tiny surface we actually drive.
+
+type SubItem = { id: string; quantity: number };
+type Subscription = { items: { data: SubItem[] } };
+type UpdateArgs = { items: SubItem[] };
+type UpdateCall = { subId: string; args: UpdateArgs };
+type EmailMsg = { to: string; subject: string; text: string };
+
+type MockResend = {
+  emails: {
+    send: (msg: EmailMsg) => Promise<{ data: { id: string }; error: null }>;
+  };
+};
+
+type MockStripe = {
+  checkout: {
+    sessions: {
+      create: (args?: unknown) => Promise<{ url: string; id: string }>;
+      retrieve: () => Promise<{
+        status: string;
+        subscription: string;
+        metadata: { orgName: string; creatorName: string };
+      }>;
+    };
+  };
+  subscriptions: {
+    retrieve: () => Promise<Subscription>;
+    update: (subId: string, args: UpdateArgs) => Promise<unknown>;
+  };
+  webhooks: {
+    constructEventAsync: (body: string, sig: string) => Promise<unknown>;
+  };
+  __updateCalls: UpdateCall[];
+};
+
+const mResend = resend as unknown as MockResend;
+const mStripe = stripe as unknown as MockStripe;
+
 // Stub Resend so tests don't make network calls.
-const sentEmails: { to: string; subject: string; text: string }[] = [];
-(resend as any).emails = {
-  send: (msg: any) => {
+const sentEmails: EmailMsg[] = [];
+mResend.emails = {
+  send: (msg) => {
     sentEmails.push({ to: msg.to, subject: msg.subject, text: msg.text });
     return Promise.resolve({ data: { id: "test_id" }, error: null });
   },
@@ -83,7 +123,7 @@ const pglite = (f: (sql: pg.Sql) => (t: Deno.TestContext) => Promise<void>) => a
   `);
 
   // Mock Stripe
-  (stripe as any).checkout = {
+  mStripe.checkout = {
     sessions: {
       create: () => Promise.resolve({ url: "https://stripe.com/checkout", id: "cs_test_123" }),
       retrieve: () =>
@@ -94,16 +134,16 @@ const pglite = (f: (sql: pg.Sql) => (t: Deno.TestContext) => Promise<void>) => a
         }),
     },
   };
-  (stripe as any).__updateCalls = [];
-  (stripe as any).subscriptions = {
+  mStripe.__updateCalls = [];
+  mStripe.subscriptions = {
     retrieve: () => Promise.resolve({ items: { data: [{ id: "si_123", quantity: 1 }] } }),
-    update: (subId: string, args: any) => {
-      (stripe as any).__updateCalls.push({ subId, args });
+    update: (subId, args) => {
+      mStripe.__updateCalls.push({ subId, args });
       return Promise.resolve({});
     },
   };
-  (stripe as any).webhooks = {
-    constructEventAsync: (body: string, sig: string) =>
+  mStripe.webhooks = {
+    constructEventAsync: (body, sig) =>
       sig === "valid" ? Promise.resolve(JSON.parse(body)) : Promise.reject(new Error("bad sig")),
   };
 
@@ -552,7 +592,7 @@ Deno.test(
     });
 
     await t.step("POST /o/:name/invite by email adds existing member and bumps Stripe quantity", async () => {
-      (stripe as any).__updateCalls.length = 0;
+      mStripe.__updateCalls.length = 0;
       const body = new FormData();
       body.append("email", "jane@example.com");
       const res = await app.request("/o/TestOrg/invite", { method: "POST", body, headers: authHeaders });
@@ -562,25 +602,25 @@ Deno.test(
       assertEquals(usr.orgs_r.includes("TestOrg"), true);
       assertEquals(usr.orgs_w.includes("TestOrg"), true);
 
-      const calls = (stripe as any).__updateCalls;
+      const calls = mStripe.__updateCalls;
       assertEquals(calls.length, 1);
       assertEquals(calls[0].args.items[0].quantity, 2);
     });
 
     await t.step("POST /o/:name/invite matches email case-insensitively", async () => {
       // jane is already a member from the prior step; mixed case should be idempotent, not create a placeholder
-      (stripe as any).__updateCalls.length = 0;
+      mStripe.__updateCalls.length = 0;
       const body = new FormData();
       body.append("email", "JANE@Example.com");
       const res = await app.request("/o/TestOrg/invite", { method: "POST", body, headers: authHeaders });
       assertEquals(res.status, 302);
-      assertEquals((stripe as any).__updateCalls.length, 0);
+      assertEquals(mStripe.__updateCalls.length, 0);
       const users = await sql`select name from usr where email = 'jane@example.com'`;
       assertEquals(users.length, 1);
     });
 
     await t.step("POST /o/:name/invite new email creates placeholder user with org membership", async () => {
-      (stripe as any).__updateCalls.length = 0;
+      mStripe.__updateCalls.length = 0;
       const body = new FormData();
       body.append("email", "newbie@example.com");
       const res = await app.request("/o/TestOrg/invite", { method: "POST", body, headers: authHeaders });
@@ -595,39 +635,39 @@ Deno.test(
       assertEquals(usr.orgs_r.includes("TestOrg"), true);
       assertEquals(usr.orgs_w.includes("TestOrg"), true);
 
-      const calls = (stripe as any).__updateCalls;
+      const calls = mStripe.__updateCalls;
       assertEquals(calls.length, 1);
       assertEquals(calls[0].args.items[0].quantity, 2);
     });
 
     await t.step("POST /o/:name/invite duplicate email is no-op, no Stripe call, no duped array entry", async () => {
-      (stripe as any).__updateCalls.length = 0;
+      mStripe.__updateCalls.length = 0;
       const body = new FormData();
       body.append("email", "jane@example.com");
       const res = await app.request("/o/TestOrg/invite", { method: "POST", body, headers: authHeaders });
       assertEquals(res.status, 302);
-      assertEquals((stripe as any).__updateCalls.length, 0);
+      assertEquals(mStripe.__updateCalls.length, 0);
       const [usr] = await sql`select orgs_r from usr where name = 'jane_doe'`;
       assertEquals(usr.orgs_r.filter((o: string) => o === "TestOrg").length, 1);
     });
 
     await t.step("POST /o/:name/invite 400 for missing/invalid email, no Stripe call", async () => {
-      (stripe as any).__updateCalls.length = 0;
+      mStripe.__updateCalls.length = 0;
       const body = new FormData();
       body.append("email", "not-an-email");
       const res = await app.request("/o/TestOrg/invite", { method: "POST", body, headers: authHeaders });
       assertEquals(res.status, 400);
-      assertEquals((stripe as any).__updateCalls.length, 0);
+      assertEquals(mStripe.__updateCalls.length, 0);
     });
 
     await t.step("POST /o/:name/invite 403 for non-owner", async () => {
       const janeAuth = { Authorization: "Basic " + btoa("jane@example.com:password1!") };
-      (stripe as any).__updateCalls.length = 0;
+      mStripe.__updateCalls.length = 0;
       const body = new FormData();
       body.append("email", "john@example.com");
       const res = await app.request("/o/TestOrg/invite", { method: "POST", body, headers: janeAuth });
       assertEquals(res.status, 403);
-      assertEquals((stripe as any).__updateCalls.length, 0);
+      assertEquals(mStripe.__updateCalls.length, 0);
     });
 
     await t.step("POST /o/:name/remove removes member", async () => {
@@ -642,20 +682,19 @@ Deno.test(
     });
 
     await t.step("POST /o/:name/remove non-member returns 404, no Stripe call", async () => {
-      (stripe as any).__updateCalls.length = 0;
+      mStripe.__updateCalls.length = 0;
       const body = new FormData();
       body.append("name", "jane_doe");
       const res = await app.request("/o/TestOrg/remove", { method: "POST", body, headers: authHeaders });
       assertEquals(res.status, 404);
-      assertEquals((stripe as any).__updateCalls.length, 0);
+      assertEquals(mStripe.__updateCalls.length, 0);
     });
 
     await t.step("POST /o/:name/remove by self (non-owner) leaves org and decrements Stripe qty", async () => {
       await sql`update usr set orgs_r = array_append(orgs_r, 'TestOrg'), orgs_w = array_append(orgs_w, 'TestOrg') where name = 'jane_doe'`;
-      (stripe as any).__updateCalls.length = 0;
-      const origRetrieve = (stripe as any).subscriptions.retrieve;
-      (stripe as any).subscriptions.retrieve = () =>
-        Promise.resolve({ items: { data: [{ id: "si_123", quantity: 2 }] } });
+      mStripe.__updateCalls.length = 0;
+      const origRetrieve = mStripe.subscriptions.retrieve;
+      mStripe.subscriptions.retrieve = () => Promise.resolve({ items: { data: [{ id: "si_123", quantity: 2 }] } });
 
       const janeAuth = { Authorization: "Basic " + btoa("jane@example.com:password1!") };
       const body = new FormData();
@@ -667,39 +706,39 @@ Deno.test(
       assertEquals(usr.orgs_r.includes("TestOrg"), false);
       assertEquals(usr.orgs_w.includes("TestOrg"), false);
 
-      const calls = (stripe as any).__updateCalls;
+      const calls = mStripe.__updateCalls;
       assertEquals(calls.length, 1);
       assertEquals(calls[0].args.items[0].quantity, 1);
 
-      (stripe as any).subscriptions.retrieve = origRetrieve;
+      mStripe.subscriptions.retrieve = origRetrieve;
     });
 
     await t.step("POST /o/:name/remove owner cannot leave own org", async () => {
-      (stripe as any).__updateCalls.length = 0;
+      mStripe.__updateCalls.length = 0;
       const body = new FormData();
       body.append("name", "john_doe");
       const res = await app.request("/o/TestOrg/remove", { method: "POST", body, headers: authHeaders });
       assertEquals(res.status, 400);
-      assertEquals((stripe as any).__updateCalls.length, 0);
+      assertEquals(mStripe.__updateCalls.length, 0);
       const [usr] = await sql`select orgs_r from usr where name = 'john_doe'`;
       assertEquals(usr.orgs_r.includes("TestOrg"), true);
     });
 
     await t.step("POST /o/:name/remove by non-owner targeting another member returns 403", async () => {
       await sql`update usr set orgs_r = array_append(orgs_r, 'TestOrg'), orgs_w = array_append(orgs_w, 'TestOrg') where name = 'jane_doe'`;
-      (stripe as any).__updateCalls.length = 0;
+      mStripe.__updateCalls.length = 0;
       const janeAuth = { Authorization: "Basic " + btoa("jane@example.com:password1!") };
       const body = new FormData();
       body.append("name", "john_doe");
       const res = await app.request("/o/TestOrg/remove", { method: "POST", body, headers: janeAuth });
       assertEquals(res.status, 403);
-      assertEquals((stripe as any).__updateCalls.length, 0);
+      assertEquals(mStripe.__updateCalls.length, 0);
     });
 
     await t.step("POST /o/new with taken name returns 409, no Stripe Checkout", async () => {
-      const stripeCreateCalls: any[] = [];
-      const origCreate = (stripe as any).checkout.sessions.create;
-      (stripe as any).checkout.sessions.create = (args: any) => {
+      const stripeCreateCalls: unknown[] = [];
+      const origCreate = mStripe.checkout.sessions.create;
+      mStripe.checkout.sessions.create = (args) => {
         stripeCreateCalls.push(args);
         return origCreate(args);
       };
@@ -708,7 +747,7 @@ Deno.test(
       const res = await app.request("/o/new", { method: "POST", body, headers: authHeaders });
       assertEquals(res.status, 409);
       assertEquals(stripeCreateCalls.length, 0);
-      (stripe as any).checkout.sessions.create = origCreate;
+      mStripe.checkout.sessions.create = origCreate;
     });
   }),
 );
@@ -1269,7 +1308,7 @@ Deno.test(
       assertEquals(tagRes.status, 200);
       const posts = await tagRes.json();
       assertEquals(posts.length >= 1, true);
-      assertEquals(posts.some((p: any) => p.body === "Will it ship on time?"), true);
+      assertEquals(posts.some((p: { body: string }) => p.body === "Will it ship on time?"), true);
     });
 
     await t.step("bot dedup: can detect own prior reply in child_comments", async () => {
@@ -1301,7 +1340,7 @@ Deno.test(
       });
       const items = await res.json();
       const children = items[0].child_comments;
-      const botReplies = children.filter((c: any) => c.created_by === "bot_test");
+      const botReplies = children.filter((c: { created_by: string }) => c.created_by === "bot_test");
       assertEquals(botReplies.length, 1);
       assertEquals(botReplies[0].body, "@john_doe Correct!");
     });
@@ -1401,7 +1440,7 @@ Deno.test(
       assertEquals(res.status, 200);
       const items = await res.json();
       assertEquals(items.length >= 1, true);
-      const mention = items.find((i: any) => i.body.includes("@john_doe check"));
+      const mention = items.find((i: { body: string }) => i.body.includes("@john_doe check"));
       assertEquals(mention?.unread, true);
       assertEquals(mention?.kind, "mention");
       assertEquals(mention?.created_by, "jane_doe");
@@ -1411,7 +1450,7 @@ Deno.test(
       // Previous call updated last_seen_at; a fresh call with no new posts should show unread=false
       const res = await app.request("/n", { headers: { Accept: "application/json", ...jAuth } });
       const items = await res.json();
-      const mention = items.find((i: any) => i.body.includes("@john_doe check"));
+      const mention = items.find((i: { body: string }) => i.body.includes("@john_doe check"));
       assertEquals(mention?.unread, false);
     });
 
@@ -1433,7 +1472,7 @@ Deno.test(
 
       const res = await app.request("/n", { headers: { Accept: "application/json", ...jAuth } });
       const items = await res.json();
-      const reply = items.find((i: any) => i.body === "reply from jane");
+      const reply = items.find((i: { body: string }) => i.body === "reply from jane");
       assertEquals(reply?.kind, "reply");
       assertEquals(reply?.unread, true);
     });
@@ -1449,7 +1488,7 @@ Deno.test(
 
       const res = await app.request("/n", { headers: { Accept: "application/json", ...janeAuth } });
       const items = await res.json();
-      assertEquals(items.some((i: any) => i.body === "jane replies to self"), false);
+      assertEquals(items.some((i: { body: string }) => i.body === "jane replies to self"), false);
     });
 
     await t.step("/n/unread returns count and latest", async () => {
@@ -1485,7 +1524,7 @@ Deno.test(
       });
       assertEquals(res.status, 200);
       const items = await res.json();
-      assertEquals(items.some((i: any) => i.body === "shout out to @john_doe here"), true);
+      assertEquals(items.some((i: { body: string }) => i.body === "shout out to @john_doe here"), true);
     });
 
     await t.step("/c?mention=&comments=1 matches body @refs in replies", async () => {
@@ -1508,7 +1547,7 @@ Deno.test(
       });
       assertEquals(res.status, 200);
       const items = await res.json();
-      assertEquals(items.some((i: any) => i.body === "@bot_dither"), true);
+      assertEquals(items.some((i: { body: string }) => i.body === "@bot_dither"), true);
     });
   }),
 );

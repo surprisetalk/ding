@@ -6,13 +6,14 @@ async function main() {
   const { apiUrl, auth, botUsername } = botInit("READER");
   const answered = await getAnsweredCids(auth, botUsername, apiUrl);
 
+  type PostLite = { cid: number; body: string; created_by: string };
   const [top, comments] = await Promise.all([
-    getJson<any[]>(`/c?sort=new&limit=50`, auth, apiUrl).catch(() => []),
-    getJson<any[]>(`/c?sort=new&comments=1&limit=50`, auth, apiUrl).catch(() => []),
+    getJson<PostLite[]>(`/c?sort=new&limit=50`, auth, apiUrl).catch(() => [] as PostLite[]),
+    getJson<PostLite[]>(`/c?sort=new&comments=1&limit=50`, auth, apiUrl).catch(() => [] as PostLite[]),
   ]);
   const seen = new Set<number>();
-  const posts: { cid: number; body: string; created_by: string }[] = [...top, ...comments]
-    .filter((p: { cid: number }) => !seen.has(p.cid) && seen.add(p.cid));
+  const posts = [...top, ...comments]
+    .filter((p) => !seen.has(p.cid) && !!seen.add(p.cid));
 
   const candidates = posts.filter((p) => {
     if (p.created_by === botUsername || answered.has(p.cid)) return false;
