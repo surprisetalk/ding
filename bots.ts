@@ -1,7 +1,7 @@
 // Shared bot infrastructure for ding bots
 
-import { parseHTML } from "npm:linkedom";
-import { Readability } from "npm:@mozilla/readability";
+import { parseHTML } from "linkedom";
+import { Readability } from "@mozilla/readability";
 
 // ---- Bot init ----
 

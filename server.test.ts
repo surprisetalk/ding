@@ -1,7 +1,7 @@
 //// IMPORTS ///////////////////////////////////////////////////////////////////
 
-import { assertEquals } from "jsr:@std/assert@1";
-import pg from "https://deno.land/x/postgresjs@v3.4.8/mod.js";
+import { assertEquals } from "@std/assert";
+import pg from "postgres";
 import { PGlite } from "@electric-sql/pglite";
 import { citext } from "@electric-sql/pglite/contrib/citext";
 import { hstore } from "@electric-sql/pglite/contrib/hstore";
@@ -976,7 +976,7 @@ Deno.test(
     await t.step("GET /c/:cid shows backlinks from posts linking to it", async () => {
       const [p1] =
         await sql`insert into com (created_by, body, tags) values ('john_doe', 'target post', '{backtest}') returning cid`;
-      const [p2] = await sql`insert into com (created_by, body, tags, links) values ('john_doe', ${
+      await sql`insert into com (created_by, body, tags, links) values ('john_doe', ${
         "check out https://ding.bar/c/" + p1.cid + " cool"
       }, '{backtest}', ${[p1.cid]}) returning cid`;
       const res = await app.request(`/c/${p1.cid}`);
@@ -999,7 +999,7 @@ Deno.test(
       const [p1] =
         await sql`insert into com (created_by, body, tags) values ('john_doe', 'post A', '{advtest}') returning cid`;
       const fakeCid = p1.cid * 10 + 9;
-      const [p2] = await sql`insert into com (created_by, body, tags, links) values ('john_doe', ${
+      await sql`insert into com (created_by, body, tags, links) values ('john_doe', ${
         "see https://ding.bar/c/" + fakeCid
       }, '{advtest}', ${[fakeCid]}) returning cid`;
       const res = await app.request(`/c/${p1.cid}`);
@@ -1236,7 +1236,6 @@ Deno.test(
         headers: { Accept: "application/json", ...botAuth },
       });
       const posts = await listRes.json();
-      const rootCid = posts[0].cid;
       const playerComment = posts[0].child_comments[0];
 
       // Bot replies to the player's comment
@@ -1283,7 +1282,7 @@ Deno.test(
       const rootCid = cidFromLocation(r1.headers.get("location")!);
 
       // User replies
-      const r2 = await app.request(`/c/${rootCid}`, {
+      await app.request(`/c/${rootCid}`, {
         method: "POST",
         body: fd({ body: "my answer" }),
         headers: jAuth,
@@ -1380,7 +1379,7 @@ Deno.test(
 
 Deno.test(
   "notifications inbox",
-  pglite((sql) => async (t) => {
+  pglite((_sql) => async (t) => {
     const jAuth = { Authorization: "Basic " + btoa("john@example.com:password1!") };
     const janeAuth = { Authorization: "Basic " + btoa("jane@example.com:password1!") };
     const fd = (o: Record<string, string>) => {

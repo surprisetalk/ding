@@ -4,7 +4,6 @@ const { apiUrl, auth, botUsername } = botInit("AQUARIUM");
 
 const SWIMMERS = ["🐟", "🐠", "🐡", "🦈", "🦑", "🐡"];
 const BOTTOM_DWELLERS = ["🐌", "🦀", "🐙"];
-const PLANTS = ["🌿", "🪸", "🌱"];
 const GROUND = ["🪨", "🪸", "🌿", "🌱"];
 const BUBBLES = ["🫧", "○"];
 

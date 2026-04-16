@@ -1,5 +1,5 @@
 import { botInit, getAnsweredCids, reply, resolveImageUrl } from "../bots.ts";
-import sharp from "npm:sharp@0.33";
+import sharp from "sharp";
 
 const { apiUrl, auth, botUsername } = botInit("DITHER");
 

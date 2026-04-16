@@ -8,8 +8,10 @@
     "jsr:@std/yaml@*": "1.0.12",
     "npm:@electric-sql/pglite@0.3.15": "0.3.15",
     "npm:@mozilla/readability@*": "0.6.0",
+    "npm:@mozilla/readability@0.6": "0.6.0",
     "npm:@types/node@*": "18.16.19",
     "npm:linkedom@*": "0.18.12",
+    "npm:linkedom@0.18": "0.18.12",
     "npm:pg-gateway@0.3.0-beta.4": "0.3.0-beta.4",
     "npm:resend@4": "4.8.0_react@19.2.5_react-dom@19.2.5__react@19.2.5",
     "npm:sharp@0.33": "0.33.5",
@@ -980,9 +982,13 @@
   "workspace": {
     "dependencies": [
       "jsr:@hono/hono@*",
+      "jsr:@std/assert@1",
       "npm:@electric-sql/pglite@0.3.15",
+      "npm:@mozilla/readability@0.6",
+      "npm:linkedom@0.18",
       "npm:pg-gateway@0.3.0-beta.4",
       "npm:resend@4",
+      "npm:sharp@0.33",
       "npm:stripe@^20.3.1"
     ]
   }
