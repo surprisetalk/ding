@@ -57,7 +57,7 @@ Search and tagging use a unified label syntax:
 - `#tag` - public labels (stored in `tags` array, GIN indexed)
 - `*org` - org/private labels (access controlled via user's `orgs_r`/`orgs_w`)
 - `@user` - user mentions (stored in `usrs` array)
-- `~domain` - domain filter (search only, not stored)
+- `~domain` - synthetic label auto-extracted from every URL host in the body (stored in `domains` array, GIN indexed)
 
 Exported functions: `parseLabels()`, `encodeLabels()`, `decodeLabels()`, `formatLabels()`
 

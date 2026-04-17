@@ -13,6 +13,7 @@ import app, {
   decodeLabels,
   emailToken,
   encodeLabels,
+  extractDomains,
   extractImageUrl,
   extractLinks,
   formatLabels,
@@ -1073,28 +1074,28 @@ Deno.test(
 Deno.test(
   "recommendation scoring",
   pglite((sql) => async (t) => {
-    const mkPost = async (author: string, body: string, tags: string[], domain: string | null = null) => {
+    const mkPost = async (author: string, body: string, tags: string[], domains: string[] = []) => {
       const [r] =
-        await sql`insert into com (created_by, body, tags, domain) values (${author}, ${body}, ${tags}, ${domain}) returning cid`;
+        await sql`insert into com (created_by, body, tags, domains) values (${author}, ${body}, ${tags}, ${domains}) returning cid`;
       await sql`select refresh_score(array(select cid from com where created_by = ${author}))`;
       return r.cid as number;
     };
     const react = async (reactor: string, pid: number, body: string) => {
       await sql`insert into com (parent_cid, created_by, body, tags) values (${pid}, ${reactor}, ${body}, '{x}')`;
       await sql`update com set c_reactions = c_reactions || hstore(${body}, (coalesce((c_reactions->${body})::int,0)+1)::text) where cid = ${pid}`;
-      const [p] = await sql`select created_by, tags, domain from com where cid = ${pid}`;
+      const [p] = await sql`select created_by, tags, domains from com where cid = ${pid}`;
       await sql`select refresh_score(array(
         select cid from com where cid = ${pid} or created_by = ${p.created_by} or tags && ${p.tags}::text[]
-          ${p.domain ? sql`or domain = ${p.domain}` : sql``}
+          ${p.domains.length ? sql`or domains && ${p.domains}::text[]` : sql``}
       ))`;
     };
     const unreact = async (reactor: string, pid: number, body: string) => {
       await sql`delete from com where parent_cid = ${pid} and created_by = ${reactor} and body = ${body}`;
       await sql`update com set c_reactions = c_reactions || hstore(${body}, greatest(coalesce((c_reactions->${body})::int,0)-1, 0)::text) where cid = ${pid}`;
-      const [p] = await sql`select created_by, tags, domain from com where cid = ${pid}`;
+      const [p] = await sql`select created_by, tags, domains from com where cid = ${pid}`;
       await sql`select refresh_score(array(
         select cid from com where cid = ${pid} or created_by = ${p.created_by} or tags && ${p.tags}::text[]
-          ${p.domain ? sql`or domain = ${p.domain}` : sql``}
+          ${p.domains.length ? sql`or domains && ${p.domains}::text[]` : sql``}
       ))`;
     };
     const score = async (cid: number) => {
@@ -1137,11 +1138,11 @@ Deno.test(
 
     await t.step("post on reputable domain beats post on unknown domain", async () => {
       for (const u of ["domA1", "domB1", "ranker1", "ranker2"]) await mkUser(u);
-      const seed = await mkPost("domA1", "good", ["ii"], "good.example");
+      const seed = await mkPost("domA1", "good", ["ii"], ["good.example"]);
       await react("ranker1", seed, "▲");
       await react("ranker2", seed, "▲");
-      const reputable = await mkPost("domB1", "news", ["jj"], "good.example");
-      const fresh = await mkPost("domB1", "news2", ["jj"], "unknown.example");
+      const reputable = await mkPost("domB1", "news", ["jj"], ["good.example"]);
+      const fresh = await mkPost("domB1", "news2", ["jj"], ["unknown.example"]);
       assertEquals((await score(reputable)) > (await score(fresh)), true);
     });
 
@@ -1417,6 +1418,82 @@ Deno.test(
 );
 
 Deno.test(
+  "synthetic domain tags",
+  pglite((sql) => async (t) => {
+    const jAuth = { Authorization: "Basic " + btoa("john@example.com:password1!") };
+    const fd = (o: Record<string, string>) => {
+      const f = new FormData();
+      for (const [k, v] of Object.entries(o)) f.append(k, v);
+      return f;
+    };
+    const cidFromLocation = (loc: string) => +loc.match(/^\/c\/(\d+)/)![1];
+
+    await t.step("POST /c root stores a distinct ~host tag per URL", async () => {
+      const res = await app.request("/c", {
+        method: "POST",
+        body: fd({
+          body: "links https://example.com/a and https://taylor.town/foo.png plus https://example.com/b",
+          tags: "#pub",
+        }),
+        headers: jAuth,
+      });
+      assertEquals(res.status, 302);
+      const cid = cidFromLocation(res.headers.get("location")!);
+      const [row] = await sql`select domains from com where cid = ${cid}`;
+      assertEquals((row.domains as string[]).sort(), ["example.com", "taylor.town"]);
+    });
+
+    await t.step("POST /c reply also stores domains (not just root posts)", async () => {
+      const res = await app.request("/c/301", {
+        method: "POST",
+        body: fd({ body: "see https://taylor.town/thing" }),
+        headers: jAuth,
+      });
+      assertEquals(res.status, 302);
+      const newCid = +res.headers.get("location")!.match(/#(\d+)$/)![1];
+      const [row] = await sql`select domains from com where cid = ${newCid}`;
+      assertEquals(row.domains, ["taylor.town"]);
+    });
+
+    await t.step("GET /c?www=host returns posts whose domains contain host", async () => {
+      const res = await app.request("/c?www=taylor.town", { headers: { Accept: "application/json", ...jAuth } });
+      assertEquals(res.status, 200);
+      const items = await res.json();
+      assertEquals(items.length >= 1, true);
+      for (const i of items) assertEquals((i.domains as string[]).includes("taylor.town"), true);
+    });
+
+    await t.step("GET /c?www=host returns empty for unused host", async () => {
+      const res = await app.request("/c?www=nonexistent.invalid", {
+        headers: { Accept: "application/json", ...jAuth },
+      });
+      assertEquals(res.status, 200);
+      assertEquals((await res.json()).length, 0);
+    });
+
+    await t.step("GET /c?www=host1&www=host2 returns posts on either host (array overlap)", async () => {
+      await app.request("/c", {
+        method: "POST",
+        body: fd({ body: "one https://alpha.example/x", tags: "#pub" }),
+        headers: jAuth,
+      });
+      await app.request("/c", {
+        method: "POST",
+        body: fd({ body: "two https://beta.example/y", tags: "#pub" }),
+        headers: jAuth,
+      });
+      const res = await app.request("/c?www=alpha.example&www=beta.example", {
+        headers: { Accept: "application/json", ...jAuth },
+      });
+      const items = await res.json();
+      const bodies = items.map((i: { body: string }) => i.body);
+      assertEquals(bodies.some((b: string) => b.includes("alpha.example")), true);
+      assertEquals(bodies.some((b: string) => b.includes("beta.example")), true);
+    });
+  }),
+);
+
+Deno.test(
   "notifications inbox",
   pglite((_sql) => async (t) => {
     const jAuth = { Authorization: "Basic " + btoa("john@example.com:password1!") };
@@ -1632,6 +1709,12 @@ Deno.test("formatLabels", async (t) => {
     const result = formatLabels(record);
     assertEquals(result, ["#humor"]);
   });
+
+  await t.step("emits ~host chips for domains", () => {
+    const record = { tags: ["news"], domains: ["example.com", "taylor.town"] };
+    const result = formatLabels(record);
+    assertEquals(result, ["#news", "~example.com", "~taylor.town"]);
+  });
 });
 
 Deno.test("label encoding round-trip", () => {
@@ -1641,6 +1724,52 @@ Deno.test("label encoding round-trip", () => {
   const decoded = decodeLabels(params);
   // Note: order may differ and case is normalized
   assertEquals(decoded, "#pub *org @User ~example.com lorem ipsum");
+});
+
+//// EXTRACT DOMAINS TESTS ////////////////////////////////////////////////////
+
+Deno.test("extractDomains", async (t) => {
+  await t.step("returns empty array when no URLs", () => {
+    assertEquals(extractDomains("just some text"), []);
+    assertEquals(extractDomains(""), []);
+  });
+
+  await t.step("extracts single host", () => {
+    assertEquals(extractDomains("see https://example.com/foo"), ["example.com"]);
+  });
+
+  await t.step("extracts all distinct hosts", () => {
+    assertEquals(
+      extractDomains("links https://example.com and https://taylor.town/foo.png").sort(),
+      ["example.com", "taylor.town"],
+    );
+  });
+
+  await t.step("dedupes repeated host", () => {
+    assertEquals(
+      extractDomains("https://example.com/a and https://example.com/b"),
+      ["example.com"],
+    );
+  });
+
+  await t.step("lowercases host", () => {
+    assertEquals(extractDomains("visit https://EXAMPLE.com/x"), ["example.com"]);
+  });
+
+  await t.step("handles http and https", () => {
+    assertEquals(
+      extractDomains("http://a.example https://b.example").sort(),
+      ["a.example", "b.example"],
+    );
+  });
+
+  await t.step("skips malformed URLs", () => {
+    assertEquals(extractDomains("https:// not-a-url"), []);
+  });
+
+  await t.step("strips trailing punctuation via URL parse", () => {
+    assertEquals(extractDomains("See https://example.com/path. Done."), ["example.com"]);
+  });
 });
 
 //// IMAGE URL EXTRACTION TESTS ////////////////////////////////////////////////

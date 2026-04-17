@@ -45,7 +45,7 @@ create table com (
   c_flags int not null default 0,       -- count of 'flag' replies
   flaggers citext[] not null default '{}',
   -- Denormalized recommendation signals (maintained by refresh_score)
-  domain text,
+  domains text[] not null default '{}',  -- synthetic ~host tags, one per distinct URL host in body
   author_ups int not null default 0,
   author_downs int not null default 0,
   author_posts_count int not null default 0,
@@ -68,7 +68,7 @@ create index com_links_idx on com using gin (links);
 create index com_parent_cid_idx on com (parent_cid);
 create index com_created_by_idx on com (created_by);
 create index com_score_idx on com (score desc);
-create index com_domain_idx on com (domain) where domain is not null;
+create index com_domains_idx on com using gin (domains);
 
 create view stat_usr as
 select u.name as uid,
@@ -87,17 +87,16 @@ left join com r on r.parent_cid = t.cid and char_length(r.body) = 1
 group by t.tag;
 
 create view stat_domain as
-select p.domain,
+select d.domain,
   count(*) filter (where r.body = '▲')::int as ups_received,
   count(*) filter (where r.body = '▼')::int as downs_received
-from com p
-join com r on r.parent_cid = p.cid and char_length(r.body) = 1
-where p.domain is not null
-group by p.domain;
+from (select unnest(domains) as domain, cid from com where domains <> '{}') d
+join com r on r.parent_cid = d.cid and char_length(r.body) = 1
+group by d.domain;
 
 create or replace function refresh_score(cids int[]) returns void language sql as $$
   with
-  targets as (select cid, tags, domain, links, created_by from com where cid = any(cids)),
+  targets as (select cid, tags, domains, links, created_by from com where cid = any(cids)),
   tag_agg as (
     select t.cid,
       coalesce(max(st.ups_received), 0)::int as tag_ups,
@@ -109,9 +108,10 @@ create or replace function refresh_score(cids int[]) returns void language sql a
   ),
   dom_agg as (
     select t.cid,
-      coalesce(sd.ups_received, 0)::int as domain_ups,
-      coalesce(sd.downs_received, 0)::int as domain_downs
-    from targets t left join stat_domain sd on sd.domain = t.domain
+      coalesce(max(sd.ups_received), 0)::int as domain_ups,
+      coalesce(max(sd.downs_received), 0)::int as domain_downs
+    from targets t left join stat_domain sd on sd.domain = any(t.domains)
+    group by t.cid
   ),
   repost_agg as (
     select t.cid, coalesce(sum(coalesce((c2.c_reactions->'▲')::int, 0))::int, 0) as repost_ups
@@ -252,6 +252,12 @@ on conflict do nothing;
 
 -- Sync sequences for tables with hardcoded IDs in seeds
 select setval('com_cid_seq', (select max(cid) from com));
+
+-- Backfill domains from body (self-healing; runs on every db.sql apply)
+update com set domains = coalesce((
+  select array_agg(distinct lower(rtrim(m[1], '.,;:)]}>')))
+  from regexp_matches(body, 'https?://([^/\s:?#]+)', 'g') as m
+), '{}');
 
 -- Backfill score + denormalized stats
 select refresh_score(array(select cid from com));

@@ -80,7 +80,7 @@ export type Com = {
   c_reactions: Record<string, string>;
   c_flags: number;
   flaggers: string[];
-  domain: string | null;
+  domains: string[];
   score: string;
   comments?: number;
   reaction_count?: number;
@@ -103,14 +103,14 @@ export const extractMentions = (
 export const extractImageUrl = (b: string) =>
   b.match(/https?:\/\/[^\s]+\.(?:jpe?g|png|gif|webp|svg)(?:\?[^\s]*)?/i)?.[0] || null;
 
-const extractDomain = (b: string) => {
-  const u = extractFirstUrl(b);
-  if (!u) return null;
-  try {
-    return new URL(u).hostname;
-  } catch {
-    return null;
+export const extractDomains = (b: string): string[] => {
+  const out = new Set<string>();
+  for (const m of b.matchAll(/https?:\/\/[^\s]+/g)) {
+    try {
+      out.add(new URL(m[0]).hostname.toLowerCase());
+    } catch { /**/ }
   }
+  return [...out];
 };
 
 const refreshScores = async (pid: string | number) => {
@@ -166,10 +166,11 @@ export const decodeLabels = (p: URLSearchParams) => {
   return res.filter(Boolean).join(" ");
 };
 
-export const formatLabels = (c: { tags?: string[]; orgs?: string[]; usrs?: string[] }) => [
+export const formatLabels = (c: { tags?: string[]; orgs?: string[]; usrs?: string[]; domains?: string[] }) => [
   ...(c.tags || []).map((t) => `#${t}`),
   ...(c.orgs || []).map((t) => `*${t}`),
   ...(c.usrs || []).map((t) => `@${t}`),
+  ...(c.domains || []).map((t) => `~${t}`),
 ];
 
 const buildFilterTitle = (p: URLSearchParams) =>
@@ -1365,14 +1366,14 @@ app.post("/c/:p?", async (c) => {
     usrs: string[];
     created_by: string;
     prm_parent: number | null;
-    domain: string | null;
+    domains: string[];
   };
   let prm: Prm | undefined;
 
   if (pid) {
     [prm] = await sql<
       Prm[]
-    >`select tags, orgs, usrs, created_by, parent_cid as prm_parent, domain from com where cid = ${pid}`;
+    >`select tags, orgs, usrs, created_by, parent_cid as prm_parent, domains from com where cid = ${pid}`;
     if (!prm || !prm.orgs.every((t) => usr.orgs_r.includes(t)) || (prm.usrs.length && !prm.usrs.includes(n)))
       throw new HTTPException(403);
     tags = prm.tags;
@@ -1418,9 +1419,9 @@ app.post("/c/:p?", async (c) => {
   const thumb = pid
     ? null
     : (extractImageUrl(b) || (extractFirstUrl(b) ? await resolveThumbnail(extractFirstUrl(b)!) : null));
-  const domain = pid ? null : extractDomain(b);
+  const domains = extractDomains(b);
   const [cm] =
-    await sql`insert into com (parent_cid, created_by, body, tags, orgs, usrs, mentions, links, thumb, domain) values (${pid}, ${n}, ${b}, ${tags}, ${orgs}, ${usrs}, ${mentions}, ${links}, ${thumb}, ${domain}) returning cid`;
+    await sql`insert into com (parent_cid, created_by, body, tags, orgs, usrs, mentions, links, thumb, domains) values (${pid}, ${n}, ${b}, ${tags}, ${orgs}, ${usrs}, ${mentions}, ${links}, ${thumb}, ${domains}) returning cid`;
 
   if (pid) {
     if (isReaction(b))
@@ -1475,7 +1476,7 @@ app.get("/c/:cid?", async (c) => {
     ${
     mens.length ? sql`and (usrs && ${mens}::text[] or mentions && ${mens.map((m) => m.toLowerCase())}::text[])` : sql``
   }
-    ${www.length ? sql`and body ~* ${www.join("|")}` : sql``}
+    ${www.length ? sql`and domains && ${www}::text[]` : sql``}
     ${q.replies_to ? sql`and parent_cid in (select cid from com where created_by = ${q.replies_to})` : sql``}
     ${q.reactions ? sql`and char_length(body) = 1` : sql``}
     ${q.comments ? sql`and char_length(body) > 1` : sql``}
