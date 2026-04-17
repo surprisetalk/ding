@@ -71,11 +71,25 @@ create index com_score_idx on com (score desc);
 create index com_domains_idx on com using gin (domains);
 
 create view stat_usr as
+with posts as (
+  select created_by as uid, count(*)::int as n
+  from com where parent_cid is null and char_length(body) > 1
+  group by created_by
+),
+rx as (
+  select p.created_by as uid,
+    count(*) filter (where r.body = '▲')::int as ups,
+    count(*) filter (where r.body = '▼')::int as downs
+  from com p join com r on r.parent_cid = p.cid and char_length(r.body) = 1
+  group by p.created_by
+)
 select u.name as uid,
-  (select count(*)::int from com where created_by = u.name and parent_cid is null and char_length(body) > 1) as posts_count,
-  (select count(*)::int from com r join com p on p.cid = r.parent_cid where p.created_by = u.name and r.body = '▲') as ups_received,
-  (select count(*)::int from com r join com p on p.cid = r.parent_cid where p.created_by = u.name and r.body = '▼') as downs_received
-from usr u;
+  coalesce(p.n, 0) as posts_count,
+  coalesce(r.ups, 0) as ups_received,
+  coalesce(r.downs, 0) as downs_received
+from usr u
+left join posts p on p.uid = u.name
+left join rx r on r.uid = u.name;
 
 create view stat_tag as
 select t.tag,
@@ -118,33 +132,17 @@ create or replace function refresh_score(cids int[]) returns void language sql a
     from targets t left join com c2 on c2.cid = any(t.links)
     group by t.cid
   ),
-  authors as (select distinct created_by as uid from targets),
-  usr_posts as (
-    select created_by as uid, count(*)::int as posts_count
-    from com where created_by in (select uid from authors) and parent_cid is null and char_length(body) > 1
-    group by created_by
-  ),
-  usr_rx as (
-    select p.created_by as uid,
-      count(*) filter (where r.body = '▲')::int as ups_received,
-      count(*) filter (where r.body = '▼')::int as downs_received
-    from com p join com r on r.parent_cid = p.cid and char_length(r.body) = 1
-    where p.created_by in (select uid from authors)
-    group by p.created_by
-  ),
   usr_agg as (
-    select a.uid,
-      coalesce(up.posts_count, 0) as posts_count,
-      coalesce(ur.ups_received, 0) as ups_received,
-      coalesce(ur.downs_received, 0) as downs_received
-    from authors a
-    left join usr_posts up on up.uid = a.uid
-    left join usr_rx ur on ur.uid = a.uid
+    select t.cid,
+      coalesce(su.posts_count, 0) as posts_count,
+      coalesce(su.ups_received, 0) as ups_received,
+      coalesce(su.downs_received, 0) as downs_received
+    from targets t left join stat_usr su on su.uid = t.created_by
   )
   update com c set
-    author_ups = coalesce(ua.ups_received, 0),
-    author_downs = coalesce(ua.downs_received, 0),
-    author_posts_count = coalesce(ua.posts_count, 0),
+    author_ups = ua.ups_received,
+    author_downs = ua.downs_received,
+    author_posts_count = ua.posts_count,
     tag_ups = ta.tag_ups,
     tag_downs = ta.tag_downs,
     domain_ups = da.domain_ups,
@@ -153,19 +151,18 @@ create or replace function refresh_score(cids int[]) returns void language sql a
     score = c.created_at
       + interval '2 hours'   * ln(coalesce((c.c_reactions->'▲')::int, 0) + 1)
       - interval '6 hours'   * ln(coalesce((c.c_reactions->'▼')::int, 0) + 1)
-      + interval '1 hour'    * ln(coalesce(ua.ups_received, 0)::float / ln(coalesce(ua.posts_count, 0) + 2) + 1)
-      - interval '3 hours'   * ln(coalesce(ua.downs_received, 0)::float / ln(coalesce(ua.posts_count, 0) + 2) + 1)
+      + interval '1 hour'    * ln(ua.ups_received::float / ln(ua.posts_count + 2) + 1)
+      - interval '3 hours'   * ln(ua.downs_received::float / ln(ua.posts_count + 2) + 1)
       + interval '1 hour'    * ln(ta.tag_ups_idf + 1)
       - interval '3 hours'   * ln(ta.tag_downs_idf + 1)
       + interval '1 hour'    * ln(c.c_comments + 1)
       + interval '1 hour'    * ln(da.domain_ups + 1)
       - interval '3 hours'   * ln(da.domain_downs + 1)
-      - interval '30 minutes'* ln(coalesce(ua.posts_count, 0) + 1)
+      - interval '30 minutes'* ln(ua.posts_count + 1)
       - interval '2 hours'   * ln(ra.repost_ups + 1)
   from tag_agg ta, dom_agg da, repost_agg ra, usr_agg ua
   where c.cid = any(cids)
-    and ta.cid = c.cid and da.cid = c.cid and ra.cid = c.cid
-    and ua.uid = c.created_by;
+    and ta.cid = c.cid and da.cid = c.cid and ra.cid = c.cid and ua.cid = c.cid;
 $$;
 
 
