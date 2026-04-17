@@ -25,7 +25,7 @@ async function main() {
 
   console.log(`Found ${candidates.length} long-body candidates`);
   for (const p of candidates) {
-    const text = await claude(p.body, { system: SYSTEM, maxTokens: 150, temperature: 0.3 });
+    const text = await claude(p.body, { system: SYSTEM, maxTokens: 600, temperature: 0.3 });
     await reply(auth, apiUrl, p.cid, `tl;dr: ${text}`);
     console.log(`Replied to cid=${p.cid}: ${text.slice(0, 60)}...`);
   }

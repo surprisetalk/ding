@@ -70,7 +70,7 @@ async function main() {
   const newItems = items.filter((i) => !postedUrls.has(i.link));
   console.log(`Found ${newItems.length} new items to post`);
 
-  for (const item of newItems.slice(0, 3)) {
+  for (const item of newItems.slice(0, 1)) {
     const lines = [item.title, "", item.link];
     if (item.imageUrl) lines.push("", item.imageUrl);
     lines.push("", `via ${item.author} on r/hmmm`);
