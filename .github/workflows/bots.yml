@@ -20,6 +20,7 @@ jobs:
         bot:
           - hn
           - lobsters
+          - blogs
           - arxiv
           - smallweb
           - hmmm
