@@ -603,14 +603,39 @@ app.get("/", async (c) => {
   const rT = viewer?.orgs_r || [], wT = viewer?.orgs_w || [];
   const tags = c.req.queries("tag") || [], orgs = c.req.queries("org") || [], usrs = c.req.queries("usr") || [];
 
+  const me = name || "";
   const presets = await sql<{ tag: string }[]>`
+    with
+    own as (
+      select unnest(tags) as t, '#' as p, max(created_at) as recency
+        from com where created_by = ${me} and parent_cid is null group by 1
+      union all
+      select unnest(orgs), '*', max(created_at)
+        from com where created_by = ${me} and parent_cid is null group by 1
+      union all
+      select unnest(usrs), '@', max(created_at)
+        from com where created_by = ${me} and parent_cid is null group by 1
+    ),
+    affinity as (
+      select unnest(p.tags) as t, '#' as p, max(r.created_at) as recency
+        from com r join com p on p.cid = r.parent_cid
+        where r.created_by = ${me} and r.body = '▲' and p.parent_cid is null
+        group by 1
+    ),
+    quality as (
+      select '#' || tag as tag, 3 as pri,
+        (ups_received::float / ln(posts_count + 2)) as q
+      from stat_tag
+      where posts_count >= 3
+      order by q desc
+      limit 40
+    )
     select distinct on (tag) tag from (
-      select '*' || unnest(${wT}::text[]) as tag, 1 as pri
-      union all select '#' || unnest(tags), 2 from com where created_by = ${name || ""} and parent_cid is null
-      union all select '*' || unnest(orgs), 2 from com where created_by = ${name || ""} and parent_cid is null
-      union all select '@' || unnest(usrs), 2 from com where created_by = ${name || ""} and parent_cid is null
-      union all select '#' || unnest(tags), 3 from com where parent_cid is null
-    ) t order by tag, pri limit 20
+      select '*' || unnest(${wT}::text[]) as tag, 1 as pri, now() as recency, 0.0 as q
+      union all select p || t, 2, recency, 0.0 from own
+      union all select p || t, 2, recency, 0.0 from affinity
+      union all select tag, pri, now() - interval '365 days', q from quality
+    ) t order by tag, pri, recency desc, q desc limit 20
   `;
 
   const items = await sql`
@@ -1345,6 +1370,18 @@ app.post("/c/:p?", async (c) => {
   const n = c.get("name") ?? (await basicAuthName(c)) ?? undefined;
   if (!n) return c.redirect(`/u?next=${encodeURIComponent(pid ? `/c/${pid}` : "/")}`);
 
+  const refBack = (): string | null => {
+    const ref = c.req.header("referer");
+    if (!ref) return null;
+    try {
+      const u = new URL(ref);
+      if (u.host !== c.req.header("host")) return null;
+      return u.pathname + u.search;
+    } catch {
+      return null;
+    }
+  };
+
   const now = Date.now();
   for (const [k, ts] of postRate) {
     const fresh = ts.filter((t) => now - t < POST_RATE_MS);
@@ -1394,7 +1431,8 @@ app.post("/c/:p?", async (c) => {
           ]);
         });
         await refreshScores(pid);
-        return c.redirect(prm.prm_parent ? `/c/${prm.prm_parent}#${pid}` : `/c/${pid}`);
+        const r = refBack();
+        return c.redirect(r ? `${r}#${pid}` : (prm.prm_parent ? `/c/${prm.prm_parent}#${pid}` : `/c/${pid}`));
       }
     }
   } else {
@@ -1432,6 +1470,10 @@ app.post("/c/:p?", async (c) => {
     await refreshScores(cm.cid);
   }
 
+  if (pid && isReaction(b)) {
+    const r = refBack();
+    if (r) return c.redirect(`${r}#${pid}`);
+  }
   const [pr] = pid ? await sql`select parent_cid from com where cid = ${pid}` : [null];
   return c.redirect(pid ? (pr?.parent_cid ? `/c/${pr.parent_cid}#${pid}` : `/c/${pid}#${cm.cid}`) : `/c/${cm.cid}`);
 });
