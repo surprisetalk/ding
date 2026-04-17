@@ -1770,6 +1770,14 @@ Deno.test("extractDomains", async (t) => {
   await t.step("strips trailing punctuation via URL parse", () => {
     assertEquals(extractDomains("See https://example.com/path. Done."), ["example.com"]);
   });
+
+  await t.step("strips www. prefix", () => {
+    assertEquals(extractDomains("https://www.example.com/x"), ["example.com"]);
+    assertEquals(
+      extractDomains("https://www.example.com/a https://example.com/b"),
+      ["example.com"],
+    );
+  });
 });
 
 //// IMAGE URL EXTRACTION TESTS ////////////////////////////////////////////////

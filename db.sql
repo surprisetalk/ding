@@ -255,7 +255,7 @@ select setval('com_cid_seq', (select max(cid) from com));
 
 -- Backfill domains from body (self-healing; runs on every db.sql apply)
 update com set domains = coalesce((
-  select array_agg(distinct lower(rtrim(m[1], '.,;:)]}>')))
+  select array_agg(distinct regexp_replace(lower(rtrim(m[1], '.,;:)]}>')), '^www\.', ''))
   from regexp_matches(body, 'https?://([^/\s:?#]+)', 'g') as m
 ), '{}');
 

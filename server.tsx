@@ -107,7 +107,7 @@ export const extractDomains = (b: string): string[] => {
   const out = new Set<string>();
   for (const m of b.matchAll(/https?:\/\/[^\s]+/g)) {
     try {
-      out.add(new URL(m[0]).hostname.toLowerCase());
+      out.add(new URL(m[0]).hostname.toLowerCase().replace(/^www\./, ""));
     } catch { /**/ }
   }
   return [...out];
