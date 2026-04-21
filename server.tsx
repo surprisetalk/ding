@@ -292,9 +292,8 @@ const SortToggle = ({ sort, baseHref, title }: { sort: string; baseHref: string;
     return `${base.pathname}?${p}`;
   };
   return (
-    <nav style="margin-bottom:0.5rem;display:flex;gap:0.5rem;align-items:baseline;justify-content:space-between;text-wrap:nowrap;">
+    <nav style="margin-bottom:0.5rem;display:flex;flex-wrap:wrap;gap:0.5rem 1rem;align-items:baseline;justify-content:space-between;">
       <span>{title}</span>
-      <span style="text-overflow:hidden;overflow:hidden;opacity:0.5;">{". ".repeat(100)}</span>
       <span style="font-size:0.85rem;">
         {["hot", "new", "top"].map((s, i) => (
           <Fragment key={s}>{i > 0 && " • "}{sort === s ? s : <a href={href(s)}>{s}</a>}</Fragment>
@@ -514,7 +513,7 @@ app.use("*", async (c, next) => {
       if (Notification.permission === "default") {
         const b = document.createElement("button");
         b.textContent = "🔔 enable notifications";
-        b.style.cssText = "position:fixed;bottom:0.5rem;right:0.5rem;font-size:0.75rem;opacity:0.7;z-index:10;";
+        b.className = "notify-enable";
         b.onclick = async () => { await Notification.requestPermission(); b.remove(); };
         document.body.appendChild(b);
       }
@@ -552,7 +551,7 @@ app.use("*", async (c, next) => {
         <body>
           <header>
             <section>
-              <a href="/" style="letter-spacing:10px;font-weight:700;width:100%;">▢ding</a>
+              <a href="/" style="letter-spacing:clamp(2px,2vw,10px);font-weight:700;width:100%;">▢ding</a>
               <a href="/o/new" style="letter-spacing:2px;font-size:0.875rem;opacity:0.8;"> +org </a>
               ${n
                 ? html`
@@ -1059,13 +1058,13 @@ app.get("/o/new", authed, (c) =>
       </p>
       <p style="font-size: 0.875rem; opacity: 0.8; margin-bottom: 1.5rem;">cost: $1/member/month.</p>
       <form method="post" action="/o/new" style="padding: 0;">
-        <div style="display:flex; gap:0.5rem; align-items:center;">
+        <div style="display:flex; flex-wrap:wrap; gap:0.5rem; align-items:center;">
           <input
             required
             pattern="^[0-9a-zA-Z_]{4,32}$"
             name="name"
             placeholder="org_name"
-            style="flex: 1; max-width: 300px; padding: 0.25rem 0.5rem; border-radius: 5px; border: 1px solid currentColor;"
+            style="flex: 1; padding: 0.25rem 0.5rem; border-radius: 5px; border: 1px solid currentColor;"
           />
           <button type="submit">create & subscribe</button>
         </div>
@@ -1217,14 +1216,14 @@ app.get("/o/:name", async (c) => {
             <form
               method="post"
               action={`/o/${org.name}/invite`}
-              style="padding: 0; display: flex; flex-direction: row; gap: 0.5rem;"
+              style="padding: 0; display: flex; flex-wrap: wrap; gap: 0.5rem;"
             >
               <input
                 required
                 type="email"
                 name="email"
                 placeholder="email"
-                style="flex: 1; max-width: 240px; padding: 0.25rem 0.5rem; border-radius: 5px; border: 1px solid currentColor;"
+                style="flex: 1; padding: 0.25rem 0.5rem; border-radius: 5px; border: 1px solid currentColor;"
               />
               <button type="submit">invite ($1/mo)</button>
             </form>
