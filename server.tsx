@@ -704,10 +704,12 @@ app.get("/", async (c) => {
           : <div class="posts">{items.map((i) => Post(i as Com, name, cur))}</div>}
       </section>
       <section>
-        <div style="margin-top:2rem;">
-          {p > 0 && <a href={`/?${new URLSearchParams([...cur.entries(), ["p", (p - 1).toString()]])}`}>prev</a>}
+        <div style="margin-top:2rem;display:flex;justify-content:space-between;">
+          {p > 0
+            ? <a href={`/?${(() => { const n = new URLSearchParams(cur); n.set("p", (p - 1).toString()); return n; })()}`}>prev</a>
+            : <span />}
           {items.length === 25 && (
-            <a href={`/?${new URLSearchParams([...cur.entries(), ["p", (p + 1).toString()]])}`}>next</a>
+            <a href={`/?${(() => { const n = new URLSearchParams(cur); n.set("p", (p + 1).toString()); return n; })()}`}>next</a>
           )}
         </div>
       </section>
@@ -1637,10 +1639,12 @@ app.get("/c/:cid?", async (c) => {
           <div class="posts">{items.map((i) => Post(i as Com, n, cur))}</div>
         </section>
         <section>
-          <div style="margin-top:2rem;">
-            {p > 0 && <a href={`/c?${new URLSearchParams([...cur.entries(), ["p", (p - 1).toString()]])}`}>prev</a>}
+          <div style="margin-top:2rem;display:flex;justify-content:space-between;">
+            {p > 0
+              ? <a href={`/c?${(() => { const n = new URLSearchParams(cur); n.set("p", (p - 1).toString()); return n; })()}`}>prev</a>
+              : <span />}
             {items.length === lim && (
-              <a href={`/c?${new URLSearchParams([...cur.entries(), ["p", (p + 1).toString()]])}`}>next</a>
+              <a href={`/c?${(() => { const n = new URLSearchParams(cur); n.set("p", (p + 1).toString()); return n; })()}`}>next</a>
             )}
           </div>
         </section>
