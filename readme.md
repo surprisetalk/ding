@@ -1,6 +1,6 @@
 # ding
 
-a minimalist slack alternative [from the future](https://futureofcoding.org)
+a minimalist slack alternative
 
 ## api
 

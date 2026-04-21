@@ -27,6 +27,7 @@ body {
   margin: 0;
   background: var(--bg);
   color: var(--fg);
+  padding-bottom: 10rem;
 }
 
 body > * {
