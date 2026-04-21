@@ -558,7 +558,7 @@ app.use("*", async (c, next) => {
             <section>
               <a href="/" style="letter-spacing:clamp(2px,2vw,10px);font-weight:700;">▢ding</a>
               <nav>
-                <a href="/u">account</a>
+                <a href="/u">${n ? `@${n}` : "account"}</a>
                 ${n
                   ? html`
                     <a href="/n">inbox${unread ? ` (${unread})` : ""}</a>
