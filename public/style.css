@@ -18,7 +18,7 @@
 }
 
 html {
-  font-size: 14pt;
+  font-size: clamp(13px, 2.6vw, 18px);
 }
 
 body {
@@ -30,7 +30,7 @@ body {
 }
 
 body > * {
-  padding: 1rem;
+  padding: clamp(0.5rem, 2vw, 1rem);
 }
 
 body > header {
@@ -46,6 +46,11 @@ input, textarea {
   background: var(--bg);
   color: var(--fg);
   border: 1px solid var(--border);
+  max-width: 100%;
+}
+
+textarea {
+  min-height: clamp(8rem, 40vh, 20rem);
 }
 
 button {
@@ -56,7 +61,8 @@ button {
 
 body > header > section {
   display: flex;
-  gap: 1rem;
+  flex-wrap: wrap;
+  gap: 0.5rem 1rem;
   justify-content: space-between;
   align-items: baseline;
 }
@@ -74,6 +80,7 @@ body > main {
 
 body > main > section {
   width: 100%;
+  min-width: 0;
   display: flex;
   flex-direction: column;
   gap: 1rem;
@@ -81,14 +88,15 @@ body > main > section {
 
 .posts {
   display: grid;
-  grid-template-columns: 48px 1fr;
-  gap: 1rem 0.75rem;
+  grid-template-columns: clamp(40px, 12vw, 56px) minmax(0, 1fr);
+  gap: clamp(0.5rem, 2vw, 1rem) 0.75rem;
   align-items: start;
 }
 
 .posts img {
-  width: 48px;
-  height: 48px;
+  width: 100%;
+  height: auto;
+  aspect-ratio: 1 / 1;
   object-fit: cover;
   border-radius: 4px;
 }
@@ -118,7 +126,8 @@ form {
 button {
   white-space: nowrap;
   letter-spacing: 1px;
-  padding: 0.25rem 0.5rem;
+  padding: 0.35rem 0.6rem;
+  min-height: 2rem;
 }
 
 pre {
@@ -127,6 +136,7 @@ pre {
   white-space: -pre-wrap;
   white-space: -o-pre-wrap;
   word-wrap: break-word;
+  overflow-wrap: anywhere;
   line-height: 1.5;
   font-size: 0.875rem;
   max-height: 50rem;
@@ -163,7 +173,8 @@ a:link {
 .reaction button, .reaction a {
   background: none;
   border: 0px solid currentColor;
-  padding: 0;
+  padding: 0.15rem 0.25rem;
+  min-height: 1.75rem;
   cursor: pointer;
   opacity: 0.6;
   color: inherit;
@@ -190,7 +201,7 @@ a:link {
 
 .tag-preset {
   font-size: 0.75rem;
-  padding: 0.125rem 0.375rem;
+  padding: 0.2rem 0.45rem;
   background: none;
   border: 1px solid currentColor;
   border-radius: 0.25rem;
@@ -209,7 +220,7 @@ a:link {
 
 .filter-pill {
   font-size: 0.75rem;
-  padding: 0.125rem 0.375rem;
+  padding: 0.2rem 0.45rem;
   background: none;
   border: 1px solid currentColor;
   border-radius: 0.25rem;
@@ -230,4 +241,13 @@ h2 {
 a.thumb {
   -webkit-touch-callout: none;
   user-select: none;
+}
+
+.notify-enable {
+  position: fixed;
+  bottom: max(0.5rem, env(safe-area-inset-bottom));
+  right: max(0.5rem, env(safe-area-inset-right));
+  font-size: 0.75rem;
+  opacity: 0.7;
+  z-index: 10;
 }
