@@ -271,6 +271,7 @@ const User = (u: Usr, viewerName?: string) => {
             <a href={`/c?mention=${u.name}`}>mentions</a>
             <a href={`/c?replies_to=${u.name}`}>replies</a>
             <a href={`/c?usr=${u.name}&reactions=1`}>reactions</a>
+            <a href="/o/new">org</a>
           </>
         )}
       </div>
@@ -354,10 +355,12 @@ const Comment = (c: Com | ChildCom, user?: string) => (
       {c.body && user == c.created_by && <a href={`/c/${c.cid}/delete`}>delete</a>}
       <a href={`/c/${c.cid}`}>reply</a>
       {formatLabels(c).map((l) => <a key={l} href={`/c?${PFX[l[0]] ?? "tag"}=${l.slice(1)}`}>{l}</a>)}
-      <span class="reaction">
-        <a href={`/c/${c.cid}`}>» {c.comments || 0}</a>
+      <span class="reactions-group">
+        <span class="reaction">
+          <a href={`/c/${c.cid}`}>» {c.comments || 0}</a>
+        </span>
+        {Reactions(c)}
       </span>
-      {Reactions(c)}
     </div>
     <pre>{(c.c_flags >= FLAG_THRESHOLD && user !== c.created_by) ? "[flagged]" : (c.body || "[deleted by author]")}</pre>
     <div style="padding-left:1rem">
@@ -384,7 +387,7 @@ const Post = (c: Com, user?: string, p?: URLSearchParams) => {
         <span>
           <a href={`/c/${c.cid}`}>
             {c.body
-              ? (c.body.trim().split("\n")[0].slice(0, 60) + (c.body.length > 60 ? "…" : "")).padEnd(40, " .")
+              ? c.body.trim().split("\n")[0].slice(0, 60) + (c.body.length > 60 ? "…" : "")
               : "[deleted by author]"}
           </a>
         </span>
@@ -399,10 +402,12 @@ const Post = (c: Com, user?: string, p?: URLSearchParams) => {
               {l}
             </a>
           ))}
-          <span class="reaction">
-            <a href={`/c/${c.cid}`}>» {c.comments || 0}</a>
+          <span class="reactions-group">
+            <span class="reaction">
+              <a href={`/c/${c.cid}`}>» {c.comments || 0}</a>
+            </span>
+            {Reactions(c)}
           </span>
-          {Reactions(c)}
         </div>
       </div>
     </>
@@ -551,20 +556,17 @@ app.use("*", async (c, next) => {
         <body>
           <header>
             <section>
-              <a href="/" style="letter-spacing:clamp(2px,2vw,10px);font-weight:700;width:100%;">▢ding</a>
-              <a href="/o/new" style="letter-spacing:2px;font-size:0.875rem;opacity:0.8;"> +org </a>
-              ${n
-                ? html`
-                  <a href="/n" style="letter-spacing:2px;font-size:0.875rem;opacity:0.8;"> inbox${unread
-                    ? ` (${unread})`
-                    : ""} </a>
-                `
-                : ""}
-              <a href="/u" style="letter-spacing:2px;font-size:0.875rem;opacity:0.8;">${c.get("name")
-                ? "@" + c.get("name")
-                : "account"}</a>
-              <a href="/c" style="letter-spacing:2px;font-size:0.875rem;opacity:0.8;"> search </a>
-              <a href="/c/496" style="letter-spacing:2px;font-size:0.875rem;opacity:0.8;"> help </a>
+              <a href="/" style="letter-spacing:clamp(2px,2vw,10px);font-weight:700;">▢ding</a>
+              <nav>
+                <a href="/u">account</a>
+                ${n
+                  ? html`
+                    <a href="/n">inbox${unread ? ` (${unread})` : ""}</a>
+                  `
+                  : ""}
+                <a href="/c">search</a>
+                <a href="/c/496">help</a>
+              </nav>
             </section>
           </header>
           <main>${content}</main>
