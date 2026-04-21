@@ -18,7 +18,7 @@
 }
 
 html {
-  font-size: clamp(15px, 2.6vw, 18px);
+  font-size: clamp(15px, 2.4vw, 16px);
 }
 
 body {
@@ -48,6 +48,12 @@ input, textarea {
   color: var(--fg);
   border: 1px solid var(--border);
   max-width: 100%;
+  font-family: inherit;
+  font-size: inherit;
+}
+
+input {
+  padding: 0.35rem 0.6rem;
 }
 
 textarea {
@@ -79,7 +85,7 @@ body > header > section > nav {
 }
 
 section {
-  max-width: 60ch;
+  max-width: 72ch;
   margin: 0 auto;
 }
 
