@@ -160,6 +160,7 @@ create or replace function refresh_score(cids int[]) returns void language sql a
       - interval '3 hours'   * ln(da.domain_downs + 1)
       - interval '30 minutes'* ln(ua.posts_count + 1)
       - interval '2 hours'   * ln(ra.repost_ups + 1)
+      + interval '45 minutes'* (case when c.thumb is not null and c.thumb not like 'https://www.google.com/s2/favicons%' then 1 else 0 end)
   from tag_agg ta, dom_agg da, repost_agg ra, usr_agg ua
   where c.cid = any(cids)
     and ta.cid = c.cid and da.cid = c.cid and ra.cid = c.cid and ua.cid = c.cid;

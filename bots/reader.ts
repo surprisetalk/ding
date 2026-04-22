@@ -1,6 +1,30 @@
 import { botInit, extractArticle, extractImageUrl, firstLink, getAnsweredCids, getJson, reply } from "../bots.ts";
 
-const MAX_CHARS = 5000;
+const MAX_CHARS = 3500;
+const MIN_TEXT_LEN = 400;
+const MIN_SENTENCES = 2;
+
+const trimBoilerplate = (text: string) => {
+  const lines = text.split("\n");
+  let i = 0;
+  while (i < lines.length) {
+    const l = lines[i].trim();
+    if (!l) { i++; continue; }
+    if (l.length < 40 && !/[.!?]$/.test(l)) { i++; continue; }
+    break;
+  }
+  return lines.slice(i).join("\n").trimStart();
+};
+
+const smartTruncate = (text: string, max: number) => {
+  if (text.length <= max) return text;
+  const slice = text.slice(0, max);
+  const para = slice.lastIndexOf("\n\n");
+  if (para > max * 0.5) return text.slice(0, para).trimEnd() + "\n\n…";
+  const sent = slice.match(/^[\s\S]*[.!?](?=\s|$)/);
+  if (sent && sent[0].length > max * 0.5) return sent[0].trimEnd() + " …";
+  return slice.replace(/\s+\S*$/, "").trimEnd() + "…";
+};
 
 async function main() {
   const { apiUrl, auth, botUsername } = botInit("READER");
@@ -22,6 +46,7 @@ async function main() {
     try {
       const h = new URL(url).hostname;
       if (h === "ding.bar" || h.endsWith(".ding.bar")) return false;
+      if (h === "youtube.com" || h.endsWith(".youtube.com") || h === "youtu.be") return false;
     } catch {
       return false;
     }
@@ -33,13 +58,23 @@ async function main() {
   for (const p of candidates) {
     const url = firstLink(p.body)!;
     const article = await extractArticle(url).catch((e) => {
-      console.error(`extract failed for ${url}: ${e.message}`);
+      console.error(`extract failed for cid=${p.cid} ${url}: ${e.message}`);
       return null;
     });
     if (!article) continue;
-    const truncated = article.text.length > MAX_CHARS
-      ? article.text.slice(0, MAX_CHARS).replace(/\s+\S*$/, "").trimEnd() + "…"
-      : article.text;
+
+    const text = trimBoilerplate(article.text);
+    if (text.length < MIN_TEXT_LEN) {
+      console.error(`skip cid=${p.cid} ${url}: text too short (${text.length} chars, likely paywall or JS-only)`);
+      continue;
+    }
+    const sentences = (text.match(/[.!?](\s|$)/g) || []).length;
+    if (sentences < MIN_SENTENCES) {
+      console.error(`skip cid=${p.cid} ${url}: too few sentences (${sentences}, likely nav dump)`);
+      continue;
+    }
+
+    const truncated = smartTruncate(text, MAX_CHARS);
     const header = article.title ? `**[${article.title}](${url})**\n\n` : `[${url}](${url})\n\n`;
     const body = (header + truncated).split("\n").map((l) => l ? `> ${l}` : ">").join("\n");
     await reply(auth, apiUrl, p.cid, body);

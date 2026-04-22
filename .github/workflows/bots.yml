@@ -25,6 +25,8 @@ jobs:
           - smallweb
           - hmmm
           - tildes
+          - ooh
+          - youtube
           - 8ball
           - dice
           - codegolf
