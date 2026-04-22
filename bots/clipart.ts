@@ -119,8 +119,9 @@ async function main() {
     return;
   }
 
-  const rng = seededRng(todaySeed());
-  const cp = TWEMOJI_CODEPOINTS[Math.floor(rng() * TWEMOJI_CODEPOINTS.length)];
+  const seed = todaySeed();
+  const cp = TWEMOJI_CODEPOINTS[seed % TWEMOJI_CODEPOINTS.length];
+  const rng = seededRng(seed);
   const url = `https://raw.githubusercontent.com/twitter/twemoji/master/assets/svg/${cp}.svg`;
   const res = await fetch(url);
   if (!res.ok) throw new Error(`Failed to fetch twemoji ${cp}: HTTP ${res.status}`);
