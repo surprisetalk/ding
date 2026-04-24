@@ -47,6 +47,9 @@ export async function postForm(
 
 export const firstMatch = (re: RegExp, s: string) => s.match(re)?.[1] || "";
 
+export const slugTag = (s: string) =>
+  s.toLowerCase().replace(/[^a-z0-9]+/g, "_").replace(/^_+|_+$/g, "").slice(0, 40);
+
 // ---- API helpers ----
 
 export async function getAnsweredCids(auth: string, botUsername: string, apiUrl: string): Promise<Set<number>> {

@@ -1,4 +1,4 @@
-import { botInit, firstMatch as m, getPostedUrls, post } from "../bots.ts";
+import { botInit, firstMatch as m, getPostedUrls, post, slugTag } from "../bots.ts";
 
 type Blog = { url: string; title: string; feed?: string };
 type Item = { link: string; title: string; pubDate: Date; blogTitle: string };
@@ -100,6 +100,8 @@ console.log(`${todo.length} items after dedup; posting up to ${MAX_POSTS}`);
 
 for (const it of todo.slice(0, MAX_POSTS)) {
   const body = `${it.title}\n\n${it.link}\n\nvia ${it.blogTitle}`;
+  const blogTag = slugTag(it.blogTitle);
+  const tags = `#blog #bot${blogTag ? ` #${blogTag}` : ""}`;
   console.log(`Posting: ${body.slice(0, 80)}`);
-  await post(auth, apiUrl, body, "#blog #bot");
+  await post(auth, apiUrl, body, tags);
 }
