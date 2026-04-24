@@ -472,16 +472,33 @@ a.thumb {
 
 .meta {
   display: flex;
-  flex-wrap: wrap;
+  flex-wrap: nowrap;
+  overflow: hidden;
   align-items: baseline;
-  gap: var(--space-1);
+  gap: var(--space-1) var(--space-2);
   font-size: var(--text-xs);
   color: var(--muted);
   line-height: var(--lh-tight);
 }
 
+.meta > * {
+  flex-shrink: 0;
+}
+
 .meta a {
   color: inherit;
+}
+
+.meta > a {
+  max-width: 20ch;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.meta-date {
+  color: var(--fg);
+  font-style: italic;
 }
 
 .note {
