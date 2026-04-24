@@ -194,7 +194,7 @@ body > header > section > nav {
   flex-wrap: wrap;
   gap: var(--space-2) var(--space-4);
   align-items: baseline;
-  font-size: var(--text-xs);
+  font-size: var(--text-sm);
   color: var(--muted);
 }
 
@@ -238,7 +238,7 @@ body > main > section {
 }
 
 .post-content > a {
-  font-size: var(--text-xl);
+  font-size: var(--text-lg);
   font-weight: 600;
   line-height: var(--lh-tight);
 }
@@ -418,13 +418,13 @@ pre {
 }
 
 h2 {
-  font-size: var(--text-lg);
+  font-size: var(--text-base);
   font-weight: 600;
   margin: 0;
 }
 
 h3 {
-  font-size: var(--text-sm);
+  font-size: var(--text-xs);
   font-weight: 600;
   color: var(--muted);
   margin: 0 0 var(--space-1);
