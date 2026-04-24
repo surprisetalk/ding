@@ -87,15 +87,18 @@ a:hover {
   text-decoration: underline;
 }
 
-.body a:link {
-  color: var(--link);
+.body a:link, .body a:visited {
+  color: var(--fg);
+  opacity: 0.8;
   text-decoration: underline;
+  text-decoration-style: dotted;
   text-underline-offset: 0.15em;
   text-decoration-thickness: 1px;
 }
 
-.body a:visited {
-  color: var(--visited);
+.body a:hover {
+  opacity: 1;
+  text-decoration-style: solid;
 }
 
 nav a:visited,
@@ -240,7 +243,6 @@ body > main > section {
 .post-content > a {
   font-size: var(--text-lg);
   font-weight: 600;
-  line-height: var(--lh-tight);
 }
 
 form {
@@ -304,8 +306,31 @@ pre {
 }
 
 .pre-img {
+  display: block;
   max-width: 100%;
   max-height: 400px;
+  margin: var(--space-1) 0 var(--space-2);
+}
+
+.post-title {
+  font-size: var(--text-xl);
+  font-weight: 600;
+  line-height: var(--lh-tight);
+  margin: var(--space-2) 0 0;
+}
+
+.post-title a:link,
+.post-title a:visited {
+  color: inherit;
+  text-decoration: underline;
+  text-decoration-style: dotted;
+  text-underline-offset: 0.15em;
+  text-decoration-thickness: 1px;
+  opacity: 1;
+}
+
+.post-title a:hover {
+  text-decoration-style: solid;
 }
 
 .body blockquote {
@@ -355,8 +380,9 @@ pre {
 .reactions-group {
   display: inline-flex;
   flex-wrap: wrap;
-  gap: 0;
+  gap: var(--space-2);
   align-items: baseline;
+  padding-right: var(--space-1);
 }
 
 .reaction {
@@ -370,7 +396,7 @@ pre {
 .reaction button, .reaction a {
   background: none;
   border: 0;
-  padding: var(--space-1);
+  padding: 0;
   min-height: 0;
   cursor: pointer;
   color: var(--muted);

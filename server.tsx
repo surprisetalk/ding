@@ -353,6 +353,8 @@ type BodyNode = any;
 const INLINE_RE =
   /(`[^`\n]+`)|(\*\*[^\n*]+\*\*)|(_[^_\n]+_)|(\[[^\]\n]+\]\((https?:\/\/[^\s)]+)\))|(https?:\/\/(?:[^\s<()]+|\([^\s<()]*\))+)/g;
 
+const isImageUrl = (u: string) => /\.(?:jpe?g|png|gif|webp|svg)(?:\?[^\s]*)?$/i.test(u);
+
 const inlineFmt = (s: string): BodyNode[] => {
   const out: BodyNode[] = [];
   let i = 0;
@@ -363,12 +365,15 @@ const inlineFmt = (s: string): BodyNode[] => {
     if (code) out.push(<code>{code}</code>);
     else if (bold) out.push(<strong>**{inlineFmt(bold.slice(2, -2))}**</strong>);
     else if (italic) out.push(<em>_{inlineFmt(italic.slice(1, -1))}_</em>);
-    else if (link) out.push(<a href={url}>{link}</a>);
-    else if (bareUrl) {
+    else if (link) {
+      out.push(<a href={url}>{link}</a>);
+      if (isImageUrl(url)) out.push(<img class="pre-img" src={url} loading="lazy" />);
+    } else if (bareUrl) {
       const trail = bareUrl.match(/[.,!?;:]+$/)?.[0] ?? "";
       const clean = trail ? bareUrl.slice(0, -trail.length) : bareUrl;
       out.push(<a href={clean}>{clean}</a>);
       if (trail) out.push(trail);
+      if (isImageUrl(clean)) out.push(<img class="pre-img" src={clean} loading="lazy" />);
     }
     i = idx + full.length;
   }
@@ -466,21 +471,31 @@ const Meta = (c: Com | ChildCom, user?: string, labelHref?: (l: string) => strin
   );
 };
 
-const Comment = (c: Com | ChildCom, user?: string) => (
-  <div key={c.cid} class="comment" id={String(c.cid)}>
-    {Meta(c, user)}
-    <div class="body">
-      {(c.c_flags >= FLAG_THRESHOLD && user !== c.created_by)
-        ? "[flagged]"
-        : c.body
-        ? formatBody(c.body)
-        : "[deleted by author]"}
+const Comment = (c: Com | ChildCom, user?: string, asPost?: boolean) => {
+  const flagged = c.c_flags >= FLAG_THRESHOLD && user !== c.created_by;
+  let title: BodyNode[] | null = null;
+  let rest = c.body;
+  if (asPost && rest && !flagged) {
+    const nl = rest.indexOf("\n");
+    const firstLine = (nl >= 0 ? rest.slice(0, nl) : rest).trim();
+    if (firstLine) {
+      title = inlineFmt(firstLine);
+      rest = nl >= 0 ? rest.slice(nl + 1).replace(/^\n+/, "") : "";
+    }
+  }
+  return (
+    <div key={c.cid} class="comment" id={String(c.cid)}>
+      {Meta(c, user)}
+      {title && <h1 class="post-title">{title}</h1>}
+      <div class="body">
+        {flagged ? "[flagged]" : c.body ? rest ? formatBody(rest) : null : "[deleted by author]"}
+      </div>
+      <div class="children">
+        {(c as Com).child_comments?.map((ch) => Comment(ch, user))}
+      </div>
     </div>
-    <div class="children">
-      {(c as Com).child_comments?.map((ch) => Comment(ch, user))}
-    </div>
-  </div>
-);
+  );
+};
 
 const defaultThumb =
   "data:image/svg+xml,%3Csvg xmlns=%27http://www.w3.org/2000/svg%27 viewBox=%270 0 1 1%27%3E%3Crect fill=%27%23333%27 width=%271%27 height=%271%27/%3E%3C/svg%3E";
@@ -1760,6 +1775,7 @@ app.get("/c/:cid?", async (c) => {
         {Comment(
           { ...post, child_comments: (post.child_comments || []).filter((r: ChildCom) => isReaction(r.body)) } as Com,
           n,
+          true,
         )}
       </section>
       <section>
