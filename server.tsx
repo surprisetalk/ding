@@ -294,9 +294,9 @@ const SortToggle = ({ sort, baseHref, title }: { sort: string; baseHref: string;
     return `${base.pathname}?${p}`;
   };
   return (
-    <nav style="margin-bottom:0.5rem;display:flex;flex-wrap:wrap;gap:0.5rem 1rem;align-items:baseline;justify-content:space-between;">
+    <nav class="sort-toggle" aria-label="sort">
       <span>{title}</span>
-      <span style="font-size:0.85rem;">
+      <span class="sort-toggle__options">
         {["hot", "new", "top"].map((s, i) => (
           <Fragment key={s}>{i > 0 && " • "}{sort === s ? s : <a href={href(s)}>{s}</a>}</Fragment>
         ))}
@@ -334,6 +334,8 @@ const ActiveFilters = ({ params, basePath = "/c" }: { params: URLSearchParams; b
     : <div class="active-filters" />;
 };
 
+const reactName = (k: string) => k === "▲" ? "upvote" : k === "▼" ? "downvote" : `react ${k}`;
+
 const Reactions = (c: Com | ChildCom) =>
   Object.entries({ "▲": 0, "▼": 0, ...(c.reaction_counts || {}) }).map(([k, v]) => (
     <form
@@ -343,7 +345,7 @@ const Reactions = (c: Com | ChildCom) =>
       class={`reaction${(c.user_reactions || []).includes(k) ? " reacted" : ""}`}
     >
       <input type="hidden" name="body" value={k} />
-      <button type="submit">{k} {v}</button>
+      <button type="submit" aria-label={reactName(k)}>{k} {v}</button>
     </form>
   ));
 
@@ -605,7 +607,7 @@ app.use("*", async (c, next) => {
     document.querySelectorAll("pre").forEach(x => {
       x.innerHTML = x.innerHTML.replace(/(https?:\\/\\/\\S+)/g, u => {
         const isImg = /\\.(jpe?g|png|gif|webp|svg)(\\?.*)?$/i.test(u) || /^https?:\\/\\/(i\\.redd\\.it|i\\.imgur\\.com|pbs\\.twimg\\.com)\\//i.test(u);
-        return isImg ? '<a href="'+u+'">'+u+'</a><br><img src="'+u+'" loading="lazy" style="max-width:100%;max-height:400px;">' : '<a href="'+u+'">'+u+'</a>';
+        return isImg ? '<a href="'+u+'">'+u+'</a><br><img src="'+u+'" loading="lazy" class="pre-img">' : '<a href="'+u+'">'+u+'</a>';
       });
     });
     const fr = document.getElementById("search-form");
@@ -650,6 +652,8 @@ app.use("*", async (c, next) => {
       : ""
   }
   `;
+  const path = c.req.path;
+  const cur = (p: string) => path === p ? raw(' aria-current="page"') : "";
   c.setRenderer((content, props) =>
     c.html(html`
       <!DOCTYPE html>
@@ -664,15 +668,15 @@ app.use("*", async (c, next) => {
         <body>
           <header>
             <section>
-              <a href="/" style="letter-spacing:clamp(2px,2vw,10px);font-weight:700;">▢ding</a>
-              <nav>
-                <a href="/u">${n ? `@${n}` : "account"}</a>
+              <a href="/" class="brand">▢ding</a>
+              <nav aria-label="site">
+                <a href="/u"${cur("/u")}>${n ? `@${n}` : "account"}</a>
                 ${n
                   ? html`
-                    <a href="/n">inbox${unread ? ` (${unread})` : ""}</a>
+                    <a href="/n"${cur("/n")}>inbox${unread ? ` (${unread})` : ""}</a>
                   `
                   : ""}
-                <a href="/c">search</a>
+                <a href="/c"${cur("/c")}>search</a>
                 <a href="/c/496">help</a>
               </nav>
             </section>
@@ -694,7 +698,7 @@ app.get("/sitemap.txt", (c) => c.text("https://ding.bar/"));
 app.onError((err, c) => {
   if (err instanceof HTTPException) return err.getResponse();
   console.error(err);
-  const msg = "Sorry, this computer is мᎥｓβ𝕖𝓱𝐀𝓋𝓲𝓷g.", h = host(c);
+  const msg = "something broke. try again in a moment.", h = host(c);
   if (h === "api") return c.json({ error: msg }, 500);
   if (h === "rss") return c.text(msg, 500);
   c.status(500);
@@ -776,13 +780,31 @@ app.get("/", async (c) => {
   return c.render(
     <>
       <section>
-        <form method="post" action="/c">
-          <textarea required name="body" rows={18} minlength={1} maxlength={4096}></textarea>
-          <div style="display:flex;gap:0.5rem;justify-content:flex-end;align-items:stretch;">
-            <input type="text" name="tags" value={decodeLabels(cur)} placeholder="#link *org @user" style="flex:1;" />
-            <button type="submit">create post</button>
-          </div>
-        </form>
+        {name
+          ? (
+            <form method="post" action="/c">
+              <label>
+                post
+                <textarea required name="body" rows={18} minlength={1} maxlength={4096}></textarea>
+              </label>
+              <p class="compose-hint">#tag · *org · @user · urls become ~domain</p>
+              <div class="post-form__row">
+                <input
+                  type="text"
+                  name="tags"
+                  aria-label="labels"
+                  value={decodeLabels(cur)}
+                  placeholder="#link *org @user"
+                />
+                <button type="submit">create post</button>
+              </div>
+            </form>
+          )
+          : (
+            <p class="empty">
+              <a href="/signup">sign up</a> or <a href="/u">log in</a> to post.
+            </p>
+          )}
         <ActiveFilters params={cur} basePath="/" />
         {presets.length > 0 && (
           <div class="tag-presets">
@@ -805,15 +827,11 @@ app.get("/", async (c) => {
       </section>
       <section>
         {!items.length
-          ? (
-            <p>
-              no posts. <a href="/">go home.</a>
-            </p>
-          )
+          ? <p class="empty">no posts yet.</p>
           : <div class="posts">{items.map((i) => Post(i as Com, name, cur))}</div>}
       </section>
       <section>
-        <div style="margin-top:2rem;display:flex;justify-content:space-between;">
+        <div class="pagination">
           {p > 0
             ? <a href={`/?${(() => { const n = new URLSearchParams(cur); n.set("p", (p - 1).toString()); return n; })()}`}>prev</a>
             : <span />}
@@ -863,7 +881,7 @@ app.get("/forgot", (c) =>
         )
         : (
           <form method="post" action="/forgot">
-            <input required name="email" type="email" placeholder="email" />
+            <label>email <input required name="email" type="email" /></label>
             <button type="submit">send</button>
           </form>
         )}
@@ -881,8 +899,8 @@ app.get("/password", (c) =>
     <section>
       <form method="post" action="/password">
         <input name="token" value={c.req.query("token")} type="hidden" />
-        <input name="email" value={c.req.query("email")} readonly />
-        <input name="password" type="password" placeholder="new password" />
+        <label>email <input name="email" value={c.req.query("email")} readonly /></label>
+        <label>new password <input name="password" type="password" required /></label>
         <button type="submit">set</button>
       </form>
     </section>,
@@ -931,12 +949,18 @@ app.get("/signup", (c) => {
       {c.req.query("resent") !== undefined && <p>Sent another verification email — check your inbox.</p>}
       {err && messages[err]}
       <form method="post">
-        <input type="text" name="name" placeholder="username" required />
-        <input type="email" name="email" placeholder="email" value={prefillEmail} required />
+        <label>
+          username
+          <input type="text" name="name" pattern="^[0-9a-zA-Z_]{4,32}$" required />
+        </label>
+        <label>
+          email
+          <input type="email" name="email" value={prefillEmail} required />
+        </label>
         <button type="submit">create account</button>
       </form>
       {(err === "email_failed" || err === "conflict") && prefillEmail && (
-        <form method="post" action="/signup/resend" style="margin-top:1rem;">
+        <form method="post" action="/signup/resend">
           <input type="hidden" name="email" value={prefillEmail} />
           <button type="submit">resend verification email</button>
         </form>
@@ -1014,11 +1038,11 @@ app.get("/u", async (c) => {
       <section>
         <h2>login</h2>
         <form method="post" action={action}>
-          <input type="email" name="email" placeholder="email" required />
-          <input type="password" name="password" placeholder="password" required />
+          <label>email <input type="email" name="email" required /></label>
+          <label>password <input type="password" name="password" required /></label>
           <button type="submit">login</button>
         </form>
-        <p style="font-size:0.875rem;margin-top:1rem;">
+        <p class="login-links">
           <a href="/forgot">forgot password?</a>
           {" • "}
           <a href="/signup">sign up</a>
@@ -1039,9 +1063,10 @@ app.get("/u", async (c) => {
       <section>{User(usr as unknown as Usr, name)}</section>
       <section>
         <form method="post" action="/u">
-          <textarea name="bio" rows={6} placeholder="bio">
-            {usr.bio}
-          </textarea>
+          <label>
+            bio
+            <textarea name="bio" rows={6}>{usr.bio}</textarea>
+          </label>
           <button type="submit">save</button>
         </form>
       </section>
@@ -1082,25 +1107,24 @@ app.get("/n", authed, async (c) => {
     <>
       <section>
         <h2>notifications</h2>
-        <p style="font-size:0.75rem;opacity:0.6;margin:0.25rem 0 1rem 0;">
-          mentions and replies. unread items are highlighted.
-        </p>
+        <p class="note-sm">mentions and replies. unread items are highlighted.</p>
       </section>
       <section>
-        {items.length === 0 ? <p style="opacity:0.6;">no notifications yet.</p> : items.map((i) => {
-          const item = i as Com;
-          return (
-            <div
-              key={item.cid}
-              style={`border-left: 3px solid ${
-                item.unread ? "currentColor" : "transparent"
-              }; padding-left: 0.5rem; margin-bottom: 0.5rem;`}
-            >
-              <div style="font-size:0.75rem;opacity:0.6;">{item.kind}</div>
-              {Comment(item, name)}
-            </div>
-          );
-        })}
+        {items.length === 0
+          ? (
+            <p class="empty">
+              no notifications yet. mentions (@you) and replies to your posts show up here.
+            </p>
+          )
+          : items.map((i) => {
+            const item = i as Com;
+            return (
+              <div key={item.cid} class={`notif${item.unread ? " notif--unread" : ""}`}>
+                <div class="notif__kind">{item.kind}</div>
+                {Comment(item, name)}
+              </div>
+            );
+          })}
       </section>
     </>,
     { title: "notifications" },
@@ -1160,28 +1184,23 @@ app.get("/us", async (c) => {
 app.get("/o/new", authed, (c) =>
   c.render(
     <section>
-      <h2>
-        <span style="margin-right: 0.5rem;">▢</span>create an organization
-      </h2>
-      <p style="font-size: 0.875rem; opacity: 0.8; line-height: 1.5; margin: 1rem 0 0.5rem 0;">
+      <h2>▢ create an organization</h2>
+      <p class="note">
         create a private organization for your team. access control is managed via the <code>*org</code> tag.
       </p>
-      <p style="font-size: 0.875rem; opacity: 0.8; margin-bottom: 1.5rem;">cost: $1/member/month.</p>
-      <form method="post" action="/o/new" style="padding: 0;">
-        <div style="display:flex; flex-wrap:wrap; gap:0.5rem; align-items:center;">
-          <input
-            required
-            pattern="^[0-9a-zA-Z_]{4,32}$"
-            name="name"
-            placeholder="org_name"
-            style="flex: 1; padding: 0.25rem 0.5rem; border-radius: 5px; border: 1px solid currentColor;"
-          />
-          <button type="submit">create & subscribe</button>
-        </div>
+      <p class="note">cost: $1/member/month.</p>
+      <form method="post" action="/o/new" class="form-inline">
+        <input
+          required
+          pattern="^[0-9a-zA-Z_]{4,32}$"
+          name="name"
+          aria-label="org name"
+          placeholder="org_name"
+          class="grow"
+        />
+        <button type="submit">create & subscribe</button>
       </form>
-      <p style="font-size: 0.75rem; opacity: 0.5; margin-top: 2rem;">
-        <a href="/u">← back to account</a>
-      </p>
+      <p class="note-sm"><a href="/u">← back to account</a></p>
     </section>,
     { title: "new org" },
   ));
@@ -1272,46 +1291,26 @@ app.get("/o/:name", async (c) => {
   return c.render(
     <section>
       <h2>*{org.name}</h2>
-      <p style="font-size: 0.875rem; opacity: 0.5; margin: 0.5rem 0 1.5rem 0;">
-        Created by @{org.created_by} on {new Date(org.created_at).toLocaleDateString()}.
+      <p class="note-sm">
+        created by @{org.created_by} on {new Date(org.created_at).toLocaleDateString()}.
       </p>
-      <div style="display: flex; flex-direction: column; gap: 2rem;">
+      <div class="stack stack--loose">
         <div>
-          <h3 style="font-size: 0.875rem; font-weight: bold; margin-bottom: 0.5rem; opacity: 0.8;">
-            members ({members.length})
-          </h3>
-          <div style="display: flex; flex-direction: column; gap: 0.5rem;">
+          <h3>members ({members.length})</h3>
+          <div class="stack">
             {members.map((m) => (
-              <div style="display: flex; align-items: center; justify-content: space-between; font-size: 0.875rem;">
+              <div class="member-row">
                 <a href={`/u/${m.name}`}>@{m.name}</a>
                 {org.created_by === viewer && m.name !== viewer && (
-                  <form
-                    method="post"
-                    action={`/o/${org.name}/remove`}
-                    style="display:inline; padding: 0; width: auto;"
-                  >
+                  <form method="post" action={`/o/${org.name}/remove`} class="form-inline">
                     <input type="hidden" name="name" value={m.name} />
-                    <button
-                      type="submit"
-                      style="font-size:0.75rem; padding: 0.1rem 0.4rem; opacity: 0.6; border: 1px solid currentColor; background: none; border-radius: 4px;"
-                    >
-                      remove
-                    </button>
+                    <button type="submit" class="btn-sm">remove</button>
                   </form>
                 )}
                 {m.name === viewer && org.created_by !== viewer && (
-                  <form
-                    method="post"
-                    action={`/o/${org.name}/remove`}
-                    style="display:inline; padding: 0; width: auto;"
-                  >
+                  <form method="post" action={`/o/${org.name}/remove`} class="form-inline">
                     <input type="hidden" name="name" value={viewer} />
-                    <button
-                      type="submit"
-                      style="font-size:0.75rem; padding: 0.1rem 0.4rem; opacity: 0.6; border: 1px solid currentColor; background: none; border-radius: 4px;"
-                    >
-                      leave
-                    </button>
+                    <button type="submit" class="btn-sm">leave</button>
                   </form>
                 )}
               </div>
@@ -1319,22 +1318,10 @@ app.get("/o/:name", async (c) => {
           </div>
         </div>
         {org.created_by === viewer && (
-          <div style="border-top: 1px solid rgba(128,128,128,0.2); padding-top: 1.5rem;">
-            <h3 style="font-size: 0.875rem; font-weight: bold; margin-bottom: 0.5rem; opacity: 0.8;">
-              invite member
-            </h3>
-            <form
-              method="post"
-              action={`/o/${org.name}/invite`}
-              style="padding: 0; display: flex; flex-wrap: wrap; gap: 0.5rem;"
-            >
-              <input
-                required
-                type="email"
-                name="email"
-                placeholder="email"
-                style="flex: 1; padding: 0.25rem 0.5rem; border-radius: 5px; border: 1px solid currentColor;"
-              />
+          <div class="section-divider">
+            <h3>invite member</h3>
+            <form method="post" action={`/o/${org.name}/invite`} class="form-inline">
+              <input required type="email" name="email" aria-label="email" placeholder="email" class="grow" />
               <button type="submit">invite ($1/mo)</button>
             </form>
           </div>
@@ -1500,7 +1487,7 @@ app.post("/c/:p?", async (c) => {
     else postRate.delete(k);
   }
   const times = postRate.get(n) ?? [];
-  if (times.length >= POST_RATE_MAX) throw new HTTPException(429, { message: "Slow down" });
+  if (times.length >= POST_RATE_MAX) throw new HTTPException(429, { message: "slow down. try again in a minute." });
   times.push(now);
   postRate.set(n, times);
 
@@ -1695,24 +1682,22 @@ app.get("/c/:cid?", async (c) => {
     return c.render(
       <>
         <section>
-          <form id="search-form" method="get" action="/c" style="display:flex;gap:0.5rem;">
-            <input name="search" value={decodeLabels(cur)} style="width:100%;" />
+          <form id="search-form" method="get" action="/c" class="search-form">
+            <input name="search" aria-label="search" value={decodeLabels(cur)} />
             <button type="submit">search</button>
           </form>
           <ActiveFilters params={cur} />
           {singleTag && (
-            <div style="margin:1rem 0;">
-              <h2 style="margin:0;">#{singleTag}</h2>
-              <p style="font-size:0.875rem;opacity:0.6;margin:0.25rem 0;">{tagCount} post{tagCount === 1 ? "" : "s"}</p>
-              <p style="font-size:0.75rem;opacity:0.5;margin:0.25rem 0 0 0;">
-                <a href={`/?tag=${singleTag}`}>post to #{singleTag}</a>
-              </p>
+            <div class="info-block">
+              <h2>#{singleTag}</h2>
+              <p class="note">{tagCount} post{tagCount === 1 ? "" : "s"}</p>
+              <p class="note-sm"><a href={`/?tag=${singleTag}`}>post to #{singleTag}</a></p>
             </div>
           )}
           {singleOrg && (
-            <div style="margin:1rem 0;">
-              <h2 style="margin:0;">*{singleOrg}</h2>
-              <p style="font-size:0.875rem;opacity:0.6;margin:0.25rem 0;">
+            <div class="info-block">
+              <h2>*{singleOrg}</h2>
+              <p class="note">
                 {orgMembers} member{orgMembers === 1 ? "" : "s"}
                 {orgCreatedBy && (
                   <>
@@ -1722,40 +1707,39 @@ app.get("/c/:cid?", async (c) => {
                   </>
                 )}
               </p>
-              <p style="font-size:0.75rem;opacity:0.5;margin:0.25rem 0 0 0;">
-                <a href={`/?org=${singleOrg}`}>post to *{singleOrg}</a>
-              </p>
+              <p class="note-sm"><a href={`/?org=${singleOrg}`}>post to *{singleOrg}</a></p>
             </div>
           )}
           {singleUsr && usrRow && (
-            <div style="margin:1rem 0;">
-              <h2 style="margin:0;">@{singleUsr}</h2>
-              <p style="font-size:0.875rem;opacity:0.6;margin:0.25rem 0;">
+            <div class="info-block">
+              <h2>@{singleUsr}</h2>
+              <p class="note">
                 {usrPostCount} post{usrPostCount === 1 ? "" : "s"}
                 {" · "}
                 <a href={`/u/${singleUsr}`}>profile</a>
               </p>
-              <p style="font-size:0.75rem;opacity:0.5;margin:0.25rem 0 0 0;">
-                <a href={`/?usr=${singleUsr}`}>post to @{singleUsr}</a>
-              </p>
+              <p class="note-sm"><a href={`/?usr=${singleUsr}`}>post to @{singleUsr}</a></p>
             </div>
           )}
           {!singleTag && !singleOrg && !singleUsr && meta && <h2>{meta}</h2>}
           {q.q && userMatches.length > 0 && (
-            <div
-              class="user-matches"
-              style="display:flex;flex-wrap:wrap;gap:0.5rem;margin:0.5rem 0;font-size:0.875rem;"
-            >
+            <div class="user-matches">
               {userMatches.map((u) => <a key={u.name} href={`/c?usr=${u.name}`}>@{u.name}</a>)}
             </div>
           )}
           <SortToggle sort={s} baseHref={`/c?${cur}`} title="results" />
         </section>
         <section>
-          <div class="posts">{items.map((i) => Post(i as Com, n, cur))}</div>
+          {items.length === 0
+            ? (
+              <p class="empty">
+                no results. <a href="/c">clear filters</a> or <a href="/">back to home</a>.
+              </p>
+            )
+            : <div class="posts">{items.map((i) => Post(i as Com, n, cur))}</div>}
         </section>
         <section>
-          <div style="margin-top:2rem;display:flex;justify-content:space-between;">
+          <div class="pagination">
             {p > 0
               ? <a href={`/c?${(() => { const n = new URLSearchParams(cur); n.set("p", (p - 1).toString()); return n; })()}`}>prev</a>
               : <span />}
@@ -1775,11 +1759,16 @@ app.get("/c/:cid?", async (c) => {
     await sql`select cid, body, created_at from com where parent_cid is null and ${post.cid} = any(links) and orgs <@ ${rT}::text[] and (usrs = '{}' or ${
       n || ""
     }::text = any(usrs)) order by created_at desc limit 5`;
+  const replies = (post.child_comments || []).filter((r: ChildCom) => !isReaction(r.body));
+  const errMsg: Record<string, string> = {
+    "self-react": "you cannot react to your own post",
+    "self-flag": "you cannot flag your own post",
+  };
   return c.render(
     <>
-      {q.err === "self-react" && (
+      {q.err && errMsg[q.err] && (
         <section>
-          <p style="color:#c44;margin:0;">you cannot react to your own post</p>
+          <p class="error">{errMsg[q.err]}</p>
         </section>
       )}
       <section>
@@ -1792,19 +1781,28 @@ app.get("/c/:cid?", async (c) => {
         {n
           ? (
             <form method="post" action={`/c/${post.cid}`}>
-              <textarea required name="body" rows={18}></textarea>
+              <label>
+                reply
+                <textarea required name="body" rows={18}></textarea>
+              </label>
               <button type="submit">reply</button>
             </form>
           )
           : (
-            <div style="display:flex;flex-direction:column;gap:0.5rem;">
-              <p style="margin:0;font-size:0.875rem;opacity:0.8;">create an account to reply</p>
-              <form method="post" action="/signup" style="display:flex;flex-direction:column;gap:0.5rem;">
-                <input required name="name" type="text" pattern="^[0-9a-zA-Z_]{4,32}$" placeholder="username" />
-                <input required name="email" type="email" placeholder="email" />
+            <div class="stack">
+              <p class="note">create an account to reply</p>
+              <form method="post" action="/signup" class="stack">
+                <label>
+                  username
+                  <input required name="name" type="text" pattern="^[0-9a-zA-Z_]{4,32}$" />
+                </label>
+                <label>
+                  email
+                  <input required name="email" type="email" />
+                </label>
                 <button type="submit">sign up</button>
               </form>
-              <p style="margin:0;font-size:0.75rem;opacity:0.6;">
+              <p class="note-sm">
                 already have an account? <a href={`/u?next=${encodeURIComponent(`/c/${post.cid}`)}`}>log in</a>
               </p>
             </div>
@@ -1812,16 +1810,20 @@ app.get("/c/:cid?", async (c) => {
         <SortToggle sort={s} baseHref={`/c/${cid}`} title="comments" />
       </section>
       <section>
-        {(post.child_comments || []).filter((r: ChildCom) => !isReaction(r.body)).map((r: ChildCom) => Comment(r, n))}
+        {replies.length === 0
+          ? <p class="empty">no replies yet{n ? ". be the first." : "."}</p>
+          : replies.map((r: ChildCom) => Comment(r, n))}
       </section>
       {backlinks.length > 0 && (
         <section>
-          <h3 style="margin:0 0 0.5rem 0;font-size:0.875rem;opacity:0.6;">backlinks</h3>
-          {backlinks.map((bl) => (
-            <div key={bl.cid} style="margin:0.25rem 0;">
-              <a href={`/c/${bl.cid}`}>{bl.body.trim().split("\n")[0].slice(0, 60)}</a>
-            </div>
-          ))}
+          <h3>backlinks</h3>
+          <div class="backlinks">
+            {backlinks.map((bl) => (
+              <div key={bl.cid}>
+                <a href={`/c/${bl.cid}`}>{bl.body.trim().split("\n")[0].slice(0, 60)}</a>
+              </div>
+            ))}
+          </div>
         </section>
       )}
     </>,

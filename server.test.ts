@@ -423,7 +423,7 @@ Deno.test(
     await t.step("GET /c?tag=humor renders single-tag header and 'post to' action", async () => {
       const res = await app.request("/c?tag=humor");
       const html = await res.text();
-      assertEquals(html.includes(`<h2 style="margin:0;">#humor</h2>`), true);
+      assertEquals(html.includes(`<h2>#humor</h2>`), true);
       assertEquals(html.includes("post to #humor"), true);
       assertEquals(html.includes(`href="/?tag=humor"`), true);
     });
@@ -438,7 +438,7 @@ Deno.test(
     await t.step("GET /c?usr=BugHunter42 renders single-user header and 'post to' action", async () => {
       const res = await app.request("/c?usr=BugHunter42");
       const html = await res.text();
-      assertEquals(html.includes(`<h2 style="margin:0;">@BugHunter42</h2>`), true);
+      assertEquals(html.includes(`<h2>@BugHunter42</h2>`), true);
       assertEquals(html.includes(`href="/u/BugHunter42"`), true);
       assertEquals(html.includes("post to @BugHunter42"), true);
     });
@@ -451,7 +451,7 @@ Deno.test(
       const cookie = boot.headers.get("set-cookie")!.split(";")[0];
       const res = await app.request("/c?org=secret", { headers: { cookie } });
       const html = await res.text();
-      assertEquals(html.includes(`<h2 style="margin:0;">*secret</h2>`), true);
+      assertEquals(html.includes(`<h2>*secret</h2>`), true);
       assertEquals(html.includes("post to *secret"), true);
     });
 
