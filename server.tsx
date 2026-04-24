@@ -782,11 +782,7 @@ app.get("/", async (c) => {
         {name
           ? (
             <form method="post" action="/c">
-              <label>
-                post
-                <textarea required name="body" rows={18} minlength={1} maxlength={4096}></textarea>
-              </label>
-              <p class="compose-hint">#tag · *org · @user · urls become ~domain</p>
+              <textarea aria-label="post" required name="body" rows={18} minlength={1} maxlength={4096}></textarea>
               <div class="post-form__row">
                 <input
                   type="text"
@@ -1781,10 +1777,7 @@ app.get("/c/:cid?", async (c) => {
         {n
           ? (
             <form method="post" action={`/c/${post.cid}`}>
-              <label>
-                reply
-                <textarea required name="body" rows={18}></textarea>
-              </label>
+              <textarea aria-label="reply" required name="body" rows={18}></textarea>
               <button type="submit">reply</button>
             </form>
           )

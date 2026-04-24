@@ -189,7 +189,9 @@ body > header > section {
 }
 
 .brand {
+  font-size: var(--text-xl);
   font-weight: 700;
+  letter-spacing: 0.3em;
 }
 
 body > header > section > nav {
@@ -199,6 +201,7 @@ body > header > section > nav {
   align-items: baseline;
   font-size: var(--text-sm);
   color: var(--muted);
+  letter-spacing: 0.1em;
 }
 
 section {
@@ -252,10 +255,10 @@ body > main > section {
 
 form {
   width: 100%;
-  padding: var(--space-4) 0;
+  padding: 0;
   display: flex;
   flex-direction: column;
-  gap: var(--space-4);
+  gap: var(--space-2);
 }
 
 form.form-inline {
@@ -506,6 +509,7 @@ a.thumb {
   display: flex;
   justify-content: space-between;
   margin-top: var(--space-8);
+  letter-spacing: 0.1em;
 }
 
 /* one meta row, shared by post + comment */
@@ -574,12 +578,6 @@ a.thumb {
 
 .post-form__row > input {
   flex: 1;
-}
-
-.compose-hint {
-  font-size: var(--text-2xs);
-  color: var(--muted);
-  margin-top: calc(-1 * var(--space-2));
 }
 
 .sort-toggle {
