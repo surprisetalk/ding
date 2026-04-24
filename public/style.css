@@ -243,6 +243,9 @@ body > main > section {
 .post-content > a {
   font-size: var(--text-lg);
   font-weight: 600;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 form {
