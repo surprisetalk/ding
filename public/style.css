@@ -118,7 +118,7 @@ body > main > section {
   border-radius: 4px;
 }
 
-.posts .post-content div {
+.posts .post-meta, .posts .post-actions {
   display: flex;
   flex-wrap: wrap;
   align-items: baseline;
@@ -168,6 +168,8 @@ pre {
   font-size: 0.875rem;
   max-height: 50rem;
   overflow: hidden;
+  padding-left: 0.5rem;
+  margin-top: 0.5rem;
 }
 
 .body pre {
@@ -183,7 +185,7 @@ pre {
 }
 
 .body blockquote {
-  border-left: 2px solid currentColor;
+  border-left: 2px dotted rgba(127, 127, 127, 0.5);
   padding-left: 0.5rem;
   opacity: 0.8;
   margin: 0.25rem 0;
@@ -214,6 +216,16 @@ a:link {
   gap: 0.75rem;
   opacity: 0.8;
   font-size: 0.875rem;
+  line-height: 1.5;
+}
+
+.comment > .children {
+  padding-left: 1rem;
+  margin-top: 0.75rem;
+}
+
+.comment > .children > .comment + .comment {
+  margin-top: 0.75rem;
 }
 
 .user > div {

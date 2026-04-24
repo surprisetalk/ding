@@ -1938,10 +1938,50 @@ Deno.test("formatBody", async (t) => {
     assertEquals(out.includes("# title"), true);
   });
 
-  await t.step("blockquote keeps > (escaped) and wraps in <blockquote>", () => {
+  await t.step("blockquote wraps content in <blockquote>", () => {
     const out = render("> quoted line");
     assertEquals(out.includes("<blockquote>"), true);
-    assertEquals(out.includes("&gt; quoted line"), true);
+    assertEquals(out.includes("quoted line"), true);
+  });
+
+  await t.step("blockquote recurses: list inside quote", () => {
+    const out = render("> - item");
+    assertEquals(/<blockquote>\s*<ul class="body-list">/.test(out), true);
+    assertEquals(out.includes("<li>- item</li>"), true);
+  });
+
+  await t.step("blockquote recurses: nested quote", () => {
+    const out = render("> > nested");
+    assertEquals(/<blockquote>\s*<blockquote>/.test(out), true);
+    assertEquals(out.includes("nested"), true);
+  });
+
+  await t.step("nested inline emphasis keeps both sets of symbols", () => {
+    const out = render("**_both_**");
+    assertEquals(out.includes("<strong>**<em>_both_</em>**</strong>"), true);
+  });
+
+  await t.step("bare URL becomes clickable link", () => {
+    const out = render("see https://example.com now");
+    assertEquals(out.includes(`href="https://example.com"`), true);
+    assertEquals(out.includes(">https://example.com</a>"), true);
+  });
+
+  await t.step("bare URL trailing punctuation trimmed", () => {
+    const out = render("visit https://example.com.");
+    assertEquals(out.includes(`href="https://example.com"`), true);
+    assertEquals(out.includes("https://example.com.</a>"), false);
+  });
+
+  await t.step("bare URL with balanced parens keeps closing paren", () => {
+    const out = render("see https://en.wikipedia.org/wiki/Foo_(bar) now");
+    assertEquals(out.includes(`href="https://en.wikipedia.org/wiki/Foo_(bar)"`), true);
+  });
+
+  await t.step("bare URL wrapped in parens keeps parens outside link", () => {
+    const out = render("(see https://example.com)");
+    assertEquals(out.includes(`href="https://example.com"`), true);
+    assertEquals(out.includes("https://example.com)</a>"), false);
   });
 
   await t.step("list renders <ul class=body-list> with items", () => {

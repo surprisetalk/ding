@@ -350,7 +350,8 @@ const Reactions = (c: Com | ChildCom) =>
 // deno-lint-ignore no-explicit-any
 type BodyNode = any;
 
-const INLINE_RE = /(`[^`\n]+`)|(\*\*[^\n*]+\*\*)|(_[^_\n]+_)|(\[[^\]\n]+\]\((https?:\/\/[^\s)]+)\))/g;
+const INLINE_RE =
+  /(`[^`\n]+`)|(\*\*[^\n*]+\*\*)|(_[^_\n]+_)|(\[[^\]\n]+\]\((https?:\/\/[^\s)]+)\))|(https?:\/\/(?:[^\s<()]+|\([^\s<()]*\))+)/g;
 
 const inlineFmt = (s: string): BodyNode[] => {
   const out: BodyNode[] = [];
@@ -358,11 +359,17 @@ const inlineFmt = (s: string): BodyNode[] => {
   for (const m of s.matchAll(INLINE_RE)) {
     const idx = m.index!;
     if (idx > i) out.push(s.slice(i, idx));
-    const [full, code, bold, italic, link, url] = m;
+    const [full, code, bold, italic, link, url, bareUrl] = m;
     if (code) out.push(<code>{code}</code>);
-    else if (bold) out.push(<strong>{bold}</strong>);
-    else if (italic) out.push(<em>{italic}</em>);
+    else if (bold) out.push(<strong>**{inlineFmt(bold.slice(2, -2))}**</strong>);
+    else if (italic) out.push(<em>_{inlineFmt(italic.slice(1, -1))}_</em>);
     else if (link) out.push(<a href={url}>{link}</a>);
+    else if (bareUrl) {
+      const trail = bareUrl.match(/[.,!?;:]+$/)?.[0] ?? "";
+      const clean = trail ? bareUrl.slice(0, -trail.length) : bareUrl;
+      out.push(<a href={clean}>{clean}</a>);
+      if (trail) out.push(trail);
+    }
     i = idx + full.length;
   }
   if (i < s.length) out.push(s.slice(i));
@@ -406,10 +413,10 @@ export const formatBody = (body: string): BodyNode[] => {
       if (/^>\s?/.test(ln)) {
         const qs: string[] = [];
         while (i < lines.length && /^>\s?/.test(lines[i])) {
-          qs.push(lines[i]);
+          qs.push(lines[i].replace(/^>\s?/, ""));
           i++;
         }
-        out.push(<blockquote>{inlineFmt(qs.join("\n"))}</blockquote>);
+        out.push(<blockquote>{formatBody(qs.join("\n"))}</blockquote>);
         continue;
       }
       const hm = ln.match(/^(#{1,6})\s+/);
@@ -462,7 +469,7 @@ const Comment = (c: Com | ChildCom, user?: string) => (
         ? formatBody(c.body)
         : "[deleted by author]"}
     </div>
-    <div style="padding-left:1rem">
+    <div class="children">
       {(c as Com).child_comments?.map((ch) => Comment(ch, user))}
     </div>
   </div>
@@ -490,7 +497,7 @@ const Post = (c: Com, user?: string, p?: URLSearchParams) => {
               : "[deleted by author]"}
           </a>
         </span>
-        <div>
+        <div class="post-meta">
           <a href={`/c/${c.cid}`}>{new Date(c.created_at).toLocaleDateString()}</a>
           {c.parent_cid && <a href={`/c/${c.parent_cid}`}>parent</a>}
           <a href={`/u/${c.created_by}`}>@{c.created_by}</a>
@@ -501,6 +508,8 @@ const Post = (c: Com, user?: string, p?: URLSearchParams) => {
               {l}
             </a>
           ))}
+        </div>
+        <div class="post-actions">
           <span class="reactions-group">
             <span class="reaction">
               <a href={`/c/${c.cid}`}>» {c.comments || 0}</a>
