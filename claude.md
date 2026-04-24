@@ -61,6 +61,17 @@ Search and tagging use a unified label syntax:
 
 Exported functions: `parseLabels()`, `encodeLabels()`, `decodeLabels()`, `formatLabels()`
 
+## Body Formatting
+
+Post/comment bodies are rendered by `formatBody()` as lightweight markdown that **keeps the original symbols visible**
+(e.g. `_foo_` renders as `<em>_foo_</em>`). Supported: `_italic_`, `**bold**`, `` `code` ``, `[text](https://...)`,
+`# heading`, `> blockquote`, `- item` / `1. item` lists, fenced ` ``` ` and 4-space-indented code blocks. Only code
+blocks render in monospace; prose uses the page font. `<div class="body">` wraps output; styles live in
+`public/style.css` (`.body`, `.body pre`, `.body blockquote`, `.body-list`).
+
+Post-detail view (`/c/:cid`) fetches two levels of comments so replies-to-replies render without click-through. Feed
+view (`/`) stays one level deep.
+
 ## Content Negotiation
 
 Routes return different formats based on subdomain or Accept header:

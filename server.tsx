@@ -62,6 +62,7 @@ export type ChildCom = {
   comments: number;
   reaction_counts: Record<string, number>;
   user_reactions: string[];
+  child_comments?: ChildCom[];
 };
 
 export type Com = {
@@ -346,6 +347,98 @@ const Reactions = (c: Com | ChildCom) =>
     </form>
   ));
 
+// deno-lint-ignore no-explicit-any
+type BodyNode = any;
+
+const INLINE_RE = /(`[^`\n]+`)|(\*\*[^\n*]+\*\*)|(_[^_\n]+_)|(\[[^\]\n]+\]\((https?:\/\/[^\s)]+)\))/g;
+
+const inlineFmt = (s: string): BodyNode[] => {
+  const out: BodyNode[] = [];
+  let i = 0;
+  for (const m of s.matchAll(INLINE_RE)) {
+    const idx = m.index!;
+    if (idx > i) out.push(s.slice(i, idx));
+    const [full, code, bold, italic, link, url] = m;
+    if (code) out.push(<code>{code}</code>);
+    else if (bold) out.push(<strong>{bold}</strong>);
+    else if (italic) out.push(<em>{italic}</em>);
+    else if (link) out.push(<a href={url}>{link}</a>);
+    i = idx + full.length;
+  }
+  if (i < s.length) out.push(s.slice(i));
+  return out;
+};
+
+const heading = (level: number, children: BodyNode[]) =>
+  level === 1 ? <h3>{children}</h3> : level === 2 ? <h4>{children}</h4> : <h5>{children}</h5>;
+
+export const formatBody = (body: string): BodyNode[] => {
+  const out: BodyNode[] = [];
+  const parts = body.split(/(```[\s\S]*?```)/g);
+  for (const part of parts) {
+    if (part.startsWith("```") && part.endsWith("```") && part.length >= 6) {
+      out.push(<pre>{part}</pre>);
+      continue;
+    }
+    const lines = part.split("\n");
+    let i = 0;
+    while (i < lines.length) {
+      const ln = lines[i];
+      if (/^(?:    |\t)/.test(ln)) {
+        const block: string[] = [];
+        while (i < lines.length && (/^(?:    |\t)/.test(lines[i]) || lines[i] === "")) {
+          block.push(lines[i]);
+          i++;
+        }
+        while (block.length && block[block.length - 1] === "") block.pop();
+        out.push(<pre>{block.join("\n")}</pre>);
+        continue;
+      }
+      if (/^\s*(?:[-*]|\d+\.)\s+/.test(ln)) {
+        const items: string[] = [];
+        while (i < lines.length && /^\s*(?:[-*]|\d+\.)\s+/.test(lines[i])) {
+          items.push(lines[i]);
+          i++;
+        }
+        out.push(<ul class="body-list">{items.map((it) => <li>{inlineFmt(it)}</li>)}</ul>);
+        continue;
+      }
+      if (/^>\s?/.test(ln)) {
+        const qs: string[] = [];
+        while (i < lines.length && /^>\s?/.test(lines[i])) {
+          qs.push(lines[i]);
+          i++;
+        }
+        out.push(<blockquote>{inlineFmt(qs.join("\n"))}</blockquote>);
+        continue;
+      }
+      const hm = ln.match(/^(#{1,6})\s+/);
+      if (hm) {
+        out.push(heading(Math.min(hm[1].length, 3), inlineFmt(ln)));
+        i++;
+        continue;
+      }
+      const para: string[] = [];
+      while (
+        i < lines.length && lines[i] !== "" &&
+        !/^(?:    |\t)/.test(lines[i]) &&
+        !/^\s*(?:[-*]|\d+\.)\s+/.test(lines[i]) &&
+        !/^>\s?/.test(lines[i]) &&
+        !/^#{1,6}\s+/.test(lines[i])
+      ) {
+        para.push(lines[i]);
+        i++;
+      }
+      if (para.length) {
+        for (const node of inlineFmt(para.join("\n"))) out.push(node);
+      }
+      out.push("\n");
+      if (i < lines.length && lines[i] === "") i++;
+    }
+  }
+  return out;
+};
+
 const Comment = (c: Com | ChildCom, user?: string) => (
   <div key={c.cid} class="comment" id={String(c.cid)}>
     <div>
@@ -362,7 +455,13 @@ const Comment = (c: Com | ChildCom, user?: string) => (
         {Reactions(c)}
       </span>
     </div>
-    <pre>{(c.c_flags >= FLAG_THRESHOLD && user !== c.created_by) ? "[flagged]" : (c.body || "[deleted by author]")}</pre>
+    <div class="body">
+      {(c.c_flags >= FLAG_THRESHOLD && user !== c.created_by)
+        ? "[flagged]"
+        : c.body
+        ? formatBody(c.body)
+        : "[deleted by author]"}
+    </div>
     <div style="padding-left:1rem">
       {(c as Com).child_comments?.map((ch) => Comment(ch, user))}
     </div>
@@ -1503,12 +1602,19 @@ app.get("/c/:cid?", async (c) => {
       array(select body from com where parent_cid = c.cid and char_length(body) = 1 and created_by = ${
     n || ""
   }) as user_reactions,
-      array(select jsonb_build_object('body', ch.body, 'created_by', ch.created_by, 'cid', ch.cid, 'created_at', ch.created_at, 'tags', ch.tags, 'orgs', ch.orgs, 'usrs', ch.usrs, 'c_flags', ch.c_flags,
+      array(select jsonb_build_object('body', ch.body, 'created_by', ch.created_by, 'cid', ch.cid, 'parent_cid', ch.parent_cid, 'created_at', ch.created_at, 'tags', ch.tags, 'orgs', ch.orgs, 'usrs', ch.usrs, 'c_flags', ch.c_flags,
         'comments', (select count(*) from com c2 where c2.parent_cid = ch.cid and char_length(c2.body) > 1),
         'reaction_counts', (select coalesce(jsonb_object_agg(body, cnt), '{}') from (select body, count(*) as cnt from com where parent_cid = ch.cid and char_length(body) = 1 group by body) r),
         'user_reactions', array(select body from com where parent_cid = ch.cid and char_length(body) = 1 and created_by = ${
     n || ""
+  }),
+        'child_comments', array(select jsonb_build_object('body', gc.body, 'created_by', gc.created_by, 'cid', gc.cid, 'parent_cid', gc.parent_cid, 'created_at', gc.created_at, 'tags', gc.tags, 'orgs', gc.orgs, 'usrs', gc.usrs, 'c_flags', gc.c_flags,
+          'comments', (select count(*) from com c3 where c3.parent_cid = gc.cid and char_length(c3.body) > 1),
+          'reaction_counts', (select coalesce(jsonb_object_agg(body, cnt), '{}') from (select body, count(*) as cnt from com where parent_cid = gc.cid and char_length(body) = 1 group by body) r),
+          'user_reactions', array(select body from com where parent_cid = gc.cid and char_length(body) = 1 and created_by = ${
+    n || ""
   })
+        ) from com gc where gc.parent_cid = ch.cid and char_length(gc.body) > 1 order by gc.created_at desc)
       ) from com ch where ch.parent_cid = c.cid and char_length(ch.body) > 1 order by ch.created_at desc) as child_comments
     from com c where ${
     cid

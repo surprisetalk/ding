@@ -160,6 +160,49 @@ pre {
   overflow: hidden;
 }
 
+.body {
+  white-space: pre-wrap;
+  word-wrap: break-word;
+  overflow-wrap: anywhere;
+  line-height: 1.5;
+  font-size: 0.875rem;
+  max-height: 50rem;
+  overflow: hidden;
+}
+
+.body pre {
+  white-space: pre;
+  overflow-x: auto;
+  background: rgba(127, 127, 127, 0.1);
+  padding: 0.5rem;
+  margin: 0.25rem 0;
+}
+
+.body code {
+  font-size: 0.875rem;
+}
+
+.body blockquote {
+  border-left: 2px solid currentColor;
+  padding-left: 0.5rem;
+  opacity: 0.8;
+  margin: 0.25rem 0;
+}
+
+.body h3, .body h4, .body h5 {
+  margin: 0.5rem 0 0.25rem;
+}
+
+.body h3 { font-size: 1rem; }
+.body h4 { font-size: 0.95rem; }
+.body h5 { font-size: 0.9rem; }
+
+.body-list {
+  list-style: none;
+  padding-left: 0.5rem;
+  margin: 0.25rem 0;
+}
+
 a:link {
   text-decoration: none;
 }

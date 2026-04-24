@@ -1,6 +1,7 @@
 //// IMPORTS ///////////////////////////////////////////////////////////////////
 
 import { assertEquals } from "@std/assert";
+import { jsx } from "@hono/hono/jsx";
 import pg from "postgres";
 import { PGlite } from "@electric-sql/pglite";
 import { citext } from "@electric-sql/pglite/contrib/citext";
@@ -16,6 +17,7 @@ import app, {
   extractDomains,
   extractImageUrl,
   extractLinks,
+  formatBody,
   formatLabels,
   parseLabels,
   postRate,
@@ -891,8 +893,12 @@ Deno.test(
         await sql`insert into com (created_by, body, tags, c_flags, flaggers) values ('BugHunter42', 'secret body text', '{humor}', 3, '{a,b,c}') returning cid`;
       const res = await app.request(`/c/${seed.cid}`, { headers: jAuth });
       const html = await res.text();
-      assertEquals(html.includes("<pre>[flagged]</pre>"), true);
-      assertEquals(html.includes("<pre>secret body text</pre>"), false);
+      assertEquals(html.includes(`class="body"`), true);
+      assertEquals(html.includes("[flagged]"), true);
+      assertEquals(
+        /class="body">\s*secret body text/.test(html),
+        false,
+      );
     });
 
     await t.step("POST /c/:p reply 403 on private parent from non-member", async () => {
@@ -1374,6 +1380,36 @@ Deno.test(
       assertEquals(post.child_comments.length, 1);
       assertEquals(post.child_comments[0].body, "real comment");
       assertEquals(+post.reaction_counts["▲"], 1);
+    });
+
+    await t.step("post view returns grandchildren two levels deep", async () => {
+      const [root] =
+        await sql`insert into com (created_by, body, tags) values ('bot_test', 'root for depth', '{depth}') returning cid`;
+      const [child] =
+        await sql`insert into com (parent_cid, created_by, body, tags) values (${root.cid}, 'john_doe', 'child reply', '{depth}') returning cid`;
+      await sql`insert into com (parent_cid, created_by, body, tags) values (${child.cid}, 'jane_doe', 'grandchild reply', '{depth}')`;
+
+      const res = await app.request(`/c/${root.cid}`, {
+        headers: { Accept: "application/json", ...botAuth },
+      });
+      const [post] = await res.json();
+      assertEquals(post.child_comments.length, 1);
+      assertEquals(post.child_comments[0].body, "child reply");
+      assertEquals(post.child_comments[0].child_comments.length, 1);
+      assertEquals(post.child_comments[0].child_comments[0].body, "grandchild reply");
+    });
+
+    await t.step("post view HTML renders grandchild without click-through", async () => {
+      const [root] =
+        await sql`insert into com (created_by, body, tags) values ('bot_test', 'html depth root', '{depth2}') returning cid`;
+      const [child] =
+        await sql`insert into com (parent_cid, created_by, body, tags) values (${root.cid}, 'john_doe', 'html child reply', '{depth2}') returning cid`;
+      await sql`insert into com (parent_cid, created_by, body, tags) values (${child.cid}, 'jane_doe', 'html grandchild reply', '{depth2}')`;
+
+      const res = await app.request(`/c/${root.cid}`, { headers: botAuth });
+      const html = await res.text();
+      assertEquals(html.includes("html child reply"), true);
+      assertEquals(html.includes("html grandchild reply"), true);
     });
 
     await t.step("bot can't post to private org without membership", async () => {
@@ -1862,5 +1898,73 @@ Deno.test("extractLinks", async (t) => {
 
   await t.step("ignores relative /c/ paths", () => {
     assertEquals(extractLinks("see /c/42"), []);
+  });
+});
+
+//// FORMAT BODY TESTS ////////////////////////////////////////////////////////
+
+// Render formatBody output inside a real JSX element so Hono's text-escaping
+// applies, matching what users actually see.
+// deno-lint-ignore no-explicit-any
+const render = (body: string): string => String((jsx as any)("div", {}, formatBody(body)));
+
+Deno.test("formatBody", async (t) => {
+  await t.step("preserves symbols around italic, bold, code", () => {
+    const out = render("_foo_ and **bar** and `baz`");
+    assertEquals(out.includes("<em>_foo_</em>"), true);
+    assertEquals(out.includes("<strong>**bar**</strong>"), true);
+    assertEquals(out.includes("<code>`baz`</code>"), true);
+  });
+
+  await t.step("renders link with brackets and parens kept", () => {
+    const out = render("see [site](https://example.com) now");
+    assertEquals(out.includes(`href="https://example.com"`), true);
+    assertEquals(out.includes("[site](https://example.com)"), true);
+  });
+
+  await t.step("fenced code becomes <pre> with fences kept", () => {
+    const out = render("text\n```\ncode here\n```\nafter");
+    assertEquals(out.includes("<pre>```\ncode here\n```</pre>"), true);
+  });
+
+  await t.step("indented code becomes <pre>", () => {
+    const out = render("para\n\n    indent1\n    indent2\n\nafter");
+    assertEquals(out.includes("<pre>    indent1\n    indent2</pre>"), true);
+  });
+
+  await t.step("heading preserves # symbols", () => {
+    const out = render("# title");
+    assertEquals(out.includes("<h3>"), true);
+    assertEquals(out.includes("# title"), true);
+  });
+
+  await t.step("blockquote keeps > (escaped) and wraps in <blockquote>", () => {
+    const out = render("> quoted line");
+    assertEquals(out.includes("<blockquote>"), true);
+    assertEquals(out.includes("&gt; quoted line"), true);
+  });
+
+  await t.step("list renders <ul class=body-list> with items", () => {
+    const out = render("- one\n- two");
+    assertEquals(out.includes(`class="body-list"`), true);
+    assertEquals(out.includes("<li>- one</li>"), true);
+    assertEquals(out.includes("<li>- two</li>"), true);
+  });
+
+  await t.step("escapes HTML injection in body", () => {
+    const out = render("<script>alert(1)</script>");
+    assertEquals(out.includes("<script>"), false);
+    assertEquals(out.includes("&lt;script&gt;"), true);
+  });
+
+  await t.step("unmatched markers render literally", () => {
+    const out = render("**bold without close and _italic without close");
+    assertEquals(out.includes("<strong>"), false);
+    assertEquals(out.includes("<em>"), false);
+  });
+
+  await t.step("non-http link schemes not linkified", () => {
+    const out = render("[x](javascript:alert(1))");
+    assertEquals(out.includes(`href="javascript:`), false);
   });
 });
