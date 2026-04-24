@@ -238,6 +238,8 @@ body > main > section {
   height: auto;
   aspect-ratio: 1 / 1;
   object-fit: cover;
+  border: 1px solid var(--rule);
+  border-radius: 2px;
 }
 
 .post-content > a {
