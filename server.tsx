@@ -450,18 +450,18 @@ const Meta = (c: Com | ChildCom, user?: string, labelHref?: (l: string) => strin
   const lh = labelHref ?? ((l: string) => `/c?${PFX[l[0]] ?? "tag"}=${l.slice(1)}`);
   return (
     <div class="meta">
-      {c.created_at && <a href={`/c/${c.cid}`}>{new Date(c.created_at).toLocaleDateString()}</a>}
-      {c.parent_cid && <a href={`/c/${c.parent_cid}`}>parent</a>}
-      <a href={`/u/${c.created_by}`}>@{c.created_by || "unknown"}</a>
-      {c.body && user == c.created_by && <a href={`/c/${c.cid}/delete`}>delete</a>}
-      <a href={`/c/${c.cid}`}>reply</a>
-      {formatLabels(c).map((l) => <a key={l} href={lh(l)}>{l}</a>)}
       <span class="reactions-group">
         <span class="reaction">
           <a href={`/c/${c.cid}`}>» {c.comments || 0}</a>
         </span>
         {Reactions(c)}
       </span>
+      {c.created_at && <a href={`/c/${c.cid}`}>{new Date(c.created_at).toLocaleDateString()}</a>}
+      {c.parent_cid && <a href={`/c/${c.parent_cid}`}>parent</a>}
+      <a href={`/u/${c.created_by}`}>@{c.created_by || "unknown"}</a>
+      {c.body && user == c.created_by && <a href={`/c/${c.cid}/delete`}>delete</a>}
+      <a href={`/c/${c.cid}`}>reply</a>
+      {formatLabels(c).map((l) => <a key={l} href={lh(l)}>{l}</a>)}
     </div>
   );
 };
