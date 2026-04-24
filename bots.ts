@@ -160,7 +160,7 @@ export async function extractArticle(
     if (!t) return;
     const tag = el.tagName.toLowerCase();
     if (tag === "li") paras.push(`- ${t}`);
-    else if (/^h[1-6]$/.test(tag)) paras.push(`**${t}**`);
+    else if (/^h[1-6]$/.test(tag)) paras.push(`${tag === "h1" ? "#" : "##"} ${t}`);
     else paras.push(t);
   });
   const text = paras.join("\n\n").trim();

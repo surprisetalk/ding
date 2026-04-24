@@ -442,9 +442,8 @@ export const formatBody = (body: string): BodyNode[] => {
         i++;
       }
       if (para.length) {
-        for (const node of inlineFmt(para.join("\n"))) out.push(node);
+        out.push(<p>{inlineFmt(para.join("\n"))}</p>);
       }
-      out.push("\n");
       if (i < lines.length && lines[i] === "") i++;
     }
   }

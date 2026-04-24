@@ -340,6 +340,15 @@ pre {
   margin: var(--space-2) 0;
 }
 
+.body p {
+  margin: 0 0 var(--space-2);
+}
+
+.body p:last-child,
+.body blockquote > p:last-child {
+  margin-bottom: 0;
+}
+
 .body h3, .body h4, .body h5 {
   margin: var(--space-3) 0 var(--space-1);
   font-weight: 600;

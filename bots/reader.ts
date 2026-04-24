@@ -75,7 +75,7 @@ async function main() {
     }
 
     const truncated = smartTruncate(text, MAX_CHARS);
-    const header = article.title ? `**[${article.title}](${url})**\n\n` : `[${url}](${url})\n\n`;
+    const header = article.title ? `# [${article.title}](${url})\n\n` : `[${url}](${url})\n\n`;
     const body = (header + truncated).split("\n").map((l) => l ? `> ${l}` : ">").join("\n");
     await reply(auth, apiUrl, p.cid, body);
     console.log(`Replied to cid=${p.cid} (${url})`);
