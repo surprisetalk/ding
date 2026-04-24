@@ -261,9 +261,9 @@ export const stripe = new Stripe(isStripeConfigured ? stripeKey : "sk_test_place
 const User = (u: Usr, viewerName?: string) => {
   const isOwner = viewerName && viewerName == u.name;
   return (
-    <div class="user">
+    <section class="user">
       <h2>@{u.name}</h2>
-      <div>
+      <div class="user-links">
         {u.name !== u.invited_by || <a href={`/u/${u.invited_by}`}>invited by @{u.invited_by}</a>}
         <a href={`/c?usr=${u.name}`}>posts</a>
         <a href={`/c?usr=${u.name}&comments=1`}>comments</a>
@@ -276,10 +276,8 @@ const User = (u: Usr, viewerName?: string) => {
           </>
         )}
       </div>
-      <div>
-        <pre>{u.bio}</pre>
-      </div>
-    </div>
+      <pre>{u.bio}</pre>
+    </section>
   );
 };
 
@@ -448,15 +446,16 @@ export const formatBody = (body: string): BodyNode[] => {
   return out;
 };
 
-const Comment = (c: Com | ChildCom, user?: string) => (
-  <div key={c.cid} class="comment" id={String(c.cid)}>
-    <div>
+const Meta = (c: Com | ChildCom, user?: string, labelHref?: (l: string) => string) => {
+  const lh = labelHref ?? ((l: string) => `/c?${PFX[l[0]] ?? "tag"}=${l.slice(1)}`);
+  return (
+    <div class="meta">
       {c.created_at && <a href={`/c/${c.cid}`}>{new Date(c.created_at).toLocaleDateString()}</a>}
       {c.parent_cid && <a href={`/c/${c.parent_cid}`}>parent</a>}
       <a href={`/u/${c.created_by}`}>@{c.created_by || "unknown"}</a>
       {c.body && user == c.created_by && <a href={`/c/${c.cid}/delete`}>delete</a>}
       <a href={`/c/${c.cid}`}>reply</a>
-      {formatLabels(c).map((l) => <a key={l} href={`/c?${PFX[l[0]] ?? "tag"}=${l.slice(1)}`}>{l}</a>)}
+      {formatLabels(c).map((l) => <a key={l} href={lh(l)}>{l}</a>)}
       <span class="reactions-group">
         <span class="reaction">
           <a href={`/c/${c.cid}`}>» {c.comments || 0}</a>
@@ -464,6 +463,12 @@ const Comment = (c: Com | ChildCom, user?: string) => (
         {Reactions(c)}
       </span>
     </div>
+  );
+};
+
+const Comment = (c: Com | ChildCom, user?: string) => (
+  <div key={c.cid} class="comment" id={String(c.cid)}>
+    {Meta(c, user)}
     <div class="body">
       {(c.c_flags >= FLAG_THRESHOLD && user !== c.created_by)
         ? "[flagged]"
@@ -482,6 +487,7 @@ const defaultThumb =
 
 const Post = (c: Com, user?: string, p?: URLSearchParams) => {
   const linkUrl = (c.body && extractFirstUrl(c.body)) || null;
+  const labelHref = (l: string) => buildAdditiveLink(p, PFX[l[0]] ?? "tag", l.slice(1));
   return (
     <>
       <a href={linkUrl ?? `/c/${c.cid}`} class="thumb" {...(linkUrl ? { target: "_blank", rel: "noopener" } : {})}>
@@ -492,33 +498,12 @@ const Post = (c: Com, user?: string, p?: URLSearchParams) => {
         />
       </a>
       <div class="post-content">
-        <span>
-          <a href={`/c/${c.cid}`}>
-            {c.body
-              ? c.body.trim().split("\n")[0].slice(0, 60) + (c.body.length > 60 ? "…" : "")
-              : "[deleted by author]"}
-          </a>
-        </span>
-        <div class="post-meta">
-          <a href={`/c/${c.cid}`}>{new Date(c.created_at).toLocaleDateString()}</a>
-          {c.parent_cid && <a href={`/c/${c.parent_cid}`}>parent</a>}
-          <a href={`/u/${c.created_by}`}>@{c.created_by}</a>
-          {c.body && user == c.created_by && <a href={`/c/${c.cid}/delete`}>delete</a>}
-          <a href={`/c/${c.cid}`}>reply</a>
-          {formatLabels(c).map((l) => (
-            <a key={l} href={buildAdditiveLink(p, PFX[l[0]] ?? "tag", l.slice(1))}>
-              {l}
-            </a>
-          ))}
-        </div>
-        <div class="post-actions">
-          <span class="reactions-group">
-            <span class="reaction">
-              <a href={`/c/${c.cid}`}>» {c.comments || 0}</a>
-            </span>
-            {Reactions(c)}
-          </span>
-        </div>
+        <a href={`/c/${c.cid}`}>
+          {c.body
+            ? c.body.trim().split("\n")[0].slice(0, 60) + (c.body.length > 60 ? "…" : "")
+            : "[deleted by author]"}
+        </a>
+        {Meta(c, user, labelHref)}
       </div>
     </>
   );
