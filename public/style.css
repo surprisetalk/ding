@@ -479,6 +479,8 @@ a.thumb {
   font-size: var(--text-xs);
   color: var(--muted);
   line-height: var(--lh-tight);
+  mask-image: linear-gradient(to right, black calc(100% - 1.5rem), transparent);
+  -webkit-mask-image: linear-gradient(to right, black calc(100% - 1.5rem), transparent);
 }
 
 .meta > * {
@@ -490,15 +492,14 @@ a.thumb {
 }
 
 .meta > a {
-  max-width: 20ch;
+  max-width: 14ch;
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
 }
 
 .meta-date {
-  color: var(--fg);
-  font-style: italic;
+  font-family: var(--font-mono);
 }
 
 .note {
