@@ -56,10 +56,11 @@ const unesc = (s: string) =>
 
 const extractImg = (html: string): string | null => {
   const u = unesc(html);
-  return u.match(/https:\/\/i\.redd\.it\/[^\s"'<>]+/)?.[0]
+  const raw = u.match(/https:\/\/i\.redd\.it\/[^\s"'<>]+/)?.[0]
     ?? u.match(/https:\/\/i\.imgur\.com\/[^\s"'<>]+/)?.[0]
     ?? u.match(/<img[^>]+src="([^"]+)"/)?.[1]
     ?? null;
+  return raw ? unesc(raw) : null;
 };
 
 type Item = { sub: string; title: string; link: string; imageUrl: string | null; author: string; published: number };
