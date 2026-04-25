@@ -1233,6 +1233,13 @@ Deno.test(
       await unreact("idemvote", p, "▲");
       assertEquals(await score(p), before);
     });
+
+    await t.step("bot_ user posts rank below regular user posts", async () => {
+      for (const u of ["bot_demo", "human_demo"]) await mkUser(u);
+      const botPost = await mkPost("bot_demo", "bot post", ["zz"]);
+      const humanPost = await mkPost("human_demo", "human post", ["zz"]);
+      assertEquals((await score(botPost)) < (await score(humanPost)), true);
+    });
   }),
 );
 
