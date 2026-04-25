@@ -9,8 +9,14 @@ const trimBoilerplate = (text: string) => {
   let i = 0;
   while (i < lines.length) {
     const l = lines[i].trim();
-    if (!l) { i++; continue; }
-    if (l.length < 40 && !/[.!?]$/.test(l)) { i++; continue; }
+    if (!l) {
+      i++;
+      continue;
+    }
+    if (l.length < 40 && !/[.!?]$/.test(l)) {
+      i++;
+      continue;
+    }
     break;
   }
   return lines.slice(i).join("\n").trimStart();

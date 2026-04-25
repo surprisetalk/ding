@@ -448,9 +448,8 @@ export const formatBody = (body: string): BodyNode[] => {
         para.push(lines[i]);
         i++;
       }
-      if (para.length) {
+      if (para.length)
         out.push(<p>{inlineFmt(para.join("\n"))}</p>);
-      }
       if (i < lines.length && lines[i] === "") i++;
     }
   }
@@ -673,13 +672,13 @@ app.use("*", async (c, next) => {
             <section>
               <a href="/" class="brand">▢ding</a>
               <nav aria-label="site">
-                <a href="/u"${cur("/u")}>${n ? `@${n}` : "account"}</a>
+                <a href="/u" ${cur("/u")}>${n ? `@${n}` : "account"}</a>
                 ${n
                   ? html`
-                    <a href="/n"${cur("/n")}>inbox${unread ? ` (${unread})` : ""}</a>
+                    <a href="/n" ${cur("/n")}>inbox${unread ? ` (${unread})` : ""}</a>
                   `
                   : ""}
-                <a href="/c"${cur("/c")}>search</a>
+                <a href="/c" ${cur("/c")}>search</a>
                 <a href="/c/496">help</a>
               </nav>
             </section>
@@ -783,8 +782,8 @@ app.get("/", async (c) => {
   return c.render(
     <>
       <section>
-        {name
-          ? (
+        {name &&
+          (
             <form method="post" action="/c">
               <textarea aria-label="post" required name="body" rows={18} minlength={1} maxlength={4096}></textarea>
               <div class="post-form__row">
@@ -798,11 +797,6 @@ app.get("/", async (c) => {
                 <button type="submit">create post</button>
               </div>
             </form>
-          )
-          : (
-            <p class="empty">
-              <a href="/signup">sign up</a> or <a href="/u">log in</a> to post.
-            </p>
           )}
         <ActiveFilters params={cur} basePath="/" />
         {presets.length > 0 && (
@@ -832,10 +826,32 @@ app.get("/", async (c) => {
       <section>
         <div class="pagination">
           {p > 0
-            ? <a href={`/?${(() => { const n = new URLSearchParams(cur); n.set("p", (p - 1).toString()); return n; })()}`}>prev</a>
+            ? (
+              <a
+                href={`/?${
+                  (() => {
+                    const n = new URLSearchParams(cur);
+                    n.set("p", (p - 1).toString());
+                    return n;
+                  })()
+                }`}
+              >
+                prev
+              </a>
+            )
             : <span />}
           {items.length === 25 && (
-            <a href={`/?${(() => { const n = new URLSearchParams(cur); n.set("p", (p + 1).toString()); return n; })()}`}>next</a>
+            <a
+              href={`/?${
+                (() => {
+                  const n = new URLSearchParams(cur);
+                  n.set("p", (p + 1).toString());
+                  return n;
+                })()
+              }`}
+            >
+              next
+            </a>
           )}
         </div>
       </section>
@@ -880,7 +896,9 @@ app.get("/forgot", (c) =>
         )
         : (
           <form method="post" action="/forgot">
-            <label>email <input required name="email" type="email" /></label>
+            <label>
+              email <input required name="email" type="email" />
+            </label>
             <button type="submit">send</button>
           </form>
         )}
@@ -898,8 +916,12 @@ app.get("/password", (c) =>
     <section>
       <form method="post" action="/password">
         <input name="token" value={c.req.query("token")} type="hidden" />
-        <label>email <input name="email" value={c.req.query("email")} readonly /></label>
-        <label>new password <input name="password" type="password" required /></label>
+        <label>
+          email <input name="email" value={c.req.query("email")} readonly />
+        </label>
+        <label>
+          new password <input name="password" type="password" required />
+        </label>
         <button type="submit">set</button>
       </form>
     </section>,
@@ -1037,8 +1059,12 @@ app.get("/u", async (c) => {
       <section>
         <h2>login</h2>
         <form method="post" action={action}>
-          <label>email <input type="email" name="email" required /></label>
-          <label>password <input type="password" name="password" required /></label>
+          <label>
+            email <input type="email" name="email" required />
+          </label>
+          <label>
+            password <input type="password" name="password" required />
+          </label>
           <button type="submit">login</button>
         </form>
         <p class="login-links">
@@ -1199,7 +1225,9 @@ app.get("/o/new", authed, (c) =>
         />
         <button type="submit">create & subscribe</button>
       </form>
-      <p class="note-sm"><a href="/u">← back to account</a></p>
+      <p class="note-sm">
+        <a href="/u">← back to account</a>
+      </p>
     </section>,
     { title: "new org" },
   ));
@@ -1690,7 +1718,9 @@ app.get("/c/:cid?", async (c) => {
             <div class="info-block">
               <h2>#{singleTag}</h2>
               <p class="note">{tagCount} post{tagCount === 1 ? "" : "s"}</p>
-              <p class="note-sm"><a href={`/?tag=${singleTag}`}>post to #{singleTag}</a></p>
+              <p class="note-sm">
+                <a href={`/?tag=${singleTag}`}>post to #{singleTag}</a>
+              </p>
             </div>
           )}
           {singleOrg && (
@@ -1706,7 +1736,9 @@ app.get("/c/:cid?", async (c) => {
                   </>
                 )}
               </p>
-              <p class="note-sm"><a href={`/?org=${singleOrg}`}>post to *{singleOrg}</a></p>
+              <p class="note-sm">
+                <a href={`/?org=${singleOrg}`}>post to *{singleOrg}</a>
+              </p>
             </div>
           )}
           {singleUsr && usrRow && (
@@ -1717,7 +1749,9 @@ app.get("/c/:cid?", async (c) => {
                 {" · "}
                 <a href={`/u/${singleUsr}`}>profile</a>
               </p>
-              <p class="note-sm"><a href={`/?usr=${singleUsr}`}>post to @{singleUsr}</a></p>
+              <p class="note-sm">
+                <a href={`/?usr=${singleUsr}`}>post to @{singleUsr}</a>
+              </p>
             </div>
           )}
           {!singleTag && !singleOrg && !singleUsr && meta && <h2>{meta}</h2>}
@@ -1740,10 +1774,32 @@ app.get("/c/:cid?", async (c) => {
         <section>
           <div class="pagination">
             {p > 0
-              ? <a href={`/c?${(() => { const n = new URLSearchParams(cur); n.set("p", (p - 1).toString()); return n; })()}`}>prev</a>
+              ? (
+                <a
+                  href={`/c?${
+                    (() => {
+                      const n = new URLSearchParams(cur);
+                      n.set("p", (p - 1).toString());
+                      return n;
+                    })()
+                  }`}
+                >
+                  prev
+                </a>
+              )
               : <span />}
             {items.length === lim && (
-              <a href={`/c?${(() => { const n = new URLSearchParams(cur); n.set("p", (p + 1).toString()); return n; })()}`}>next</a>
+              <a
+                href={`/c?${
+                  (() => {
+                    const n = new URLSearchParams(cur);
+                    n.set("p", (p + 1).toString());
+                    return n;
+                  })()
+                }`}
+              >
+                next
+              </a>
             )}
           </div>
         </section>
@@ -1778,31 +1834,12 @@ app.get("/c/:cid?", async (c) => {
         )}
       </section>
       <section>
-        {n
-          ? (
+        {n &&
+          (
             <form method="post" action={`/c/${post.cid}`}>
               <textarea aria-label="reply" required name="body" rows={18}></textarea>
               <button type="submit">reply</button>
             </form>
-          )
-          : (
-            <div class="stack">
-              <p class="note">create an account to reply</p>
-              <form method="post" action="/signup" class="stack">
-                <label>
-                  username
-                  <input required name="name" type="text" pattern="^[0-9a-zA-Z_]{4,32}$" />
-                </label>
-                <label>
-                  email
-                  <input required name="email" type="email" />
-                </label>
-                <button type="submit">sign up</button>
-              </form>
-              <p class="note-sm">
-                already have an account? <a href={`/u?next=${encodeURIComponent(`/c/${post.cid}`)}`}>log in</a>
-              </p>
-            </div>
           )}
         <SortToggle sort={s} baseHref={`/c/${cid}`} title="comments" />
       </section>

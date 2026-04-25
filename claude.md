@@ -65,7 +65,7 @@ Exported functions: `parseLabels()`, `encodeLabels()`, `decodeLabels()`, `format
 
 Post/comment bodies are rendered by `formatBody()` as lightweight markdown that **keeps the original symbols visible**
 (e.g. `_foo_` renders as `<em>_foo_</em>`). Supported: `_italic_`, `**bold**`, `` `code` ``, `[text](https://...)`,
-`# heading`, `> blockquote`, `- item` / `1. item` lists, fenced ` ``` ` and 4-space-indented code blocks. Only code
+`# heading`, `> blockquote`, `- item` / `1. item` lists, fenced `` ``` `` and 4-space-indented code blocks. Only code
 blocks render in monospace; prose uses the page font. `<div class="body">` wraps output; styles live in
 `public/style.css` (`.body`, `.body pre`, `.body blockquote`, `.body-list`).
 

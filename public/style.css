@@ -369,9 +369,16 @@ pre {
   font-weight: 600;
 }
 
-.body h3 { font-size: var(--text-lg); }
-.body h4 { font-size: var(--text-base); }
-.body h5 { font-size: var(--text-sm); color: var(--muted); }
+.body h3 {
+  font-size: var(--text-lg);
+}
+.body h4 {
+  font-size: var(--text-base);
+}
+.body h5 {
+  font-size: var(--text-sm);
+  color: var(--muted);
+}
 
 .body-list {
   list-style: none;
