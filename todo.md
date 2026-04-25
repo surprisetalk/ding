@@ -1,13 +1,16 @@
+- [ ] full rewrite
+- [ ] redesign /u ; move notifs into /u
+- [ ] needs more craigslist-like density?
+- [ ] photo upload and drawing pad and photo edit etc
+- [ ] build bots/tools that repost to bsky/masto/x/pinterest (become a better buffer!)
 - [ ] launch
-- [ ] bubbletea cli/tui
 - [ ] find specific discord/slack/reddit/zulip/discourse communities (esp. mods) that want to try ding out
 - [ ] publish guides on how to move community archives over and/or livesync from discord/slack/etc
-- [ ] add shortcuts for post/reply types: start huddle/room/livestream, upload file, record audio/video, draw picture,
-      remix
+- [ ] add shortcuts for post/reply types: start huddle/room/livestream, upload file, record audio/video, draw picture, remix
 - [ ] create autonomous haiku bots that upvote/downvote/comment on posts. make them real janky on purpose
 - [ ] recommendation algo
-  - [ ] track user likes/dislikes/comments, and use to weight search results and frontpage while they're logged in.
-        allow them to use a slider to determine how much the recommendation algo personalizes for them.
+  - [ ] track user likes/dislikes/comments, and use to weight search results and frontpage while they're logged in. allow them to use a slider to determine how much the recommendation algo personalizes for them.
   - [ ] boost high-quality posts/comments
 - [ ] emulate r/True* communities, hub for academics (like math/sci twitter), underground art/humor, map of reddit?
-- [ ] build bots/tools that repost to bsky/masto/x/pinterest (become a better buffer!)
+- [ ] turn all videos into gif thumbnails
+- [ ] bubbletea cli/tui
