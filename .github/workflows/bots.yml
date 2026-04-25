@@ -24,6 +24,7 @@ jobs:
           - arxiv
           - smallweb
           - hmmm
+          - reddit
           - tildes
           - ooh
           - youtube
