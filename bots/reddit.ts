@@ -65,6 +65,24 @@ const extractImg = (html: string): string | null => {
 
 type Item = { sub: string; title: string; link: string; imageUrl: string | null; author: string; published: number };
 
+const fetchSelftext = async (link: string): Promise<string> => {
+  try {
+    const res = await fetch(link.replace(/\/?$/, "/") + ".json", {
+      signal: AbortSignal.timeout(FETCH_TIMEOUT_MS),
+      headers: { "User-Agent": UA, "Accept": "application/json" },
+    });
+    if (!res.ok) {
+      console.warn(`selftext fetch failed for ${link}: ${res.status}`);
+      return "";
+    }
+    const data = await res.json();
+    return (data?.[0]?.data?.children?.[0]?.data?.selftext ?? "").trim();
+  } catch (err) {
+    console.warn(`selftext fetch error for ${link}: ${(err as Error).message}`);
+    return "";
+  }
+};
+
 const fetchSub = async (sub: string): Promise<Item[]> => {
   const url = `https://www.reddit.com/r/${sub}/.rss`;
   for (let attempt = 0; attempt < 2; attempt++) {
@@ -134,7 +152,10 @@ const todo = newestPerSub
 console.log(`${todo.length} new items after dedup; posting up to ${MAX_POSTS}`);
 
 for (const it of todo.slice(0, MAX_POSTS)) {
-  const lines = [it.title, "", it.link];
+  const selftext = await fetchSelftext(it.link);
+  const lines = [it.title];
+  if (selftext) lines.push("", selftext);
+  lines.push("", it.link);
   if (it.imageUrl) lines.push("", it.imageUrl);
   lines.push("", `via ${it.author} on r/${it.sub}`);
   const tags = `#reddit #${slugTag(it.sub)} #bot`;
