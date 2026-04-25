@@ -519,9 +519,7 @@ const Post = (c: Com, user?: string, p?: URLSearchParams) => {
       </a>
       <div class="post-content">
         <a href={`/c/${c.cid}`}>
-          {c.body
-            ? c.body.trim().split("\n")[0].slice(0, 60) + (c.body.length > 60 ? "…" : "")
-            : "[deleted by author]"}
+          {c.body ? c.body.trim().split("\n")[0] : "[deleted by author]"}
         </a>
         {Meta(c, user, labelHref)}
       </div>
