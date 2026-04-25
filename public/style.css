@@ -24,6 +24,8 @@
   --text-base: 1rem;
   --text-lg: 1.25rem;
   --text-xl: 1.5rem;
+  --text-2xl: 1.75rem;
+  --text-3xl: 2rem;
 
   --space-1: 0.25rem;
   --space-2: 0.5rem;
@@ -196,6 +198,10 @@ body > header > section {
   font-size: var(--text-xl);
   font-weight: 700;
   letter-spacing: 0.3em;
+}
+.brand > span {
+  font-size: var(--text-3xl);
+  line-height: var(--text-xl);
 }
 
 body > header > section > nav {

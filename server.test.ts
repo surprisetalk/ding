@@ -798,21 +798,21 @@ Deno.test(
     await t.step("POST /c root DM happy path: tagless post with @recipient", async () => {
       const res = await app.request("/c", {
         method: "POST",
-        body: fd({ body: "psst", tags: "@jane_doe" }),
-        headers: jAuth,
+        body: fd({ body: "psst", tags: "@john_doe" }),
+        headers: janeAuth,
       });
       assertEquals(res.status, 302);
       const cid = cidFromLocation(res.headers.get("location")!);
-      const [row] = await sql`select tags, usrs from com where cid = ${cid}`;
+      const [row] = await sql`select tags, usrs, created_by from com where cid = ${cid}`;
       assertEquals(row.tags, []);
-      assertEquals(row.usrs, ["jane_doe"]);
+      assertEquals(row.usrs, ["john_doe"]);
+      assertEquals(row.created_by, "jane_doe");
 
-      const senderView = await app.request(`/c/${cid}`, { headers: jAuth });
+      const senderView = await app.request(`/c/${cid}`, { headers: janeAuth });
       assertEquals(senderView.status, 200);
-      const senderBody = await senderView.text();
-      assertStringIncludes(senderBody, "psst");
+      assertStringIncludes(await senderView.text(), "psst");
 
-      const recipientView = await app.request(`/c/${cid}`, { headers: janeAuth });
+      const recipientView = await app.request(`/c/${cid}`, { headers: jAuth });
       assertEquals(recipientView.status, 200);
       assertStringIncludes(await recipientView.text(), "psst");
 
@@ -823,14 +823,14 @@ Deno.test(
     await t.step("POST /c root mixed tag + recipient still works", async () => {
       const res = await app.request("/c", {
         method: "POST",
-        body: fd({ body: "hi all", tags: "#pub @jane_doe" }),
-        headers: jAuth,
+        body: fd({ body: "hi all", tags: "#pub @john_doe" }),
+        headers: janeAuth,
       });
       assertEquals(res.status, 302);
       const cid = cidFromLocation(res.headers.get("location")!);
       const [row] = await sql`select tags, usrs from com where cid = ${cid}`;
       assertEquals(row.tags, ["pub"]);
-      assertEquals(row.usrs, ["jane_doe"]);
+      assertEquals(row.usrs, ["john_doe"]);
     });
 
     await t.step("DB constraint still rejects raw tagless + recipientless root insert", async () => {

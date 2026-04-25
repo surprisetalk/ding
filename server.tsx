@@ -670,7 +670,7 @@ app.use("*", async (c, next) => {
         <body>
           <header>
             <section>
-              <a href="/" class="brand">✦ding</a>
+              <a href="/" class="brand"><span>✦</span>ding</a>
               <nav aria-label="site">
                 <a href="/u" ${cur("/u")}>${n ? `@${n}` : "account"}</a>
                 ${n
@@ -1221,7 +1221,7 @@ app.get("/us", async (c) => {
 app.get("/o/new", authed, (c) =>
   c.render(
     <section>
-      <h2>✦ create an organization</h2>
+      <h2>create an organization</h2>
       <p class="note">
         create a private organization for your team. access control is managed via the <code>*org</code> tag.
       </p>
@@ -1621,7 +1621,7 @@ app.post("/c/:p?", async (c) => {
 app.get("/c/:cid?", async (c) => {
   const q = c.req.query(),
     cid = c.req.param("cid"),
-    n = c.get("name"),
+    n = c.get("name") ?? (await basicAuthName(c)) ?? undefined,
     s = q.sort || "hot",
     p = +(q.p || 0),
     lim = Math.min(+(q.limit || 25), 100);
