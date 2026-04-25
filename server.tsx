@@ -366,7 +366,13 @@ const inlineFmt = (s: string): BodyNode[] => {
     else if (bold) out.push(<strong>**{inlineFmt(bold.slice(2, -2))}**</strong>);
     else if (italic) out.push(<em>_{inlineFmt(italic.slice(1, -1))}_</em>);
     else if (link) {
-      out.push(<a href={url}>{link}</a>);
+      out.push(
+        <a href={url}>
+          <span class="md-syntax">[</span>
+          {link}
+          <span class="md-syntax">]({url})</span>
+        </a>,
+      );
       if (isImageUrl(url)) out.push(<img class="pre-img" src={url} loading="lazy" />);
     } else if (bareUrl) {
       const trail = bareUrl.match(/[.,!?;:]+$/)?.[0] ?? "";

@@ -89,16 +89,20 @@ a:hover {
 
 .body a:link, .body a:visited {
   color: var(--fg);
-  opacity: 0.8;
   text-decoration: underline;
   text-decoration-style: dotted;
+  text-decoration-color: var(--muted);
   text-underline-offset: 0.15em;
   text-decoration-thickness: 1px;
 }
 
 .body a:hover {
-  opacity: 1;
   text-decoration-style: solid;
+  text-decoration-color: var(--fg);
+}
+
+.md-syntax {
+  font-size: 0;
 }
 
 nav a:visited,
