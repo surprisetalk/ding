@@ -785,7 +785,7 @@ app.get("/", async (c) => {
         {name &&
           (
             <form method="post" action="/c">
-              <textarea aria-label="post" required name="body" rows={18} minlength={1} maxlength={4096}></textarea>
+              <textarea aria-label="post" required name="body" rows={6} minlength={1} maxlength={4096}></textarea>
               <div class="post-form__row">
                 <input
                   type="text"
@@ -1837,7 +1837,7 @@ app.get("/c/:cid?", async (c) => {
         {n &&
           (
             <form method="post" action={`/c/${post.cid}`}>
-              <textarea aria-label="reply" required name="body" rows={18}></textarea>
+              <textarea aria-label="reply" required name="body" rows={6}></textarea>
               <button type="submit">reply</button>
             </form>
           )}
