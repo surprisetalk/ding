@@ -471,7 +471,6 @@ const Meta = (c: Com | ChildCom, user?: string, labelHref?: (l: string) => strin
       {c.parent_cid && <a href={`/c/${c.parent_cid}`}>parent</a>}
       <a href={`/u/${c.created_by}`}>@{c.created_by || "unknown"}</a>
       {c.body && user == c.created_by && <a href={`/c/${c.cid}/delete`}>delete</a>}
-      <a href={`/c/${c.cid}`}>reply</a>
       {formatLabels(c).map((l) => <a key={l} href={lh(l)}>{l}</a>)}
     </div>
   );
@@ -758,7 +757,7 @@ app.get("/", async (c) => {
   `;
 
   const items = await sql`
-    select c.*, 
+    select c.*,
       (select count(*) from com c_ where c_.parent_cid = c.cid and char_length(c_.body) > 1) as comments,
       (select count(*) from com r where r.parent_cid = c.cid and char_length(r.body) = 1) as reaction_count,
       (select coalesce(jsonb_object_agg(body, cnt), '{}') from (select body, count(*) as cnt from com where parent_cid = c.cid and char_length(body) = 1 group by body) r) as reaction_counts,
@@ -796,7 +795,7 @@ app.get("/", async (c) => {
                   name="tags"
                   aria-label="labels"
                   value={decodeLabels(cur)}
-                  placeholder="#link *org @user"
+                  placeholder="#tag *org @user"
                 />
                 <button type="submit">create post</button>
               </div>
