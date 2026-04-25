@@ -1,7 +1,8 @@
 :root {
   color-scheme: light dark;
 
-  --bg: oklch(99% 0.003 85);
+  --bg: oklch(99.5% 0.002 85);
+  --page: oklch(96.5% 0.004 85);
   --fg: oklch(20% 0.01 60);
   --muted: color-mix(in oklch, var(--fg) 62%, var(--bg));
   --border: color-mix(in oklch, var(--fg) 22%, var(--bg));
@@ -38,7 +39,8 @@
 
 @media (prefers-color-scheme: dark) {
   :root {
-    --bg: oklch(14% 0.008 60);
+    --bg: oklch(8% 0.005 60);
+    --page: oklch(16% 0.008 60);
     --fg: oklch(92% 0.006 85);
     --link: oklch(78% 0.13 240);
     --visited: oklch(75% 0.12 310);
@@ -60,7 +62,7 @@ body {
   font-family: var(--font-sans);
   min-height: 100vh;
   margin: 0;
-  background: var(--bg);
+  background: var(--page);
   color: var(--fg);
   padding-bottom: var(--space-8);
   line-height: var(--lh-prose);
@@ -75,7 +77,7 @@ body > * {
 body > header {
   padding: var(--space-2) var(--space-4);
   margin-bottom: var(--space-2);
-  border-bottom: 1px solid var(--rule);
+  background: var(--bg);
 }
 
 a {
@@ -250,6 +252,7 @@ body > main > section {
 }
 
 .post-content > a {
+  display: block;
   font-size: var(--text-lg);
   font-weight: 600;
   overflow: hidden;
@@ -329,6 +332,8 @@ pre {
   font-weight: 600;
   line-height: var(--lh-tight);
   margin: var(--space-2) 0 0;
+  overflow-wrap: anywhere;
+  word-wrap: break-word;
 }
 
 .post-title a:link,
