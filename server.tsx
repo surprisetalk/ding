@@ -670,7 +670,7 @@ app.use("*", async (c, next) => {
         <body>
           <header>
             <section>
-              <a href="/" class="brand">▢ding</a>
+              <a href="/" class="brand">✦ding</a>
               <nav aria-label="site">
                 <a href="/u" ${cur("/u")}>${n ? `@${n}` : "account"}</a>
                 ${n
@@ -698,9 +698,21 @@ app.get("/robots.txt", (c) => c.text("User-agent: *\\nDisallow: /*?*\\nCrawl-del
 app.get("/sitemap.txt", (c) => c.text("https://ding.bar/"));
 
 app.onError((err, c) => {
-  if (err instanceof HTTPException) return err.getResponse();
+  const h = host(c);
+  if (err instanceof HTTPException) {
+    if (h === "" && err.message) {
+      c.status(err.status);
+      return c.render(
+        <section>
+          <p>{err.message}</p>
+        </section>,
+        { title: `error ${err.status}` },
+      );
+    }
+    return err.getResponse();
+  }
   console.error(err);
-  const msg = "something broke. try again in a moment.", h = host(c);
+  const msg = "something broke. try again in a moment.";
   if (h === "api") return c.json({ error: msg }, 500);
   if (h === "rss") return c.text(msg, 500);
   c.status(500);
@@ -768,7 +780,7 @@ app.get("/", async (c) => {
     name || ""
   })
       ) from com ch where ch.parent_cid = c.cid and char_length(ch.body) > 1 order by ch.created_at desc) as child_comments
-    from com c where parent_cid is null and orgs <@ ${rT}::text[] and (usrs = '{}' or ${name || ""}::text = any(usrs))
+    from com c where parent_cid is null and orgs <@ ${rT}::text[] and (usrs = '{}' or ${name || ""}::text = any(usrs) or created_by = ${name || ""})
     ${tags.length ? sql`and tags @> ${tags}::text[]` : sql``}
     ${orgs.length ? sql`and orgs @> ${orgs}::text[]` : sql``}
     ${usrs.length ? sql`and usrs @> ${usrs}::text[]` : sql``}
@@ -1209,7 +1221,7 @@ app.get("/us", async (c) => {
 app.get("/o/new", authed, (c) =>
   c.render(
     <section>
-      <h2>▢ create an organization</h2>
+      <h2>✦ create an organization</h2>
       <p class="note">
         create a private organization for your team. access control is managed via the <code>*org</code> tag.
       </p>
@@ -1536,7 +1548,7 @@ app.post("/c/:p?", async (c) => {
     [prm] = await sql<
       Prm[]
     >`select tags, orgs, usrs, created_by, parent_cid as prm_parent, domains from com where cid = ${pid}`;
-    if (!prm || !prm.orgs.every((t) => usr.orgs_r.includes(t)) || (prm.usrs.length && !prm.usrs.includes(n)))
+    if (!prm || !prm.orgs.every((t) => usr.orgs_r.includes(t)) || (prm.usrs.length && !prm.usrs.includes(n) && prm.created_by !== n))
       throw new HTTPException(403);
     tags = prm.tags;
     orgs = prm.orgs;
@@ -1562,7 +1574,10 @@ app.post("/c/:p?", async (c) => {
     }
   } else {
     const l = parseLabels(f.get("tags")?.toString() || "");
-    if (!l.tag.length || !l.org.every((t) => usr.orgs_w.includes(t))) throw new HTTPException(403);
+    if (!l.tag.length && !l.usr.length)
+      throw new HTTPException(400, { message: "post needs at least one #tag or @user recipient" });
+    const badOrg = l.org.find((t) => !usr.orgs_w.includes(t));
+    if (badOrg) throw new HTTPException(403, { message: `you cannot write to org *${badOrg}` });
     tags = l.tag;
     orgs = l.org;
     usrs = l.usr;
@@ -1645,7 +1660,7 @@ app.get("/c/:cid?", async (c) => {
       : (q.reactions || q.replies_to || q.comments ? sql`parent_cid is not null` : sql`parent_cid is null`)
   }
     ${usrs.length ? sql`and created_by = any(${usrs}::citext[])` : sql``}
-    and tags @> ${tags}::text[] and orgs <@ ${rT}::text[] and (usrs = '{}' or ${n || ""}::text = any(usrs))
+    and tags @> ${tags}::text[] and orgs <@ ${rT}::text[] and (usrs = '{}' or ${n || ""}::text = any(usrs) or created_by = ${n || ""})
     ${orgs.length ? sql`and orgs && ${orgs}::text[]` : sql``}
     ${
     mens.length ? sql`and (usrs && ${mens}::text[] or mentions && ${mens.map((m) => m.toLowerCase())}::text[])` : sql``
@@ -1685,7 +1700,7 @@ app.get("/c/:cid?", async (c) => {
     const tagCount = singleTag
       ? ((await sql`select count(*)::int as count from com where ${singleTag} = any(tags) and orgs <@ ${rT}::text[] and (usrs = '{}' or ${
         n || ""
-      }::text = any(usrs))`)[0].count)
+      }::text = any(usrs) or created_by = ${n || ""})`)[0].count)
       : null;
     const orgInfo = singleOrg
       ? (await sql`select (select count(*)::int from usr where ${singleOrg} = any(orgs_r)) as member_count, (select created_by from org where name = ${singleOrg}) as created_by`)[
@@ -1813,7 +1828,7 @@ app.get("/c/:cid?", async (c) => {
   const backlinks =
     await sql`select cid, body, created_at from com where parent_cid is null and ${post.cid} = any(links) and orgs <@ ${rT}::text[] and (usrs = '{}' or ${
       n || ""
-    }::text = any(usrs)) order by created_at desc limit 5`;
+    }::text = any(usrs) or created_by = ${n || ""}) order by created_at desc limit 5`;
   const replies = (post.child_comments || []).filter((r: ChildCom) => !isReaction(r.body));
   const errMsg: Record<string, string> = {
     "self-react": "you cannot react to your own post",

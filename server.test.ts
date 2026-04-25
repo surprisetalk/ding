@@ -1,6 +1,6 @@
 //// IMPORTS ///////////////////////////////////////////////////////////////////
 
-import { assertEquals } from "@std/assert";
+import { assertEquals, assertStringIncludes } from "@std/assert";
 import { jsx } from "@hono/hono/jsx";
 import pg from "postgres";
 import { PGlite } from "@electric-sql/pglite";
@@ -788,9 +788,59 @@ Deno.test(
       assertEquals(row.thumb, null);
     });
 
-    await t.step("POST /c root 403 when no tag", async () => {
+    await t.step("POST /c root 400 with helpful message when no tag and no recipient", async () => {
       const res = await app.request("/c", { method: "POST", body: fd({ body: "no tag", tags: "" }), headers: jAuth });
-      assertEquals(res.status, 403);
+      assertEquals(res.status, 400);
+      const body = await res.text();
+      assertStringIncludes(body, "#tag or @user");
+    });
+
+    await t.step("POST /c root DM happy path: tagless post with @recipient", async () => {
+      const res = await app.request("/c", {
+        method: "POST",
+        body: fd({ body: "psst", tags: "@jane_doe" }),
+        headers: jAuth,
+      });
+      assertEquals(res.status, 302);
+      const cid = cidFromLocation(res.headers.get("location")!);
+      const [row] = await sql`select tags, usrs from com where cid = ${cid}`;
+      assertEquals(row.tags, []);
+      assertEquals(row.usrs, ["jane_doe"]);
+
+      const senderView = await app.request(`/c/${cid}`, { headers: jAuth });
+      assertEquals(senderView.status, 200);
+      const senderBody = await senderView.text();
+      assertStringIncludes(senderBody, "psst");
+
+      const recipientView = await app.request(`/c/${cid}`, { headers: janeAuth });
+      assertEquals(recipientView.status, 200);
+      assertStringIncludes(await recipientView.text(), "psst");
+
+      const anonView = await app.request(`/c/${cid}`);
+      assertEquals(anonView.status, 404);
+    });
+
+    await t.step("POST /c root mixed tag + recipient still works", async () => {
+      const res = await app.request("/c", {
+        method: "POST",
+        body: fd({ body: "hi all", tags: "#pub @jane_doe" }),
+        headers: jAuth,
+      });
+      assertEquals(res.status, 302);
+      const cid = cidFromLocation(res.headers.get("location")!);
+      const [row] = await sql`select tags, usrs from com where cid = ${cid}`;
+      assertEquals(row.tags, ["pub"]);
+      assertEquals(row.usrs, ["jane_doe"]);
+    });
+
+    await t.step("DB constraint still rejects raw tagless + recipientless root insert", async () => {
+      let threw = false;
+      try {
+        await sql`insert into com (created_by, body, tags, usrs) values ('john_doe', 'nope', '{}', '{}')`;
+      } catch {
+        threw = true;
+      }
+      assertEquals(threw, true);
     });
 
     await t.step("POST /c root 403 when *org not in orgs_w", async () => {

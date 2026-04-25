@@ -55,8 +55,8 @@ create table com (
   domain_downs int not null default 0,
   repost_ups int not null default 0,
   score timestamptz not null default current_timestamp,
-  -- Root posts require at least one public tag
-  check ((parent_cid is null and tags <> '{}') or parent_cid is not null)
+  -- Root posts need a public tag or DM recipient
+  check ((parent_cid is null and (tags <> '{}' or usrs <> '{}')) or parent_cid is not null)
 );
 
 create index com_body_idx on com using gin (to_tsvector('english', body));
