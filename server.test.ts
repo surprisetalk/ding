@@ -1919,7 +1919,9 @@ Deno.test("formatBody", async (t) => {
   await t.step("renders link with brackets and parens kept", () => {
     const out = render("see [site](https://example.com) now");
     assertEquals(out.includes(`href="https://example.com"`), true);
-    assertEquals(out.includes("[site](https://example.com)"), true);
+    assertEquals(out.includes(`<span class="md-syntax">[</span>`), true);
+    assertEquals(out.includes(`<span class="md-syntax">](https://example.com)</span>`), true);
+    assertEquals(out.includes(">site<"), true);
   });
 
   await t.step("fenced code becomes <pre> with fences kept", () => {

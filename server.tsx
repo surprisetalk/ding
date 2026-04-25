@@ -366,10 +366,11 @@ const inlineFmt = (s: string): BodyNode[] => {
     else if (bold) out.push(<strong>**{inlineFmt(bold.slice(2, -2))}**</strong>);
     else if (italic) out.push(<em>_{inlineFmt(italic.slice(1, -1))}_</em>);
     else if (link) {
+      const innerText = link.slice(1, link.indexOf("]("));
       out.push(
         <a href={url}>
           <span class="md-syntax">[</span>
-          {link}
+          {innerText}
           <span class="md-syntax">]({url})</span>
         </a>,
       );
