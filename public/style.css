@@ -703,7 +703,7 @@ a.thumb {
   padding: var(--space-2) var(--space-3);
   min-height: 2rem;
   white-space: nowrap;
-  font-family: var(--font-mono);
+  letter-spacing: 1px;
 }
 
 .upload-btn:hover {
