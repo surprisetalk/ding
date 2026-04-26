@@ -1013,14 +1013,9 @@ app.get("/", async (c) => {
                   ))}
                 </div>
               )}
+              <ActiveFilters params={cur} basePath="/" />
             </form>
           )}
-        <br/>
-        <form id="search-form" method="get" action="/c" class="search-form">
-          <input name="search" aria-label="search" value={decodeLabels(cur)} />
-          <button type="submit">search</button>
-        </form>
-        <ActiveFilters params={cur} basePath="/" />
       </section>
       <section>
         {!items.length
