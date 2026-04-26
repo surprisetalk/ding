@@ -796,6 +796,20 @@ app.use("*", async (c, next) => {
       });
       window.location.href = "/c?" + p;
     };
+    (() => {
+      const ta = document.querySelector('.upload-form textarea[name=body]');
+      if (!ta) return;
+      const KEY = "ding:compose-body";
+      const saved = sessionStorage.getItem(KEY);
+      if (saved && !ta.value) ta.value = saved;
+      sessionStorage.removeItem(KEY);
+      let submitted = false;
+      ta.form?.addEventListener("submit", () => { submitted = true; });
+      window.addEventListener("pagehide", () => {
+        if (submitted) return;
+        if (ta.value) sessionStorage.setItem(KEY, ta.value);
+      });
+    })();
     ${
     n
       ? `

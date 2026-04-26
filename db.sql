@@ -153,7 +153,7 @@ create or replace function refresh_score(cids int[]) returns void language sql a
       - interval '6 hours'   * ln(coalesce((c.c_reactions->'▼')::int, 0) + 1)
       + interval '1 hour'    * ln(ua.ups_received::float / ln(ua.posts_count + 2) + 1)
       - interval '3 hours'   * ln(ua.downs_received::float / ln(ua.posts_count + 2) + 1)
-      - interval '6 hours'   * (case when c.created_by like 'bot_%' then 1 else 0 end)
+      - interval '48 hours'  * (case when c.created_by like 'bot_%' then 1 else 0 end)
       + interval '1 hour'    * ln(ta.tag_ups_idf + 1)
       - interval '3 hours'   * ln(ta.tag_downs_idf + 1)
       + interval '1 hour'    * ln(c.c_comments + 1)
