@@ -178,6 +178,18 @@ Deno.test(
       assertEquals(res.status, 401);
     });
 
+    await t.step("POST /login unknown email redirects to /signup", async () => {
+      const body = new FormData();
+      body.append("email", "nobody@example.com");
+      body.append("password", "anything");
+      const res = await app.request("/login", { method: "post", body });
+      assertEquals(res.status, 302);
+      assertEquals(
+        res.headers.get("location"),
+        `/signup?error=email_not_found&email=${encodeURIComponent("nobody@example.com")}`,
+      );
+    });
+
     await t.step("POST /login correct credentials", async () => {
       const body = new FormData();
       body.append("email", "john@example.com");
@@ -205,6 +217,42 @@ Deno.test(
       body.append("password", "newpassword1!");
       const res = await app.request("/password", { method: "post", body });
       assertEquals(res.status, 400); // Invalid or expired token
+      assertStringIncludes(await res.text(), "expired");
+    });
+
+    await t.step("GET /password with no query params shows expired-link page", async () => {
+      const res = await app.request("/password");
+      assertEquals(res.status, 200);
+      const html = await res.text();
+      assertStringIncludes(html, "invalid or expired");
+      assertEquals(html.includes(`name="password"`), false);
+    });
+
+    await t.step("GET /password with stale token shows expired-link page", async () => {
+      const res = await app.request("/password?email=john@example.com&token=123:bogus");
+      assertEquals(res.status, 200);
+      const html = await res.text();
+      assertStringIncludes(html, "invalid or expired");
+      assertEquals(html.includes(`name="password"`), false);
+    });
+
+    await t.step("GET /password with valid token shows password form", async () => {
+      const tok = await emailToken(new Date(), "john@example.com");
+      const res = await app.request(
+        `/password?email=${encodeURIComponent("john@example.com")}&token=${encodeURIComponent(tok)}`,
+      );
+      assertEquals(res.status, 200);
+      const html = await res.text();
+      assertStringIncludes(html, `name="password"`);
+      assertStringIncludes(html, "john@example.com");
+    });
+
+    await t.step("HTML 404 renders styled error page (not blank)", async () => {
+      const res = await app.request("/u/nonexistent_user", { headers: { accept: "text/html" } });
+      assertEquals(res.status, 404);
+      const html = await res.text();
+      assertStringIncludes(html, "Not found.");
+      assertStringIncludes(html, "<html"); // full layout, not bare response
     });
 
     await t.step("GET /u without auth shows login form", async () => {

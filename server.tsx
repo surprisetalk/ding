@@ -887,11 +887,12 @@ app.get("/sitemap.txt", (c) => c.text("https://ding.bar/"));
 app.onError((err, c) => {
   const h = host(c);
   if (err instanceof HTTPException) {
-    if (h === "" && err.message) {
+    if (!h) {
       c.status(err.status);
       return c.render(
         <section>
-          <p>{err.message}</p>
+          <p>{err.message || `Error ${err.status}.`}</p>
+          <p><a href="/">home</a></p>
         </section>,
         { title: `error ${err.status}` },
       );
@@ -1063,7 +1064,8 @@ app.post("/login", async (c) => {
   const { email, password } = await form(c);
   const [u] =
     await sql`select name, email, email_verified_at, (password = crypt(${password}, password)) as ok from usr where email=${email}`;
-  if (!u?.ok) throw new HTTPException(401);
+  if (!u) return c.redirect(`/signup?error=email_not_found&email=${encodeURIComponent(email)}`);
+  if (!u.ok) throw new HTTPException(401);
   if (!u.email_verified_at && !(await getSignedCookie(c, cookieSecret, "name"))) {
     sendVerify(u.email).catch((err) =>
       console.error(`/login resend failed for ${u.email}:`, err?.response?.body || err)
@@ -1110,13 +1112,22 @@ app.post("/forgot", async (c) => {
   return c.redirect("/forgot?sent=1");
 });
 
-app.get("/password", (c) =>
-  c.render(
+app.get("/password", async (c) => {
+  const email = c.req.query("email"), token = c.req.query("token");
+  if (!email || !token || !(await validateEmailToken(token, email)))
+    return c.render(
+      <section>
+        <p>This verification link is invalid or expired.</p>
+        <p><a href="/forgot">Request a new one</a></p>
+      </section>,
+      { title: "expired link" },
+    );
+  return c.render(
     <section>
       <form method="post" action="/password">
-        <input name="token" value={c.req.query("token")} type="hidden" />
+        <input name="token" value={token} type="hidden" />
         <label>
-          email <input name="email" value={c.req.query("email")} readonly />
+          email <input name="email" value={email} readonly />
         </label>
         <label>
           new password <input name="password" type="password" required />
@@ -1125,10 +1136,12 @@ app.get("/password", (c) =>
       </form>
     </section>,
     { title: "password" },
-  ));
+  );
+});
 app.post("/password", async (c) => {
   const { email, token, password } = await form(c);
-  if (!(await validateEmailToken(token, email))) throw new HTTPException(400);
+  if (!(await validateEmailToken(token, email)))
+    throw new HTTPException(400, { message: "Verification link is invalid or expired. Request a new one." });
   const [u] =
     await sql`update usr set password = crypt(${password}, gen_salt('bf', 8)), email_verified_at = coalesce(email_verified_at, now()) where email = ${email} returning name`;
   if (u) await setSignedCookie(c, "name", u.name, cookieSecret);
@@ -1161,6 +1174,7 @@ app.get("/signup", (c) => {
       </p>
     ),
     conflict: <p>Username or email already taken.</p>,
+    email_not_found: <p>No account with that email — sign up below.</p>,
   };
   return c.render(
     <section>
