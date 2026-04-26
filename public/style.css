@@ -223,7 +223,7 @@ body > main {
   display: flex;
   flex-direction: column;
   gap: var(--space-6);
-  margin-bottom: 4rem;
+  margin-bottom: 6rem;
 }
 
 body > main > section {
