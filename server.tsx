@@ -1024,6 +1024,9 @@ app.get("/", async (c) => {
                   type="text"
                   name="tags"
                   aria-label="labels"
+                  required
+                  pattern={String.raw`.*(?:^|\s)[#*@]\S+.*`}
+                  title="Add at least one #tag, *org, or @user before publishing"
                   value={decodeLabels(cur)}
                 />
                 <button type="button" class="upload-btn" data-draw>draw</button>
@@ -1848,8 +1851,8 @@ app.post("/c/:p?", async (c) => {
     }
   } else {
     const l = parseLabels(f.get("tags")?.toString() || "");
-    if (!l.tag.length && !l.usr.length)
-      throw new HTTPException(400, { message: "post needs at least one #tag or @user recipient" });
+    if (!l.tag.length && !l.usr.length && !l.org.length)
+      throw new HTTPException(400, { message: "post needs at least one #tag, *org, or @user recipient" });
     const badOrg = l.org.find((t) => !usr.orgs_w.includes(t));
     if (badOrg) throw new HTTPException(403, { message: `you cannot write to org *${badOrg}` });
     tags = l.tag;

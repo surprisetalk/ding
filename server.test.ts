@@ -851,7 +851,7 @@ Deno.test(
       const res = await app.request("/c", { method: "POST", body: fd({ body: "no tag", tags: "" }), headers: jAuth });
       assertEquals(res.status, 400);
       const body = await res.text();
-      assertStringIncludes(body, "#tag or @user");
+      assertStringIncludes(body, "#tag, *org, or @user");
     });
 
     await t.step("POST /c root DM happy path: tagless post with @recipient", async () => {
