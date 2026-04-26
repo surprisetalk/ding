@@ -991,32 +991,35 @@ app.get("/", async (c) => {
                   name="tags"
                   aria-label="labels"
                   value={decodeLabels(cur)}
-                  placeholder="#tag *org @user"
                 />
                 <button type="button" class="upload-btn" data-draw>draw</button>
-                <label class="upload-btn">insert images<input type="file" multiple accept="image/jpeg,image/png,image/gif,image/webp,application/pdf" data-upload hidden /></label>
-                <button type="submit">create post</button>
+                <label class="upload-btn">attach</label>
+                <button type="submit">publish</button>
               </div>
+              {presets.length > 0 && (
+                <div class="tag-presets">
+                  {presets.map((t: { tag: string }) => (
+                    <a
+                      key={t.tag}
+                      href={buildAdditiveLink(
+                        cur,
+                        t.tag[0] === "*" ? "org" : t.tag[0] === "@" ? "usr" : "tag",
+                        t.tag.slice(1),
+                      )}
+                      class="tag-preset"
+                    >
+                      {t.tag}
+                    </a>
+                  ))}
+                </div>
+              )}
             </form>
           )}
+        <form id="search-form" method="get" action="/c" class="search-form">
+          <input name="search" aria-label="search" value={decodeLabels(cur)} />
+          <button type="submit">search</button>
+        </form>
         <ActiveFilters params={cur} basePath="/" />
-        {presets.length > 0 && (
-          <div class="tag-presets">
-            {presets.map((t: { tag: string }) => (
-              <a
-                key={t.tag}
-                href={buildAdditiveLink(
-                  cur,
-                  t.tag[0] === "*" ? "org" : t.tag[0] === "@" ? "usr" : "tag",
-                  t.tag.slice(1),
-                )}
-                class="tag-preset"
-              >
-                {t.tag}
-              </a>
-            ))}
-          </div>
-        )}
         {meta && <h2>{meta}</h2>}
       </section>
       <section>
@@ -2044,7 +2047,7 @@ app.get("/c/:cid?", async (c) => {
               <textarea aria-label="reply" required name="body" rows={6}></textarea>
               <div class="post-form__row">
                 <button type="button" class="upload-btn" data-draw>draw</button>
-                <label class="upload-btn">insert images<input type="file" multiple accept="image/jpeg,image/png,image/gif,image/webp,application/pdf" data-upload hidden /></label>
+                <label class="upload-btn">attach</label>
                 <button type="submit">reply</button>
               </div>
             </form>
