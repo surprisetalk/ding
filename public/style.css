@@ -601,6 +601,7 @@ a.thumb {
 .post-form__row > input {
   flex: 1;
   font-family: var(--font-mono);
+  min-width: 2rem;
 }
 
 .sort-toggle {
