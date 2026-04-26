@@ -114,8 +114,6 @@ nav a:visited,
 }
 
 [aria-current="page"] {
-  text-decoration: underline;
-  text-underline-offset: 0.25em;
   color: var(--fg);
   font-weight: 600;
 }
