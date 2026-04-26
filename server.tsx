@@ -717,6 +717,69 @@ app.use("*", async (c, next) => {
         const ta = targetTa();
         if (ta && e.dataTransfer.files.length) upload(ta, e.dataTransfer.files);
       });
+      const dlg = document.getElementById("draw-dialog");
+      if (dlg) {
+        const cv = dlg.querySelector("#draw-canvas");
+        const ctx = cv.getContext("2d");
+        ctx.lineCap = "round"; ctx.lineJoin = "round";
+        let tool = "pen", size = 4, drawing = false, last = null;
+        const reset = () => { ctx.fillStyle = "#fff"; ctx.fillRect(0, 0, cv.width, cv.height); };
+        reset();
+        const pos = e => {
+          const r = cv.getBoundingClientRect();
+          return { x: (e.clientX - r.left) * (cv.width / r.width), y: (e.clientY - r.top) * (cv.height / r.height) };
+        };
+        const stroke = (a, b) => {
+          ctx.strokeStyle = tool === "eraser" ? "#fff" : "#000";
+          ctx.lineWidth = size;
+          ctx.beginPath(); ctx.moveTo(a.x, a.y); ctx.lineTo(b.x, b.y); ctx.stroke();
+        };
+        const dot = p => {
+          ctx.fillStyle = tool === "eraser" ? "#fff" : "#000";
+          ctx.beginPath(); ctx.arc(p.x, p.y, size / 2, 0, Math.PI * 2); ctx.fill();
+        };
+        cv.addEventListener("pointerdown", e => {
+          e.preventDefault();
+          cv.setPointerCapture(e.pointerId);
+          drawing = true; last = pos(e); dot(last);
+        });
+        cv.addEventListener("pointermove", e => {
+          if (!drawing) return;
+          const p = pos(e); stroke(last, p); last = p;
+        });
+        const end = e => { if (drawing) { drawing = false; last = null; try { cv.releasePointerCapture(e.pointerId); } catch {} } };
+        cv.addEventListener("pointerup", end);
+        cv.addEventListener("pointercancel", end);
+        cv.addEventListener("pointerleave", end);
+        const setPressed = (group, sel) => {
+          dlg.querySelectorAll("[" + group + "]").forEach(b => b.setAttribute("aria-pressed", b === sel ? "true" : "false"));
+        };
+        dlg.addEventListener("click", e => {
+          const t = e.target;
+          if (!(t instanceof HTMLElement)) return;
+          if (t.dataset.tool) { tool = t.dataset.tool; setPressed("data-tool", t); }
+          else if (t.dataset.size) { size = +t.dataset.size; setPressed("data-size", t); }
+          else if (t.hasAttribute("data-clear")) reset();
+          else if (t.hasAttribute("data-cancel")) dlg.close();
+          else if (t.hasAttribute("data-insert")) {
+            const ta = targetTa();
+            if (!ta) { dlg.close(); return; }
+            cv.toBlob(b => {
+              if (b) upload(ta, [new File([b], "drawing.png", { type: "image/png" })]);
+              dlg.close();
+            }, "image/png");
+          }
+        });
+        dlg.addEventListener("click", e => { if (e.target === dlg) dlg.close(); });
+        document.querySelectorAll("[data-draw]").forEach(b => {
+          b.addEventListener("click", () => {
+            const ta = b.closest("form")?.querySelector("textarea[name=body]");
+            if (ta) lastTa = ta;
+            reset();
+            dlg.showModal();
+          });
+        });
+      }
     })();
     const fr = document.getElementById("search-form");
     if (fr) fr.onsubmit = e => {
@@ -790,6 +853,24 @@ app.use("*", async (c, next) => {
             </section>
           </header>
           <main>${content}</main>
+          ${n
+            ? html`
+              <dialog id="draw-dialog" class="draw-dialog">
+                <div class="draw-toolbar">
+                  <button type="button" data-tool="pen" aria-pressed="true">pen</button>
+                  <button type="button" data-tool="eraser">eraser</button>
+                  <button type="button" data-size="2">·</button>
+                  <button type="button" data-size="4" aria-pressed="true">•</button>
+                  <button type="button" data-size="8">●</button>
+                  <button type="button" data-clear>clear</button>
+                  <span class="spacer"></span>
+                  <button type="button" data-cancel>cancel</button>
+                  <button type="button" data-insert>insert</button>
+                </div>
+                <canvas id="draw-canvas" width="480" height="320"></canvas>
+              </dialog>
+            `
+            : ""}
           <script>
           ${raw(scriptBody)}
           </script>
@@ -913,6 +994,7 @@ app.get("/", async (c) => {
                   placeholder="#tag *org @user"
                 />
                 <label class="upload-btn">insert images<input type="file" multiple accept="image/jpeg,image/png,image/gif,image/webp,application/pdf" data-upload hidden /></label>
+                <button type="button" class="upload-btn" data-draw>draw</button>
                 <button type="submit">create post</button>
               </div>
             </form>
@@ -1962,6 +2044,7 @@ app.get("/c/:cid?", async (c) => {
               <textarea aria-label="reply" required name="body" rows={6}></textarea>
               <div class="post-form__row">
                 <label class="upload-btn">add images<input type="file" multiple accept="image/jpeg,image/png,image/gif,image/webp,application/pdf" data-upload hidden /></label>
+                <button type="button" class="upload-btn" data-draw>draw</button>
                 <button type="submit">reply</button>
               </div>
             </form>

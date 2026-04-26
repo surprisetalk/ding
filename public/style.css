@@ -723,3 +723,52 @@ body.dropping::after {
   pointer-events: none;
   z-index: 9999;
 }
+
+.draw-dialog {
+  border: 1px solid var(--border);
+  background: var(--bg);
+  color: var(--fg);
+  padding: var(--space-3);
+  max-width: min(96vw, 540px);
+}
+
+.draw-dialog::backdrop {
+  background: color-mix(in oklch, var(--fg) 50%, transparent);
+}
+
+.draw-toolbar {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--space-2);
+  margin-bottom: var(--space-2);
+  align-items: center;
+}
+
+.draw-toolbar .spacer { flex: 1; }
+
+.draw-toolbar button {
+  font-family: inherit;
+  font-size: var(--text-sm);
+  padding: var(--space-1) var(--space-2);
+  border: 1px solid var(--border);
+  background: var(--bg);
+  color: var(--fg);
+  cursor: pointer;
+  min-height: 1.75rem;
+}
+
+.draw-toolbar button[aria-pressed="true"] {
+  background: var(--accent-bg);
+  font-weight: 600;
+}
+
+#draw-canvas {
+  display: block;
+  width: 100%;
+  height: auto;
+  max-width: 480px;
+  background: white;
+  border: 1px solid var(--border);
+  cursor: crosshair;
+  touch-action: none;
+}
