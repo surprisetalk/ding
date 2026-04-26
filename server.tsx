@@ -1015,7 +1015,7 @@ app.get("/", async (c) => {
     name || ""
   })
       ) from com ch where ch.parent_cid = c.cid and char_length(ch.body) > 1 order by ch.created_at desc) as child_comments
-    from com c where parent_cid is null and orgs <@ ${rT}::text[] and (usrs = '{}' or ${name || ""}::text = any(usrs) or created_by = ${name || ""})
+    from com c where parent_cid is null and char_length(c.body) > 0 and orgs <@ ${rT}::text[] and (usrs = '{}' or ${name || ""}::text = any(usrs) or created_by = ${name || ""})
     ${tags.length ? sql`and tags @> ${tags}::text[]` : sql``}
     ${orgs.length ? sql`and orgs @> ${orgs}::text[]` : sql``}
     ${usrs.length ? sql`and usrs @> ${usrs}::text[]` : sql``}
