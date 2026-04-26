@@ -205,6 +205,7 @@ export async function uploadToR2(
   data: Uint8Array,
   filename: string,
   contentType: string,
+  keyPrefix = "bots/",
 ): Promise<string> {
   const endpoint = Deno.env.get("R2_ENDPOINT");
   const accessKey = Deno.env.get("R2_ACCESS_KEY_ID");
@@ -224,7 +225,7 @@ export async function uploadToR2(
   const region = "auto";
   const service = "s3";
 
-  const key = `bots/${filename}`;
+  const key = `${keyPrefix}${filename}`;
   const url = `${endpoint}/${bucket}/${key}`;
 
   const payloadHash = await sha256Hex(data);

@@ -21,6 +21,7 @@ import app, {
   formatLabels,
   parseLabels,
   postRate,
+  r2,
   resend,
   setSql,
   stripe,
@@ -1719,6 +1720,165 @@ Deno.test(
       const items = await res.json();
       assertEquals(items.some((i: { body: string }) => i.body === "@bot_dither"), true);
     });
+  }),
+);
+
+//// UPLOAD TESTS /////////////////////////////////////////////////////////////
+
+Deno.test(
+  "uploads",
+  pglite((_sql) => async (t) => {
+    const jAuth = { Authorization: "Basic " + btoa("john@example.com:password1!") };
+    type Call = { filename: string; contentType: string; prefix: string; size: number };
+    const calls: Call[] = [];
+    const original = r2.uploadToR2;
+    r2.uploadToR2 = (data, filename, contentType, keyPrefix = "bots/") => {
+      calls.push({ filename, contentType, prefix: keyPrefix, size: data.byteLength });
+      return Promise.resolve(`mock://${keyPrefix}${filename}`);
+    };
+
+    try {
+    await t.step("POST /i happy path image", async () => {
+      calls.length = 0;
+      const fd = new FormData();
+      fd.append("id", "abc12345.png");
+      fd.append("file", new Blob([new Uint8Array([1, 2, 3])], { type: "image/png" }), "test.png");
+      const res = await app.request("/i", { method: "POST", body: fd, headers: jAuth });
+      assertEquals(res.status, 204);
+      assertEquals(calls.length, 1);
+      assertEquals(calls[0].filename, "abc12345.png");
+      assertEquals(calls[0].contentType, "image/png");
+      assertEquals(calls[0].prefix, "i/");
+      assertEquals(calls[0].size, 3);
+    });
+
+    await t.step("POST /i happy path pdf", async () => {
+      calls.length = 0;
+      const fd = new FormData();
+      fd.append("id", "Xy7Zq8Aa.pdf");
+      fd.append("file", new Blob([new Uint8Array([4, 5])], { type: "application/pdf" }), "doc.pdf");
+      const res = await app.request("/i", { method: "POST", body: fd, headers: jAuth });
+      assertEquals(res.status, 204);
+      assertEquals(calls[0].contentType, "application/pdf");
+    });
+
+    await t.step("POST /i bad id (too short)", async () => {
+      const fd = new FormData();
+      fd.append("id", "abc.png");
+      fd.append("file", new Blob([new Uint8Array([1])], { type: "image/png" }), "x.png");
+      const res = await app.request("/i", { method: "POST", body: fd, headers: jAuth });
+      assertEquals(res.status, 400);
+    });
+
+    await t.step("POST /i unsupported ext", async () => {
+      const fd = new FormData();
+      fd.append("id", "abc12345.exe");
+      fd.append("file", new Blob([new Uint8Array([1])]), "x.exe");
+      const res = await app.request("/i", { method: "POST", body: fd, headers: jAuth });
+      assertEquals(res.status, 400);
+    });
+
+    await t.step("POST /i path traversal id rejected", async () => {
+      const fd = new FormData();
+      fd.append("id", "../etc/pw.png");
+      fd.append("file", new Blob([new Uint8Array([1])], { type: "image/png" }), "x.png");
+      const res = await app.request("/i", { method: "POST", body: fd, headers: jAuth });
+      assertEquals(res.status, 400);
+    });
+
+    await t.step("POST /i missing file", async () => {
+      const fd = new FormData();
+      fd.append("id", "abc12345.png");
+      const res = await app.request("/i", { method: "POST", body: fd, headers: jAuth });
+      assertEquals(res.status, 400);
+    });
+
+    await t.step("POST /i oversized 413", async () => {
+      const big = new Uint8Array(26 * 1024 * 1024);
+      const fd = new FormData();
+      fd.append("id", "xyz98765.png");
+      fd.append("file", new Blob([big], { type: "image/png" }), "big.png");
+      const res = await app.request("/i", { method: "POST", body: fd, headers: jAuth });
+      assertEquals(res.status, 413);
+    });
+
+    await t.step("POST /i unauthed 401", async () => {
+      const fd = new FormData();
+      fd.append("id", "abc12345.png");
+      fd.append("file", new Blob([new Uint8Array([1])], { type: "image/png" }), "x.png");
+      const res = await app.request("/i", { method: "POST", body: fd });
+      assertEquals(res.status, 401);
+    });
+
+    await t.step("i.ding.bar proxy serves valid path", async () => {
+      const orig = globalThis.fetch;
+      Deno.env.set("R2_PUBLIC_URL", "https://r2-pub.example");
+      globalThis.fetch = ((input: string | URL | Request) => {
+        const url = typeof input === "string" ? input : input.toString();
+        if (url === "https://r2-pub.example/i/abc12345.png") {
+          return Promise.resolve(
+            new Response(new Uint8Array([7, 8, 9]), {
+              status: 200,
+              headers: { "content-type": "image/png" },
+            }),
+          );
+        }
+        return orig(input as RequestInfo);
+      }) as typeof fetch;
+      try {
+        const res = await app.request("/abc12345.png", { headers: { Host: "i.ding.bar" } });
+        assertEquals(res.status, 200);
+        assertEquals(res.headers.get("content-type"), "image/png");
+        assertEquals(res.headers.get("cache-control"), "public, max-age=31536000, immutable");
+      } finally {
+        globalThis.fetch = orig;
+      }
+    });
+
+    await t.step("i.ding.bar proxy 404 for malformed path", async () => {
+      const res = await app.request("/not-valid", { headers: { Host: "i.ding.bar" } });
+      assertEquals(res.status, 404);
+    });
+
+    await t.step("i.ding.bar proxy 404 for traversal attempt", async () => {
+      const res = await app.request("/..%2Fetc%2Fpw.png", { headers: { Host: "i.ding.bar" } });
+      assertEquals(res.status, 404);
+    });
+
+    await t.step("post body containing i.ding.bar URL round-trips", async () => {
+      const url = "https://i.ding.bar/abc12345.png";
+      const fd = new FormData();
+      fd.append("body", `look at this ${url}`);
+      fd.append("tags", "#pics");
+      const r = await app.request("/c", { method: "POST", body: fd, headers: jAuth });
+      assertEquals(r.status, 302);
+      const cid = +r.headers.get("location")!.match(/\/c\/(\d+)/)![1];
+      const [row] = await _sql`select body from com where cid = ${cid}`;
+      assertStringIncludes(row.body, url);
+    });
+
+    await t.step("POST /i rejects svg (XSS vector)", async () => {
+      const fd = new FormData();
+      fd.append("id", "abc12345.svg");
+      fd.append("file", new Blob([new Uint8Array([1])], { type: "image/svg+xml" }), "x.svg");
+      const res = await app.request("/i", { method: "POST", body: fd, headers: jAuth });
+      assertEquals(res.status, 400);
+    });
+
+    await t.step("i.ding.bar proxy 500 when R2_PUBLIC_URL unset", async () => {
+      const prev = Deno.env.get("R2_PUBLIC_URL");
+      Deno.env.delete("R2_PUBLIC_URL");
+      try {
+        const res = await app.request("/abc12345.png", { headers: { Host: "i.ding.bar" } });
+        assertEquals(res.status, 500);
+      } finally {
+        if (prev) Deno.env.set("R2_PUBLIC_URL", prev);
+      }
+    });
+
+    } finally {
+      r2.uploadToR2 = original;
+    }
   }),
 );
 

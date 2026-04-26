@@ -15,6 +15,8 @@ import pg from "postgres";
 import { Resend } from "resend";
 export const resend = new Resend(Deno.env.get("RESEND_API_KEY") ?? "");
 import Stripe from "stripe";
+import { uploadToR2 } from "./bots.ts";
+export const r2 = { uploadToR2 };
 
 declare module "@hono/hono" {
   interface ContextRenderer {
@@ -586,6 +588,33 @@ const app = new Hono<{ Variables: { name: string } }>();
 app.use(logger());
 app.notFound(notFound);
 
+const IMG_EXT_RE = /^([A-Za-z0-9]{8})\.(jpe?g|png|gif|webp|pdf)$/;
+const MIME_BY_EXT: Record<string, string> = {
+  jpg: "image/jpeg",
+  jpeg: "image/jpeg",
+  png: "image/png",
+  gif: "image/gif",
+  webp: "image/webp",
+  pdf: "application/pdf",
+};
+const MAX_UPLOAD_BYTES = 25 * 1024 * 1024;
+
+app.use("*", async (c, next) => {
+  if (host(c) !== "i") return next();
+  const seg = c.req.path.replace(/^\//, "");
+  if (!IMG_EXT_RE.test(seg)) throw new HTTPException(404);
+  const r2Url = Deno.env.get("R2_PUBLIC_URL");
+  if (!r2Url) throw new HTTPException(500, { message: "R2_PUBLIC_URL unset" });
+  const res = await fetch(`${r2Url}/i/${seg}`);
+  if (!res.ok) throw new HTTPException((res.status === 404 ? 404 : 502) as 404 | 502);
+  return new Response(res.body, {
+    headers: {
+      "Content-Type": res.headers.get("content-type") ?? "application/octet-stream",
+      "Cache-Control": "public, max-age=31536000, immutable",
+    },
+  });
+});
+
 const botRe = /bot|crawl|spider|slurp|bing|facebook|google|yandex|baidu|duck|sogou|semrush|ahref/i;
 
 app.use("*", async (c, next) => {
@@ -611,6 +640,63 @@ app.use("*", async (c, next) => {
         const isImg = /\\.(jpe?g|png|gif|webp|svg)(\\?.*)?$/i.test(u) || /^https?:\\/\\/(i\\.redd\\.it|i\\.imgur\\.com|pbs\\.twimg\\.com)\\//i.test(u);
         return isImg ? '<a href="'+u+'">'+u+'</a><br><img src="'+u+'" loading="lazy" class="pre-img">' : '<a href="'+u+'">'+u+'</a>';
       });
+    });
+    document.querySelectorAll("input[type=file][data-upload]").forEach(inp => {
+      const form = inp.closest("form");
+      const ta = form && form.querySelector("textarea[name=body]");
+      const btn = form && form.querySelector("button[type=submit]");
+      if (!ta || !btn) return;
+      let pending = 0;
+      btn.dataset.label = btn.textContent;
+      const setPending = (d) => { pending += d; btn.disabled = pending > 0; btn.textContent = pending > 0 ? "uploading…" : btn.dataset.label; };
+      const alpha = "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789";
+      const randId = () => { const a = new Uint8Array(8); crypto.getRandomValues(a); let s = ""; for (const b of a) s += alpha[b % alpha.length]; return s; };
+      const extOf = (name, type) => {
+        const e = (name.split(".").pop() || "").toLowerCase();
+        if (["jpg","jpeg","png","gif","webp","pdf"].includes(e)) return e === "jpeg" ? "jpg" : e;
+        if (type === "image/jpeg") return "jpg";
+        if (type === "image/png") return "png";
+        if (type === "image/gif") return "gif";
+        if (type === "image/webp") return "webp";
+        if (type === "application/pdf") return "pdf";
+        return "";
+      };
+      const insertAtCursor = (s) => {
+        const start = ta.selectionStart ?? ta.value.length, end = ta.selectionEnd ?? start;
+        const pre = ta.value.slice(0, start), post = ta.value.slice(end);
+        const sep = pre && !pre.endsWith("\\n") ? "\\n" : "";
+        ta.value = pre + sep + s + post;
+        const pos = (pre + sep + s).length;
+        ta.setSelectionRange(pos, pos);
+        ta.focus();
+      };
+      inp.onchange = async () => {
+        for (const file of inp.files) {
+          const ext = extOf(file.name, file.type);
+          if (!ext) { alert("unsupported file: " + file.name); continue; }
+          if (file.size > ${MAX_UPLOAD_BYTES}) { alert("too big (max 25 MB): " + file.name); continue; }
+          const id = randId() + "." + ext;
+          const url = "https://i.ding.bar/" + id;
+          insertAtCursor(url);
+          setPending(1);
+          const fd = new FormData();
+          fd.append("id", id);
+          fd.append("file", file);
+          try {
+            const r = await fetch("/i", { method: "POST", credentials: "same-origin", body: fd });
+            if (!r.ok) {
+              ta.value = ta.value.replace(url, "").replace(/\\n{3,}/g, "\\n\\n");
+              alert("upload failed (" + r.status + "): " + file.name);
+            }
+          } catch (e) {
+            ta.value = ta.value.replace(url, "").replace(/\\n{3,}/g, "\\n\\n");
+            alert("upload error: " + file.name + " — " + e);
+          } finally {
+            setPending(-1);
+          }
+        }
+        inp.value = "";
+      };
     });
     const fr = document.getElementById("search-form");
     if (fr) fr.onsubmit = e => {
@@ -796,7 +882,7 @@ app.get("/", async (c) => {
       <section>
         {name &&
           (
-            <form method="post" action="/c">
+            <form method="post" action="/c" class="upload-form">
               <textarea aria-label="post" required name="body" rows={10} minlength={1} maxlength={4096}></textarea>
               <div class="post-form__row">
                 <input
@@ -806,6 +892,7 @@ app.get("/", async (c) => {
                   value={decodeLabels(cur)}
                   placeholder="#tag *org @user"
                 />
+                <input type="file" multiple accept="image/jpeg,image/png,image/gif,image/webp,application/pdf" data-upload aria-label="attach" />
                 <button type="submit">create post</button>
               </div>
             </form>
@@ -1851,9 +1938,12 @@ app.get("/c/:cid?", async (c) => {
       <section>
         {n &&
           (
-            <form method="post" action={`/c/${post.cid}`}>
+            <form method="post" action={`/c/${post.cid}`} class="upload-form">
               <textarea aria-label="reply" required name="body" rows={6}></textarea>
-              <button type="submit">reply</button>
+              <div class="post-form__row">
+                <input type="file" multiple accept="image/jpeg,image/png,image/gif,image/webp,application/pdf" data-upload aria-label="attach" />
+                <button type="submit">reply</button>
+              </div>
             </form>
           )}
         <SortToggle sort={s} baseHref={`/c/${cid}`} title="comments" />
@@ -1891,6 +1981,20 @@ app.get("/img", async (c) => {
   return new Response(res.body, {
     headers: { "Content-Type": ct, "Cache-Control": "public, max-age=604800, immutable" },
   });
+});
+
+app.post("/i", authed, async (c) => {
+  const f = await c.req.formData();
+  const id = f.get("id")?.toString() ?? "";
+  const file = f.get("file");
+  if (!(file instanceof File)) throw new HTTPException(400, { message: "missing file" });
+  const m = id.match(IMG_EXT_RE);
+  if (!m) throw new HTTPException(400, { message: "bad id" });
+  if (file.size > MAX_UPLOAD_BYTES) throw new HTTPException(413, { message: "too big" });
+  const ext = m[2].toLowerCase();
+  const bytes = new Uint8Array(await file.arrayBuffer());
+  await r2.uploadToR2(bytes, `${m[1]}.${ext}`, MIME_BY_EXT[ext], "i/");
+  return c.body(null, 204);
 });
 
 app.use("/*", serveStatic({ root: "./public" }));
