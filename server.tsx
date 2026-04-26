@@ -1030,7 +1030,7 @@ app.get("/", async (c) => {
                   value={decodeLabels(cur)}
                 />
                 <button type="button" class="upload-btn" data-draw>draw</button>
-                <label class="upload-btn">attach</label>
+                <label class="upload-btn">attach<input type="file" multiple accept="image/jpeg,image/png,image/gif,image/webp,application/pdf" data-upload hidden /></label>
                 <button type="submit">publish</button>
               </div>
               {presets.length > 0 && (
@@ -2132,7 +2132,7 @@ app.get("/c/:cid?", async (c) => {
               <textarea aria-label="reply" required name="body" rows={6}></textarea>
               <div class="post-form__row">
                 <button type="button" class="upload-btn" data-draw>draw</button>
-                <label class="upload-btn">attach</label>
+                <label class="upload-btn">attach<input type="file" multiple accept="image/jpeg,image/png,image/gif,image/webp,application/pdf" data-upload hidden /></label>
                 <button type="submit">reply</button>
               </div>
             </form>
