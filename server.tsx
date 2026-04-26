@@ -405,9 +405,9 @@ export const formatBody = (body: string): BodyNode[] => {
     let i = 0;
     while (i < lines.length) {
       const ln = lines[i];
-      if (/^(?:    |\t)/.test(ln)) {
+      if (/^(?: {4}|\t)/.test(ln)) {
         const block: string[] = [];
-        while (i < lines.length && (/^(?:    |\t)/.test(lines[i]) || lines[i] === "")) {
+        while (i < lines.length && (/^(?: {4}|\t)/.test(lines[i]) || lines[i] === "")) {
           block.push(lines[i]);
           i++;
         }
@@ -421,6 +421,7 @@ export const formatBody = (body: string): BodyNode[] => {
           items.push(lines[i]);
           i++;
         }
+        // deno-lint-ignore jsx-key
         out.push(<ul class="body-list">{items.map((it) => <li>{inlineFmt(it)}</li>)}</ul>);
         continue;
       }
@@ -442,7 +443,7 @@ export const formatBody = (body: string): BodyNode[] => {
       const para: string[] = [];
       while (
         i < lines.length && lines[i] !== "" &&
-        !/^(?:    |\t)/.test(lines[i]) &&
+        !/^(?: {4}|\t)/.test(lines[i]) &&
         !/^\s*(?:[-*]|\d+\.)\s+/.test(lines[i]) &&
         !/^>\s?/.test(lines[i]) &&
         !/^#{1,6}\s+/.test(lines[i])
@@ -513,7 +514,9 @@ const Post = (c: Com, user?: string, p?: URLSearchParams) => {
     <>
       <a href={linkUrl ?? `/c/${c.cid}`} class="thumb" {...(linkUrl ? { target: "_blank", rel: "noopener" } : {})}>
         <img
-          src={c.thumb ? (c.thumb.startsWith("https://i.ding.bar/") ? c.thumb : `/img?url=${encodeURIComponent(c.thumb)}`) : defaultThumb}
+          src={c.thumb
+            ? (c.thumb.startsWith("https://i.ding.bar/") ? c.thumb : `/img?url=${encodeURIComponent(c.thumb)}`)
+            : defaultThumb}
           loading="lazy"
           onerror={`this.onerror=null;this.src='${defaultThumb}'`}
         />
@@ -606,11 +609,12 @@ app.use("*", async (c, next) => {
   const r2Url = Deno.env.get("R2_PUBLIC_URL");
   if (!r2Url) throw new HTTPException(500, { message: "R2_PUBLIC_URL unset" });
   const res = await fetch(`${r2Url}/i/${seg}`);
-  if (!res.ok)
+  if (!res.ok) {
     throw new HTTPException(
       (res.status === 404 ? 404 : 502) as 404 | 502,
       { message: res.status === 404 ? "Image not found." : `Image upstream failed (status ${res.status}).` },
     );
+  }
   return new Response(res.body, {
     headers: {
       "Content-Type": res.headers.get("content-type") ?? "application/octet-stream",
@@ -906,28 +910,52 @@ app.get("/sitemap.txt", (c) => c.text("https://ding.bar/"));
 const defaultErrCopy: Record<number, { msg: string; action: HtmlEscapedString | Promise<HtmlEscapedString> }> = {
   400: {
     msg: "That request didn't look right. Check the form and try again.",
-    action: <p><a href="/">home</a></p>,
+    action: (
+      <p>
+        <a href="/">home</a>
+      </p>
+    ),
   },
   401: {
     msg: "You need to log in to do that.",
-    action: <p><a href="/u">log in</a></p>,
+    action: (
+      <p>
+        <a href="/u">log in</a>
+      </p>
+    ),
   },
   403: {
     msg: "You don't have access to that.",
-    action: <p><a href="/">home</a></p>,
+    action: (
+      <p>
+        <a href="/">home</a>
+      </p>
+    ),
   },
   404: {
     msg: "That page doesn't exist.",
-    action: <p><a href="/">home</a></p>,
+    action: (
+      <p>
+        <a href="/">home</a>
+      </p>
+    ),
   },
   429: {
     msg: "Too many requests. Try again in a minute.",
-    action: <p><a href="/">home</a></p>,
+    action: (
+      <p>
+        <a href="/">home</a>
+      </p>
+    ),
   },
 };
 const fallbackErr = {
   msg: "Something broke on our end. Try again in a moment, or email support@ding.bar.",
-  action: <p><a href="/">home</a></p>,
+  action: (
+    <p>
+      <a href="/">home</a>
+    </p>
+  ),
 };
 
 app.onError((err, c) => {
@@ -953,7 +981,9 @@ app.onError((err, c) => {
   return c.render(
     <section>
       <p>{fallbackErr.msg}</p>
-      <p><a href="/">home</a></p>
+      <p>
+        <a href="/">home</a>
+      </p>
     </section>,
     { title: "error" },
   );
@@ -1015,7 +1045,9 @@ app.get("/", async (c) => {
     name || ""
   })
       ) from com ch where ch.parent_cid = c.cid and char_length(ch.body) > 1 order by ch.created_at desc) as child_comments
-    from com c where parent_cid is null and char_length(c.body) > 0 and orgs <@ ${rT}::text[] and (usrs = '{}' or ${name || ""}::text = any(usrs) or created_by = ${name || ""})
+    from com c where parent_cid is null and char_length(c.body) > 0 and orgs <@ ${rT}::text[] and (usrs = '{}' or ${
+    name || ""
+  }::text = any(usrs) or created_by = ${name || ""})
     ${tags.length ? sql`and tags @> ${tags}::text[]` : sql``}
     ${orgs.length ? sql`and orgs @> ${orgs}::text[]` : sql``}
     ${usrs.length ? sql`and usrs @> ${usrs}::text[]` : sql``}
@@ -1044,7 +1076,15 @@ app.get("/", async (c) => {
                   value={decodeLabels(cur)}
                 />
                 <button type="button" class="upload-btn" data-draw>draw</button>
-                <label class="upload-btn">attach<input type="file" multiple accept="image/jpeg,image/png,image/gif,image/webp,application/pdf" data-upload hidden /></label>
+                <label class="upload-btn">
+                  attach<input
+                    type="file"
+                    multiple
+                    accept="image/jpeg,image/png,image/gif,image/webp,application/pdf"
+                    data-upload
+                    hidden
+                  />
+                </label>
                 <button type="submit">publish</button>
               </div>
               {presets.length > 0 && (
@@ -1123,7 +1163,10 @@ app.post("/login", async (c) => {
     try {
       await sendVerify(u.email);
     } catch (err) {
-      console.error(`/login resend failed for ${u.email}:`, (err as { response?: { body?: unknown } })?.response?.body || err);
+      console.error(
+        `/login resend failed for ${u.email}:`,
+        (err as { response?: { body?: unknown } })?.response?.body || err,
+      );
       resendFailed = true;
     }
   }
@@ -1137,8 +1180,11 @@ app.post("/logout", (c) => (deleteCookie(c, "name"), ok(c)));
 
 app.get("/verify", async (c) => {
   const e = c.req.query("email"), t = c.req.query("token");
-  if (!e || !t || !(await validateEmailToken(t, e)))
-    throw new HTTPException(400, { message: "Verification link is invalid or expired. Request a new one from /forgot." });
+  if (!e || !t || !(await validateEmailToken(t, e))) {
+    throw new HTTPException(400, {
+      message: "Verification link is invalid or expired. Request a new one from /forgot.",
+    });
+  }
   await sql`update usr set email_verified_at = now() where email_verified_at is null and email = ${e}`;
   return ok(c);
 });
@@ -1182,14 +1228,17 @@ app.post("/forgot", async (c) => {
 
 app.get("/password", async (c) => {
   const email = c.req.query("email"), token = c.req.query("token");
-  if (!email || !token || !(await validateEmailToken(token, email)))
+  if (!email || !token || !(await validateEmailToken(token, email))) {
     return c.render(
       <section>
         <p>This verification link is invalid or expired.</p>
-        <p><a href="/forgot">Request a new one</a></p>
+        <p>
+          <a href="/forgot">Request a new one</a>
+        </p>
       </section>,
       { title: "expired link" },
     );
+  }
   return c.render(
     <section>
       <form method="post" action="/password">
@@ -1348,7 +1397,11 @@ app.get("/u", async (c) => {
     const err = c.req.query("error");
     const prefillEmail = c.req.query("email") ?? "";
     const errMsg: Record<string, HtmlEscapedString | Promise<HtmlEscapedString>> = {
-      bad_login: <p class="error">wrong email or password — try again or <a href="/forgot">reset your password</a>.</p>,
+      bad_login: (
+        <p class="error">
+          wrong email or password — try again or <a href="/forgot">reset your password</a>.
+        </p>
+      ),
       verify_resend_failed: (
         <p class="error">we couldn't resend your verification email. try again, or email support@ding.bar.</p>
       ),
@@ -1839,8 +1892,12 @@ app.post("/c/:p?", async (c) => {
       Prm[]
     >`select tags, orgs, usrs, created_by, parent_cid as prm_parent, domains from com where cid = ${pid}`;
     if (!prm) throw new HTTPException(404, { message: "Parent post not found." });
-    if (!prm.orgs.every((t) => usr.orgs_r.includes(t)) || (prm.usrs.length && !prm.usrs.includes(n) && prm.created_by !== n))
+    if (
+      !prm.orgs.every((t) => usr.orgs_r.includes(t)) ||
+      (prm.usrs.length && !prm.usrs.includes(n) && prm.created_by !== n)
+    ) {
       throw new HTTPException(403, { message: "You don't have access to that thread." });
+    }
     tags = prm.tags;
     orgs = prm.orgs;
     usrs = prm.usrs;
@@ -1951,7 +2008,9 @@ app.get("/c/:cid?", async (c) => {
       : (q.reactions || q.replies_to || q.comments ? sql`parent_cid is not null` : sql`parent_cid is null`)
   }
     ${usrs.length ? sql`and created_by = any(${usrs}::citext[])` : sql``}
-    and tags @> ${tags}::text[] and orgs <@ ${rT}::text[] and (usrs = '{}' or ${n || ""}::text = any(usrs) or created_by = ${n || ""})
+    and tags @> ${tags}::text[] and orgs <@ ${rT}::text[] and (usrs = '{}' or ${
+    n || ""
+  }::text = any(usrs) or created_by = ${n || ""})
     ${orgs.length ? sql`and orgs && ${orgs}::text[]` : sql``}
     ${
     mens.length ? sql`and (usrs && ${mens}::text[] or mentions && ${mens.map((m) => m.toLowerCase())}::text[])` : sql``
@@ -2140,15 +2199,40 @@ app.get("/c/:cid?", async (c) => {
         )}
       </section>
       <section>
-        {n &&
-          (
+        {n
+          ? (
             <form method="post" action={`/c/${post.cid}`} class="upload-form">
               <textarea aria-label="reply" required name="body" rows={6}></textarea>
               <div class="post-form__row">
                 <button type="button" class="upload-btn" data-draw>draw</button>
-                <label class="upload-btn">attach<input type="file" multiple accept="image/jpeg,image/png,image/gif,image/webp,application/pdf" data-upload hidden /></label>
+                <label class="upload-btn">
+                  attach<input
+                    type="file"
+                    multiple
+                    accept="image/jpeg,image/png,image/gif,image/webp,application/pdf"
+                    data-upload
+                    hidden
+                  />
+                </label>
                 <button type="submit">reply</button>
               </div>
+            </form>
+          )
+          : (
+            <form method="post" action="/signup">
+              <p>create an account to reply</p>
+              <label>
+                username
+                <input type="text" name="name" pattern="^[0-9a-zA-Z_]{4,32}$" required />
+              </label>
+              <label>
+                email
+                <input type="email" name="email" required />
+              </label>
+              <button type="submit">create account</button>
+              <p class="note-sm">
+                already have one? <a href={`/u?next=${encodeURIComponent(`/c/${post.cid}`)}`}>log in</a>
+              </p>
             </form>
           )}
         <SortToggle sort={s} baseHref={`/c/${cid}`} title="comments" />

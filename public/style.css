@@ -745,7 +745,9 @@ body.dropping::after {
   align-items: center;
 }
 
-.draw-toolbar .spacer { flex: 1; }
+.draw-toolbar .spacer {
+  flex: 1;
+}
 
 .draw-toolbar button {
   font-family: inherit;

@@ -56,10 +56,10 @@ const unesc = (s: string) =>
 
 const extractImg = (html: string): string | null => {
   const u = unesc(html);
-  const raw = u.match(/https:\/\/i\.redd\.it\/[^\s"'<>]+/)?.[0]
-    ?? u.match(/https:\/\/i\.imgur\.com\/[^\s"'<>]+/)?.[0]
-    ?? u.match(/<img[^>]+src="([^"]+)"/)?.[1]
-    ?? null;
+  const raw = u.match(/https:\/\/i\.redd\.it\/[^\s"'<>]+/)?.[0] ??
+    u.match(/https:\/\/i\.imgur\.com\/[^\s"'<>]+/)?.[0] ??
+    u.match(/<img[^>]+src="([^"]+)"/)?.[1] ??
+    null;
   return raw ? unesc(raw) : null;
 };
 
@@ -113,9 +113,9 @@ const fetchSub = async (sub: string): Promise<Item[]> => {
       const link = entry.match(/<link[^>]+href="([^"]+)"/)?.[1] || "";
       const content = entry.match(/<content[^>]*>([\s\S]*?)<\/content>/)?.[1] || "";
       const author = entry.match(/<author>[\s\S]*?<name>([^<]+)<\/name>/)?.[1]?.trim() || "";
-      const pubStr = entry.match(/<published>([^<]+)<\/published>/)?.[1]
-        ?? entry.match(/<updated>([^<]+)<\/updated>/)?.[1]
-        ?? "";
+      const pubStr = entry.match(/<published>([^<]+)<\/published>/)?.[1] ??
+        entry.match(/<updated>([^<]+)<\/updated>/)?.[1] ??
+        "";
       const published = pubStr ? +new Date(pubStr) : 0;
       if (title && link) items.push({ sub, title, link, imageUrl: extractImg(content), author, published });
     }
