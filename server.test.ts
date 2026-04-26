@@ -178,16 +178,19 @@ Deno.test(
       assertEquals(res.status, 401);
     });
 
-    await t.step("POST /login unknown email redirects to /signup", async () => {
+    await t.step("POST /login unknown email redirects to /signup with prefilled email", async () => {
       const body = new FormData();
       body.append("email", "nobody@example.com");
       body.append("password", "anything");
       const res = await app.request("/login", { method: "post", body });
       assertEquals(res.status, 302);
-      assertEquals(
-        res.headers.get("location"),
-        `/signup?error=email_not_found&email=${encodeURIComponent("nobody@example.com")}`,
-      );
+      const location = res.headers.get("location")!;
+      assertEquals(location, `/signup?error=email_not_found&email=${encodeURIComponent("nobody@example.com")}`);
+      const followed = await app.request(location);
+      assertEquals(followed.status, 200);
+      const html = await followed.text();
+      assertStringIncludes(html, "No account with that email");
+      assertStringIncludes(html, `value="nobody@example.com"`);
     });
 
     await t.step("POST /login correct credentials", async () => {
