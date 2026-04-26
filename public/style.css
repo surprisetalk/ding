@@ -223,6 +223,7 @@ body > main {
   display: flex;
   flex-direction: column;
   gap: var(--space-6);
+  margin-bottom: 4rem;
 }
 
 body > main > section {
@@ -456,6 +457,7 @@ pre {
   display: flex;
   flex-wrap: wrap;
   gap: var(--space-2) var(--space-1);
+  margin-top: var(--space-1);
 }
 
 .tag-preset, .filter-pill {
