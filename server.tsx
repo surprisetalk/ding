@@ -1287,10 +1287,7 @@ app.get("/u", async (c) => {
       <section>{User(usr as unknown as Usr, name)}</section>
       <section>
         <form method="post" action="/u">
-          <label>
-            bio
-            <textarea name="bio" rows={6}>{usr.bio}</textarea>
-          </label>
+          <textarea name="bio" rows={6}>{usr.bio}</textarea>
           <button type="submit">save</button>
         </form>
       </section>
