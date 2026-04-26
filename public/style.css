@@ -83,10 +83,6 @@ a {
   text-decoration: none;
 }
 
-a:hover {
-  text-decoration: underline;
-}
-
 .body a:link, .body a:visited {
   color: var(--fg);
   text-decoration: underline;
