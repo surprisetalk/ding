@@ -455,7 +455,6 @@ pre {
   display: flex;
   flex-wrap: wrap;
   gap: var(--space-1);
-  margin-top: var(--space-2);
 }
 
 .tag-preset, .filter-pill {
