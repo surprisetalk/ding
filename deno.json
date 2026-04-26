@@ -19,10 +19,10 @@
     "linkedom": "npm:linkedom@^0.18.12",
     "pg-gateway": "npm:pg-gateway@0.3.0-beta.4",
     "sharp": "npm:sharp@^0.34.5",
-    "@hono/hono": "jsr:@hono/hono@4.12.14",
-    "postgres": "https://deno.land/x/postgresjs@v3.4.8/mod.js",
-    "stripe": "npm:stripe@^22.0.2",
-    "resend": "npm:resend@^6.12.0"
+    "@hono/hono": "jsr:@hono/hono@4.12.15",
+    "postgres": "https://deno.land/x/postgresjs@v3.4.9/mod.js",
+    "stripe": "npm:stripe@^22.1.0",
+    "resend": "npm:resend@^6.12.2"
   },
   "tasks": {
     "deploy": "deno run -A jsr:@deno/deployctl deploy --prod --project=dong server.tsx"

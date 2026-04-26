@@ -2,7 +2,7 @@
   "version": "5",
   "specifiers": {
     "jsr:@hono/hono@*": "4.5.3",
-    "jsr:@hono/hono@4.12.14": "4.12.14",
+    "jsr:@hono/hono@4.12.15": "4.12.15",
     "jsr:@std/assert@^1.0.19": "1.0.19",
     "jsr:@std/csv@*": "1.0.6",
     "jsr:@std/internal@^1.0.12": "1.0.12",
@@ -14,16 +14,16 @@
     "npm:@types/node@*": "18.16.19",
     "npm:linkedom@~0.18.12": "0.18.12",
     "npm:pg-gateway@0.3.0-beta.4": "0.3.0-beta.4",
-    "npm:resend@^6.12.0": "6.12.0",
+    "npm:resend@^6.12.2": "6.12.2",
     "npm:sharp@~0.34.5": "0.34.5",
-    "npm:stripe@^22.0.2": "22.0.2_@types+node@18.16.19"
+    "npm:stripe@^22.1.0": "22.1.0_@types+node@18.16.19"
   },
   "jsr": {
     "@hono/hono@4.5.3": {
       "integrity": "429923b2b3c6586a1450862328d61a1346fee5841e8ae86c494250475057213c"
     },
-    "@hono/hono@4.12.14": {
-      "integrity": "4eedba4b53f27c8e0db683d515e11ec3b88b8fdc1748e229cd7988d243ca018d"
+    "@hono/hono@4.12.15": {
+      "integrity": "06a0aef73d9072e73b8db570b81a5b56a94095d697578202a87fccdf04ce352d"
     },
     "@std/assert@1.0.19": {
       "integrity": "eaada96ee120cb980bc47e040f82814d786fe8162ecc53c91d8df60b8755991e",
@@ -311,8 +311,8 @@
     "postal-mime@2.7.4": {
       "integrity": "sha512-0WdnFQYUrPGGTFu1uOqD2s7omwua8xaeYGdO6rb88oD5yJ/4pPHDA4sdWqfD8wQVfCny563n/HQS7zTFft+f/g=="
     },
-    "resend@6.12.0": {
-      "integrity": "sha512-CaxEvX1z+/MGbgnhsM/bvmkbnZd1v1sEXELAjBNSDBQNMaB7MgqOyrBgI27CYikEgdaDnBrXghAXYWTBs/h5Bw==",
+    "resend@6.12.2": {
+      "integrity": "sha512-xwgmU4b0OqoabJsIoK/x0Whk0Fcs3bpbK4i/DEWPiE5hYJHyHl0TbB6QbI3gIr+bLdLUJ1GYm/fe41aVFuHXgw==",
       "dependencies": [
         "postal-mime",
         "svix"
@@ -364,8 +364,8 @@
         "fast-sha256"
       ]
     },
-    "stripe@22.0.2_@types+node@18.16.19": {
-      "integrity": "sha512-2/BLrQ3oB1zlNfeL/LfHFjTGx6EQn0j+ztrrTJHuDjV5VVIpk92oSDaxyKLUr3pG3dnee2LZqhFUv2Bf0G1/3g==",
+    "stripe@22.1.0_@types+node@18.16.19": {
+      "integrity": "sha512-w/xHyJGxXWnLPbNHG13sz/fae0MrFGC80Oz7YbICQymbfpqfEcsoG+6yG+9BWb81PWc4rrkeSO4wmTcmefmbLw==",
       "dependencies": [
         "@types/node"
       ],
@@ -909,6 +909,18 @@
     "https://deno.land/x/postgresjs@v3.4.8/src/result.js": "001ff5e0c8d634674f483d07fbcd620a797e3101f842d6c20ca3ace936260465",
     "https://deno.land/x/postgresjs@v3.4.8/src/subscribe.js": "9e4d0c3e573a6048e77ee2f15abbd5bcd17da9ca85a78c914553472c6d6c169b",
     "https://deno.land/x/postgresjs@v3.4.8/src/types.js": "471f4a6c35412aa202a7c177c0a7e5a7c3bd225f01bbde67c947894c1b8bf6ed",
+    "https://deno.land/x/postgresjs@v3.4.9/mod.js": "cb68f17d6d90df318934deccdb469d740be0888e7a597a9e7eea7100ce36a252",
+    "https://deno.land/x/postgresjs@v3.4.9/polyfills.js": "318eb01f2b4cc33a46c59f3ddc11f22a56d6b1db8b7719b2ad7decee63a5bd47",
+    "https://deno.land/x/postgresjs@v3.4.9/src/bytes.js": "f2de43bdc8fa5dc4b169f2c70d5d8b053a3dea8f85ef011d7b27dec69e14ebb7",
+    "https://deno.land/x/postgresjs@v3.4.9/src/connection.js": "66515ae50e0faed384dc2063af78c0c1debabc9597ea650bb35359440f652df3",
+    "https://deno.land/x/postgresjs@v3.4.9/src/errors.js": "85cfbed9a5ab0db41ab8e97b806c881af29807dfe99bc656fdf1a18c1c13b6c6",
+    "https://deno.land/x/postgresjs@v3.4.9/src/index.js": "c27a3a156dc685dd2f394a5df04680c2f43ab19bae20d909b8c921b2e7461ebd",
+    "https://deno.land/x/postgresjs@v3.4.9/src/large.js": "f3e770cdb7cc695f7b50687b4c6c4b7252129515486ec8def98b7582ee7c54ef",
+    "https://deno.land/x/postgresjs@v3.4.9/src/query.js": "67c45a5151032aa46b587abc15381fe4efd97c696e5c1b53082b8161309c4ee2",
+    "https://deno.land/x/postgresjs@v3.4.9/src/queue.js": "15e6345adb6708bf3b99ad39fc2231c2fb61de5f6cba4b7a7a6be881482a4ec3",
+    "https://deno.land/x/postgresjs@v3.4.9/src/result.js": "001ff5e0c8d634674f483d07fbcd620a797e3101f842d6c20ca3ace936260465",
+    "https://deno.land/x/postgresjs@v3.4.9/src/subscribe.js": "9e4d0c3e573a6048e77ee2f15abbd5bcd17da9ca85a78c914553472c6d6c169b",
+    "https://deno.land/x/postgresjs@v3.4.9/src/types.js": "471f4a6c35412aa202a7c177c0a7e5a7c3bd225f01bbde67c947894c1b8bf6ed",
     "https://deno.land/x/stable_stringify@v0.2.1/jsonStringify.ts": "ecc35c851e68e762add0c20c3f86e7dc4e3cd4eb3368a0ed0830644d34ed40c0",
     "https://deno.land/x/superdeno@4.9.0/deps.ts": "acb88a5969aae0bcc82e053cb433cd183a10cc656495caa634b6e22a79156c4e",
     "https://deno.land/x/superdeno@4.9.0/mod.ts": "fa91c501867a4302a4bc92d63cbf934fe5475ebb7bf58335338e001147263c87",
@@ -957,15 +969,15 @@
   "workspace": {
     "dependencies": [
       "jsr:@hono/hono@*",
-      "jsr:@hono/hono@4.12.14",
+      "jsr:@hono/hono@4.12.15",
       "jsr:@std/assert@^1.0.19",
       "npm:@electric-sql/pglite@0.3.15",
       "npm:@mozilla/readability@0.6",
       "npm:linkedom@~0.18.12",
       "npm:pg-gateway@0.3.0-beta.4",
-      "npm:resend@^6.12.0",
+      "npm:resend@^6.12.2",
       "npm:sharp@~0.34.5",
-      "npm:stripe@^22.0.2"
+      "npm:stripe@^22.1.0"
     ]
   }
 }
