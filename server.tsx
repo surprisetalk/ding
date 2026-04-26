@@ -369,6 +369,7 @@ const inlineFmt = (s: string): BodyNode[] => {
     else if (italic) out.push(<em>_{inlineFmt(italic.slice(1, -1))}_</em>);
     else if (link) {
       const innerText = link.slice(1, link.indexOf("]("));
+      if (isImageUrl(url)) out.push(<img class="pre-img" src={url} loading="lazy" />);
       out.push(
         <a href={url}>
           <span class="md-syntax">[</span>
@@ -376,13 +377,12 @@ const inlineFmt = (s: string): BodyNode[] => {
           <span class="md-syntax">]({url})</span>
         </a>,
       );
-      if (isImageUrl(url)) out.push(<img class="pre-img" src={url} loading="lazy" />);
     } else if (bareUrl) {
       const trail = bareUrl.match(/[.,!?;:]+$/)?.[0] ?? "";
       const clean = trail ? bareUrl.slice(0, -trail.length) : bareUrl;
+      if (isImageUrl(clean)) out.push(<img class="pre-img" src={clean} loading="lazy" />);
       out.push(<a href={clean}>{clean}</a>);
       if (trail) out.push(trail);
-      if (isImageUrl(clean)) out.push(<img class="pre-img" src={clean} loading="lazy" />);
     }
     i = idx + full.length;
   }
@@ -638,7 +638,7 @@ app.use("*", async (c, next) => {
     document.querySelectorAll("pre").forEach(x => {
       x.innerHTML = x.innerHTML.replace(/(https?:\\/\\/\\S+)/g, u => {
         const isImg = /\\.(jpe?g|png|gif|webp|svg)(\\?.*)?$/i.test(u) || /^https?:\\/\\/(i\\.redd\\.it|i\\.imgur\\.com|pbs\\.twimg\\.com)\\//i.test(u);
-        return isImg ? '<a href="'+u+'">'+u+'</a><br><img src="'+u+'" loading="lazy" class="pre-img">' : '<a href="'+u+'">'+u+'</a>';
+        return isImg ? '<img src="'+u+'" loading="lazy" class="pre-img"><a href="'+u+'">'+u+'</a>' : '<a href="'+u+'">'+u+'</a>';
       });
     });
     (() => {
