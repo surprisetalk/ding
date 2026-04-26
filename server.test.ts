@@ -82,7 +82,10 @@ const pglite = (f: (sql: pg.Sql) => (t: Deno.TestContext) => Promise<void>) => a
   const port = 2000 + Math.floor(Math.random() * 8000);
   const listener = Deno.listen({ hostname: "127.0.0.1", port });
   const db = new PGlite({ extensions: { citext, hstore } });
-  const testSql = pg(`postgresql://postgres@127.0.0.1:${port}/postgres`, { fetch_types: true });
+  const testSql = pg(`postgresql://postgres@127.0.0.1:${port}/postgres`, {
+    fetch_types: true,
+    onnotice: (n) => n.severity !== "DEBUG" && console.log(n),
+  });
 
   (async () => {
     for await (const conn of listener) {
