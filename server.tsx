@@ -606,7 +606,11 @@ app.use("*", async (c, next) => {
   const r2Url = Deno.env.get("R2_PUBLIC_URL");
   if (!r2Url) throw new HTTPException(500, { message: "R2_PUBLIC_URL unset" });
   const res = await fetch(`${r2Url}/i/${seg}`);
-  if (!res.ok) throw new HTTPException((res.status === 404 ? 404 : 502) as 404 | 502);
+  if (!res.ok)
+    throw new HTTPException(
+      (res.status === 404 ? 404 : 502) as 404 | 502,
+      { message: res.status === 404 ? "Image not found." : `Image upstream failed (status ${res.status}).` },
+    );
   return new Response(res.body, {
     headers: {
       "Content-Type": res.headers.get("content-type") ?? "application/octet-stream",
@@ -619,7 +623,8 @@ const botRe = /bot|crawl|spider|slurp|bing|facebook|google|yandex|baidu|duck|sog
 
 app.use("*", async (c, next) => {
   const url = new URL(c.req.url), ua = c.req.header("User-Agent") || "";
-  if (url.searchParams.getAll("tag").length > 3) return c.text("Too many tags", 400);
+  if (url.searchParams.getAll("tag").length > 3)
+    throw new HTTPException(400, { message: "Too many tags. Use 3 or fewer." });
   if (url.search && botRe.test(ua)) return c.text("Forbidden", 403);
   const n = await getSignedCookie(c, cookieSecret, "name");
   if (n) c.set("name", n);
@@ -884,15 +889,43 @@ app.use("*", async (c, next) => {
 app.get("/robots.txt", (c) => c.text("User-agent: *\\nDisallow: /*?*\\nCrawl-delay: 1"));
 app.get("/sitemap.txt", (c) => c.text("https://ding.bar/"));
 
+const defaultErrCopy: Record<number, { msg: string; action: HtmlEscapedString | Promise<HtmlEscapedString> }> = {
+  400: {
+    msg: "That request didn't look right. Check the form and try again.",
+    action: <p><a href="/">home</a></p>,
+  },
+  401: {
+    msg: "You need to log in to do that.",
+    action: <p><a href="/u">log in</a></p>,
+  },
+  403: {
+    msg: "You don't have access to that.",
+    action: <p><a href="/">home</a></p>,
+  },
+  404: {
+    msg: "That page doesn't exist.",
+    action: <p><a href="/">home</a></p>,
+  },
+  429: {
+    msg: "Too many requests. Try again in a minute.",
+    action: <p><a href="/">home</a></p>,
+  },
+};
+const fallbackErr = {
+  msg: "Something broke on our end. Try again in a moment, or email support@ding.bar.",
+  action: <p><a href="/">home</a></p>,
+};
+
 app.onError((err, c) => {
   const h = host(c);
   if (err instanceof HTTPException) {
     if (!h) {
+      const copy = defaultErrCopy[err.status] ?? fallbackErr;
       c.status(err.status);
       return c.render(
         <section>
-          <p>{err.message || `Error ${err.status}.`}</p>
-          <p><a href="/">home</a></p>
+          <p>{err.message || copy.msg}</p>
+          {copy.action}
         </section>,
         { title: `error ${err.status}` },
       );
@@ -900,13 +933,13 @@ app.onError((err, c) => {
     return err.getResponse();
   }
   console.error(err);
-  const msg = "something broke. try again in a moment.";
-  if (h === "api") return c.json({ error: msg }, 500);
-  if (h === "rss") return c.text(msg, 500);
+  if (h === "api") return c.json({ error: fallbackErr.msg }, 500);
+  if (h === "rss") return c.text(fallbackErr.msg, 500);
   c.status(500);
   return c.render(
     <section>
-      <p>{msg}</p>
+      <p>{fallbackErr.msg}</p>
+      <p><a href="/">home</a></p>
     </section>,
     { title: "error" },
   );
@@ -1065,13 +1098,20 @@ app.post("/login", async (c) => {
   const [u] =
     await sql`select name, email, email_verified_at, (password = crypt(${password}, password)) as ok from usr where email=${email}`;
   if (!u) return c.redirect(`/signup?error=email_not_found&email=${encodeURIComponent(email)}`);
-  if (!u.ok) throw new HTTPException(401);
+  const next = c.req.query("next");
+  const nextQs = next ? `&next=${encodeURIComponent(next)}` : "";
+  if (!u.ok) return c.redirect(`/u?error=bad_login&email=${encodeURIComponent(email)}${nextQs}`);
+  let resendFailed = false;
   if (!u.email_verified_at && !(await getSignedCookie(c, cookieSecret, "name"))) {
-    sendVerify(u.email).catch((err) =>
-      console.error(`/login resend failed for ${u.email}:`, err?.response?.body || err)
-    );
+    try {
+      await sendVerify(u.email);
+    } catch (err) {
+      console.error(`/login resend failed for ${u.email}:`, (err as { response?: { body?: unknown } })?.response?.body || err);
+      resendFailed = true;
+    }
   }
   await setSignedCookie(c, "name", u.name, cookieSecret);
+  if (resendFailed) return c.redirect("/u?error=verify_resend_failed");
   return c.redirect(c.req.query("next")?.startsWith("/") ? c.req.query("next")! : "/u");
 });
 
@@ -1080,7 +1120,8 @@ app.post("/logout", (c) => (deleteCookie(c, "name"), ok(c)));
 
 app.get("/verify", async (c) => {
   const e = c.req.query("email"), t = c.req.query("token");
-  if (!e || !t || !(await validateEmailToken(t, e))) throw new HTTPException(400);
+  if (!e || !t || !(await validateEmailToken(t, e)))
+    throw new HTTPException(400, { message: "Verification link is invalid or expired. Request a new one from /forgot." });
   await sql`update usr set email_verified_at = now() where email_verified_at is null and email = ${e}`;
   return ok(c);
 });
@@ -1088,6 +1129,9 @@ app.get("/verify", async (c) => {
 app.get("/forgot", (c) =>
   c.render(
     <section>
+      {c.req.query("error") === "send_failed" && (
+        <p class="error">we couldn't send the reset email right now. try again, or email support@ding.bar.</p>
+      )}
       {c.req.query("sent") !== undefined
         ? (
           <>
@@ -1108,7 +1152,14 @@ app.get("/forgot", (c) =>
   ));
 app.post("/forgot", async (c) => {
   const { email } = await form(c), [u] = await sql`select email from usr where email = ${email}`;
-  if (u) await sendVerify(u.email).catch((err) => console.error(`/forgot email failed for ${u.email}:`, err));
+  if (u) {
+    try {
+      await sendVerify(u.email);
+    } catch (err) {
+      console.error(`/forgot email failed for ${u.email}:`, err);
+      return c.redirect("/forgot?error=send_failed");
+    }
+  }
   return c.redirect("/forgot?sent=1");
 });
 
@@ -1151,11 +1202,20 @@ app.post("/password", async (c) => {
 app.post("/invite", authed, async (c) => {
   const e = (await form(c)).email, n = Math.random().toString(36).slice(2);
   if ((await sql`select count(*) from usr where invited_by = ${c.get("name")!}`)[0].count >= 4)
-    throw new HTTPException(400);
+    throw new HTTPException(429, { message: "You've used all 4 invites. Email support@ding.bar for more." });
   const [u] = await sql`insert into usr (name, email, bio, invited_by) values (${n}, ${e}, '...', ${c.get(
     "name",
   )!}) on conflict do nothing returning email`;
-  if (u) await sendVerify(u.email).catch((err) => console.error(`/invite email failed for ${u.email}:`, err));
+  if (u) {
+    try {
+      await sendVerify(u.email);
+    } catch (err) {
+      console.error(`/invite email failed for ${u.email}:`, err);
+      throw new HTTPException(502, {
+        message: "Invite created, but the email failed to send. Try /invite again in a moment.",
+      });
+    }
+  }
   return ok(c);
 });
 
@@ -1268,12 +1328,21 @@ app.get("/u", async (c) => {
 
   if (!name) {
     const action = next ? `/login?next=${encodeURIComponent(next)}` : "/login";
+    const err = c.req.query("error");
+    const prefillEmail = c.req.query("email") ?? "";
+    const errMsg: Record<string, HtmlEscapedString | Promise<HtmlEscapedString>> = {
+      bad_login: <p class="error">wrong email or password — try again or <a href="/forgot">reset your password</a>.</p>,
+      verify_resend_failed: (
+        <p class="error">we couldn't resend your verification email. try again, or email support@ding.bar.</p>
+      ),
+    };
     return c.render(
       <section>
         <h2>login</h2>
+        {err && errMsg[err]}
         <form method="post" action={action}>
           <label>
-            email <input type="email" name="email" required />
+            email <input type="email" name="email" value={prefillEmail} required />
           </label>
           <label>
             password <input type="password" name="password" required />
@@ -1296,8 +1365,14 @@ app.get("/u", async (c) => {
   `;
   if (!usr) return notFound();
   if (!usr.password) return c.redirect("/password");
+  const accountErr = c.req.query("error");
   return c.render(
     <>
+      {accountErr === "verify_resend_failed" && (
+        <section>
+          <p class="error">we couldn't resend your verification email. try again later, or email support@ding.bar.</p>
+        </section>
+      )}
       <section>{User(usr as unknown as Usr, name)}</section>
       <section>
         <form method="post" action="/u">
@@ -1503,7 +1578,7 @@ const createOrg = async (orgName: string, creatorName: string, subId: string) =>
 
 app.get("/o/success", authed, async (c) => {
   const sessionId = c.req.query("session_id");
-  if (!sessionId) throw new HTTPException(400);
+  if (!sessionId) throw new HTTPException(400, { message: "Missing checkout session. Start a new org from /o/new." });
 
   const session = await stripe.checkout.sessions.retrieve(sessionId);
   if (session.status !== "complete") throw new HTTPException(400, { message: "Payment not complete" });
@@ -1746,8 +1821,9 @@ app.post("/c/:p?", async (c) => {
     [prm] = await sql<
       Prm[]
     >`select tags, orgs, usrs, created_by, parent_cid as prm_parent, domains from com where cid = ${pid}`;
-    if (!prm || !prm.orgs.every((t) => usr.orgs_r.includes(t)) || (prm.usrs.length && !prm.usrs.includes(n) && prm.created_by !== n))
-      throw new HTTPException(403);
+    if (!prm) throw new HTTPException(404, { message: "Parent post not found." });
+    if (!prm.orgs.every((t) => usr.orgs_r.includes(t)) || (prm.usrs.length && !prm.usrs.includes(n) && prm.created_by !== n))
+      throw new HTTPException(403, { message: "You don't have access to that thread." });
     tags = prm.tags;
     orgs = prm.orgs;
     usrs = prm.usrs;

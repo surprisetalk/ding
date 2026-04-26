@@ -170,12 +170,19 @@ Deno.test(
       assertEquals(res.status, 200);
     });
 
-    await t.step("POST /login wrong credentials", async () => {
+    await t.step("POST /login wrong credentials redirects to /u with error and prefilled email", async () => {
       const body = new FormData();
       body.append("email", "john@example.com");
       body.append("password", "wrong!");
       const res = await app.request("/login", { method: "post", body });
-      assertEquals(res.status, 401);
+      assertEquals(res.status, 302);
+      const location = res.headers.get("location")!;
+      assertEquals(location, `/u?error=bad_login&email=${encodeURIComponent("john@example.com")}`);
+      const followed = await app.request(location);
+      assertEquals(followed.status, 200);
+      const html = await followed.text();
+      assertStringIncludes(html, "wrong email or password");
+      assertStringIncludes(html, `value="john@example.com"`);
     });
 
     await t.step("POST /login unknown email redirects to /signup with prefilled email", async () => {
