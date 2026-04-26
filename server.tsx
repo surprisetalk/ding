@@ -513,7 +513,7 @@ const Post = (c: Com, user?: string, p?: URLSearchParams) => {
     <>
       <a href={linkUrl ?? `/c/${c.cid}`} class="thumb" {...(linkUrl ? { target: "_blank", rel: "noopener" } : {})}>
         <img
-          src={c.thumb ? `/img?url=${encodeURIComponent(c.thumb)}` : defaultThumb}
+          src={c.thumb ? (c.thumb.startsWith("https://i.ding.bar/") ? c.thumb : `/img?url=${encodeURIComponent(c.thumb)}`) : defaultThumb}
           loading="lazy"
           onerror={`this.onerror=null;this.src='${defaultThumb}'`}
         />
@@ -912,7 +912,7 @@ app.get("/", async (c) => {
                   value={decodeLabels(cur)}
                   placeholder="#tag *org @user"
                 />
-                <label class="upload-btn">add images<input type="file" multiple accept="image/jpeg,image/png,image/gif,image/webp,application/pdf" data-upload hidden /></label>
+                <label class="upload-btn">insert images<input type="file" multiple accept="image/jpeg,image/png,image/gif,image/webp,application/pdf" data-upload hidden /></label>
                 <button type="submit">create post</button>
               </div>
             </form>
