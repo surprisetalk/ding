@@ -4,7 +4,7 @@
   --bg: oklch(99.8% 0.002 85);
   --fg: oklch(20% 0.01 60);
   --muted: color-mix(in oklch, var(--fg) 62%, var(--bg));
-  --border: color-mix(in oklch, var(--fg) 22%, var(--bg));
+  --border: color-mix(in oklch, var(--fg) 42%, var(--bg));
   --rule: color-mix(in oklch, var(--fg) 12%, var(--bg));
   --accent-bg: color-mix(in oklch, var(--fg) 5%, var(--bg));
   --code-bg: color-mix(in oklch, var(--fg) 7%, var(--bg));
