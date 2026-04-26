@@ -993,8 +993,8 @@ app.get("/", async (c) => {
                   value={decodeLabels(cur)}
                   placeholder="#tag *org @user"
                 />
-                <label class="upload-btn">insert images<input type="file" multiple accept="image/jpeg,image/png,image/gif,image/webp,application/pdf" data-upload hidden /></label>
                 <button type="button" class="upload-btn" data-draw>draw</button>
+                <label class="upload-btn">insert images<input type="file" multiple accept="image/jpeg,image/png,image/gif,image/webp,application/pdf" data-upload hidden /></label>
                 <button type="submit">create post</button>
               </div>
             </form>
@@ -2043,8 +2043,8 @@ app.get("/c/:cid?", async (c) => {
             <form method="post" action={`/c/${post.cid}`} class="upload-form">
               <textarea aria-label="reply" required name="body" rows={6}></textarea>
               <div class="post-form__row">
-                <label class="upload-btn">add images<input type="file" multiple accept="image/jpeg,image/png,image/gif,image/webp,application/pdf" data-upload hidden /></label>
                 <button type="button" class="upload-btn" data-draw>draw</button>
+                <label class="upload-btn">insert images<input type="file" multiple accept="image/jpeg,image/png,image/gif,image/webp,application/pdf" data-upload hidden /></label>
                 <button type="submit">reply</button>
               </div>
             </form>
