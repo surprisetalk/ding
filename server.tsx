@@ -1285,7 +1285,7 @@ app.post("/signup", async (c) => {
   const [existingByName] = await sql`select name from usr where name = ${name}`;
   if (existingByName) return c.redirect(`/signup?error=name_taken${qs}`);
 
-  const usr = { name, email, bio: "coming soon", password: null, invited_by: name };
+  const usr = { name, email, bio: `hello, my name is @${name}`, password: null, invited_by: name };
   const [newUsr] = await sql`
     with usr_ as (insert into usr ${sql(usr)} on conflict do nothing returning *)
     select name, email from usr_
