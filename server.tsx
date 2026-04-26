@@ -336,8 +336,8 @@ const ActiveFilters = ({ params, basePath = "/c" }: { params: URLSearchParams; b
 
 const reactName = (k: string) => k === "▲" ? "upvote" : k === "▼" ? "downvote" : `react ${k}`;
 
-const Reactions = (c: Com | ChildCom) =>
-  Object.entries({ "▲": 0, "▼": 0, ...(c.reaction_counts || {}) }).map(([k, v]) => (
+const Reactions = (c: Com | ChildCom, votesOnly?: boolean) =>
+  Object.entries({ "▲": 0, "▼": 0, ...(votesOnly ? {} : c.reaction_counts || {}) }).map(([k, v]) => (
     <form
       key={k}
       method="post"
@@ -458,7 +458,7 @@ export const formatBody = (body: string): BodyNode[] => {
   return out;
 };
 
-const Meta = (c: Com | ChildCom, user?: string, labelHref?: (l: string) => string) => {
+const Meta = (c: Com | ChildCom, user?: string, labelHref?: (l: string) => string, votesOnly?: boolean) => {
   const lh = labelHref ?? ((l: string) => `/c?${PFX[l[0]] ?? "tag"}=${l.slice(1)}`);
   return (
     <div class="meta">
@@ -467,7 +467,7 @@ const Meta = (c: Com | ChildCom, user?: string, labelHref?: (l: string) => strin
         <span class="reaction">
           <a href={`/c/${c.cid}`}>» {c.comments || 0}</a>
         </span>
-        {Reactions(c)}
+        {Reactions(c, votesOnly)}
       </span>
       {c.parent_cid && <a href={`/c/${c.parent_cid}`}>parent</a>}
       <a href={`/u/${c.created_by}`}>@{c.created_by || "unknown"}</a>
@@ -522,7 +522,7 @@ const Post = (c: Com, user?: string, p?: URLSearchParams) => {
         <a href={`/c/${c.cid}`}>
           {c.body ? c.body.trim().split("\n")[0] : "[deleted by author]"}
         </a>
-        {Meta(c, user, labelHref)}
+        {Meta(c, user, labelHref, true)}
       </div>
     </>
   );
