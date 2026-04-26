@@ -641,14 +641,7 @@ app.use("*", async (c, next) => {
         return isImg ? '<a href="'+u+'">'+u+'</a><br><img src="'+u+'" loading="lazy" class="pre-img">' : '<a href="'+u+'">'+u+'</a>';
       });
     });
-    document.querySelectorAll("input[type=file][data-upload]").forEach(inp => {
-      const form = inp.closest("form");
-      const ta = form && form.querySelector("textarea[name=body]");
-      const btn = form && form.querySelector("button[type=submit]");
-      if (!ta || !btn) return;
-      let pending = 0;
-      btn.dataset.label = btn.textContent;
-      const setPending = (d) => { pending += d; btn.disabled = pending > 0; btn.textContent = pending > 0 ? "uploading…" : btn.dataset.label; };
+    (() => {
       const alpha = "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789";
       const randId = () => { const a = new Uint8Array(8); crypto.getRandomValues(a); let s = ""; for (const b of a) s += alpha[b % alpha.length]; return s; };
       const extOf = (name, type) => {
@@ -661,7 +654,7 @@ app.use("*", async (c, next) => {
         if (type === "application/pdf") return "pdf";
         return "";
       };
-      const insertAtCursor = (s) => {
+      const insertAt = (ta, s) => {
         const start = ta.selectionStart ?? ta.value.length, end = ta.selectionEnd ?? start;
         const pre = ta.value.slice(0, start), post = ta.value.slice(end);
         const sep = pre && !pre.endsWith("\\n") ? "\\n" : "";
@@ -670,34 +663,61 @@ app.use("*", async (c, next) => {
         ta.setSelectionRange(pos, pos);
         ta.focus();
       };
-      inp.onchange = async () => {
-        for (const file of inp.files) {
+      const pendings = new WeakMap();
+      const setPending = (form, d) => {
+        const btn = form && form.querySelector("button[type=submit]");
+        if (!btn) return;
+        if (!btn.dataset.label) btn.dataset.label = btn.textContent;
+        const c = (pendings.get(form) || 0) + d;
+        pendings.set(form, c);
+        btn.disabled = c > 0;
+        btn.textContent = c > 0 ? "uploading…" : btn.dataset.label;
+      };
+      const upload = async (ta, files) => {
+        const form = ta.closest("form");
+        for (const file of files) {
           const ext = extOf(file.name, file.type);
           if (!ext) { alert("unsupported file: " + file.name); continue; }
           if (file.size > ${MAX_UPLOAD_BYTES}) { alert("too big (max 25 MB): " + file.name); continue; }
           const id = randId() + "." + ext;
           const url = "https://i.ding.bar/" + id;
-          insertAtCursor(url);
-          setPending(1);
+          insertAt(ta, url);
+          setPending(form, 1);
           const fd = new FormData();
           fd.append("id", id);
           fd.append("file", file);
           try {
             const r = await fetch("/i", { method: "POST", credentials: "same-origin", body: fd });
-            if (!r.ok) {
-              ta.value = ta.value.replace(url, "").replace(/\\n{3,}/g, "\\n\\n");
-              alert("upload failed (" + r.status + "): " + file.name);
-            }
+            if (!r.ok) { ta.value = ta.value.replace(url, "").replace(/\\n{3,}/g, "\\n\\n"); alert("upload failed (" + r.status + "): " + file.name); }
           } catch (e) {
             ta.value = ta.value.replace(url, "").replace(/\\n{3,}/g, "\\n\\n");
             alert("upload error: " + file.name + " — " + e);
-          } finally {
-            setPending(-1);
-          }
+          } finally { setPending(form, -1); }
         }
-        inp.value = "";
       };
-    });
+      document.querySelectorAll("input[type=file][data-upload]").forEach(inp => {
+        const ta = inp.closest("form")?.querySelector("textarea[name=body]");
+        if (!ta) return;
+        inp.onchange = async () => { await upload(ta, inp.files); inp.value = ""; };
+      });
+      const allTas = () => document.querySelectorAll("textarea[name=body]");
+      if (!allTas().length) return;
+      let lastTa = null;
+      document.addEventListener("focusin", e => { if (e.target.tagName === "TEXTAREA" && e.target.name === "body") lastTa = e.target; });
+      const targetTa = () => lastTa || allTas()[0];
+      const hasFiles = (e) => e.dataTransfer && [...(e.dataTransfer.types || [])].includes("Files");
+      let depth = 0;
+      document.addEventListener("dragenter", e => { if (!hasFiles(e)) return; depth++; document.body.classList.add("dropping"); });
+      document.addEventListener("dragleave", e => { if (!hasFiles(e)) return; depth = Math.max(0, depth - 1); if (!depth) document.body.classList.remove("dropping"); });
+      document.addEventListener("dragover", e => { if (hasFiles(e)) e.preventDefault(); });
+      document.addEventListener("drop", e => {
+        if (!hasFiles(e)) return;
+        e.preventDefault();
+        depth = 0; document.body.classList.remove("dropping");
+        const ta = targetTa();
+        if (ta && e.dataTransfer.files.length) upload(ta, e.dataTransfer.files);
+      });
+    })();
     const fr = document.getElementById("search-form");
     if (fr) fr.onsubmit = e => {
       e.preventDefault();
@@ -892,7 +912,7 @@ app.get("/", async (c) => {
                   value={decodeLabels(cur)}
                   placeholder="#tag *org @user"
                 />
-                <input type="file" multiple accept="image/jpeg,image/png,image/gif,image/webp,application/pdf" data-upload aria-label="attach" />
+                <label class="upload-btn">add images<input type="file" multiple accept="image/jpeg,image/png,image/gif,image/webp,application/pdf" data-upload hidden /></label>
                 <button type="submit">create post</button>
               </div>
             </form>
@@ -1941,7 +1961,7 @@ app.get("/c/:cid?", async (c) => {
             <form method="post" action={`/c/${post.cid}`} class="upload-form">
               <textarea aria-label="reply" required name="body" rows={6}></textarea>
               <div class="post-form__row">
-                <input type="file" multiple accept="image/jpeg,image/png,image/gif,image/webp,application/pdf" data-upload aria-label="attach" />
+                <label class="upload-btn">add images<input type="file" multiple accept="image/jpeg,image/png,image/gif,image/webp,application/pdf" data-upload hidden /></label>
                 <button type="submit">reply</button>
               </div>
             </form>
