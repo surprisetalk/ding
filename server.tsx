@@ -1080,7 +1080,7 @@ app.get("/", async (c) => {
                   attach<input
                     type="file"
                     multiple
-                    accept="image/jpeg,image/png,image/gif,image/webp,application/pdf"
+                    accept="image/*,.pdf"
                     data-upload
                     hidden
                   />
@@ -2209,7 +2209,7 @@ app.get("/c/:cid?", async (c) => {
                   attach<input
                     type="file"
                     multiple
-                    accept="image/jpeg,image/png,image/gif,image/webp,application/pdf"
+                    accept="image/*,.pdf"
                     data-upload
                     hidden
                   />
