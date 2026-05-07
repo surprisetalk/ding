@@ -110,7 +110,7 @@ group by d.domain;
 
 create or replace function refresh_score(cids int[]) returns void language sql as $$
   with
-  targets as (select cid, tags, domains, links, created_by from com where cid = any(cids)),
+  targets as (select cid, tags, domains, links, created_by, created_at from com where cid = any(cids)),
   tag_agg as (
     select t.cid,
       coalesce(max(st.ups_received), 0)::int as tag_ups,
@@ -138,6 +138,17 @@ create or replace function refresh_score(cids int[]) returns void language sql a
       coalesce(su.ups_received, 0) as ups_received,
       coalesce(su.downs_received, 0) as downs_received
     from targets t left join stat_usr su on su.uid = t.created_by
+  ),
+  burst_agg as (
+    select t.cid, count(c2.cid)::int as burst
+    from targets t left join com c2
+      on c2.created_by = t.created_by
+     and c2.cid <> t.cid
+     and c2.parent_cid is null
+     and char_length(c2.body) > 0
+     and c2.created_at >= t.created_at - interval '1 hour'
+     and c2.created_at <= t.created_at + interval '1 hour'
+    group by t.cid
   )
   update com c set
     author_ups = ua.ups_received,
@@ -160,11 +171,12 @@ create or replace function refresh_score(cids int[]) returns void language sql a
       + interval '1 hour'    * ln(da.domain_ups + 1)
       - interval '3 hours'   * ln(da.domain_downs + 1)
       - interval '30 minutes'* ln(ua.posts_count + 1)
+      - interval '4 hours'   * ln(greatest(0, ba.burst - 2) + 1)
       - interval '2 hours'   * ln(ra.repost_ups + 1)
       + interval '45 minutes'* (case when c.thumb is not null and c.thumb not like 'https://www.google.com/s2/favicons%' then 1 else 0 end)
-  from tag_agg ta, dom_agg da, repost_agg ra, usr_agg ua
+  from tag_agg ta, dom_agg da, repost_agg ra, usr_agg ua, burst_agg ba
   where c.cid = any(cids)
-    and ta.cid = c.cid and da.cid = c.cid and ra.cid = c.cid and ua.cid = c.cid;
+    and ta.cid = c.cid and da.cid = c.cid and ra.cid = c.cid and ua.cid = c.cid and ba.cid = c.cid;
 $$;
 
 

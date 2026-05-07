@@ -1274,6 +1274,17 @@ Deno.test(
       assertEquals((await score(h)) < (await score(l)), true);
     });
 
+    await t.step("burst-poster (5+ posts in 1h) ranks below calm poster", async () => {
+      for (const u of ["bursty", "calm"]) await mkUser(u);
+      // bursty floods 5 posts within minutes
+      for (let i = 0; i < 5; i++)
+        await sql`insert into com (created_by, body, tags) values ('bursty', ${"flood " + i}, '{burst1}')`;
+      await sql`select refresh_score(array(select cid from com where created_by = 'bursty'))`;
+      const b = await mkPost("bursty", "buried?", ["burst2"]);
+      const c = await mkPost("calm", "single", ["burst2"]);
+      assertEquals((await score(b)) < (await score(c)), true);
+    });
+
     await t.step("repost (linking to upvoted post) ranks below original content", async () => {
       for (const u of ["origauth", "repostr", "upvtr1", "upvtr2", "upvtr3"]) await mkUser(u);
       const original = await mkPost("origauth", "original content", ["nn"]);
