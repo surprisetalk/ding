@@ -1,4 +1,14 @@
-import { botInit, extractArticle, extractImageUrl, firstLink, getAnsweredCids, getJson, reply } from "../bots.ts";
+import {
+  botInit,
+  extractArticle,
+  extractImageUrl,
+  firstLink,
+  getAnsweredCids,
+  getJson,
+  isFresh,
+  MAX_AGE_MS,
+  reply,
+} from "../bots.ts";
 
 const MAX_CHARS = 3500;
 const MIN_TEXT_LEN = 400;
@@ -34,9 +44,9 @@ const smartTruncate = (text: string, max: number) => {
 
 async function main() {
   const { apiUrl, auth, botUsername } = botInit("READER");
-  const answered = await getAnsweredCids(auth, botUsername, apiUrl);
+  const answered = await getAnsweredCids(auth, botUsername, apiUrl, { since: Date.now() - MAX_AGE_MS });
 
-  type PostLite = { cid: number; body: string; created_by: string };
+  type PostLite = { cid: number; body: string; created_by: string; created_at: string };
   const [top, comments] = await Promise.all([
     getJson<PostLite[]>(`/c?sort=new&limit=50`, auth, apiUrl).catch(() => [] as PostLite[]),
     getJson<PostLite[]>(`/c?sort=new&comments=1&limit=50`, auth, apiUrl).catch(() => [] as PostLite[]),
@@ -46,7 +56,7 @@ async function main() {
     .filter((p) => !seen.has(p.cid) && !!seen.add(p.cid));
 
   const candidates = posts.filter((p) => {
-    if (p.created_by === botUsername || answered.has(p.cid)) return false;
+    if (p.created_by === botUsername || answered.has(p.cid) || !isFresh(p.created_at)) return false;
     const url = firstLink(p.body);
     if (!url) return false;
     try {

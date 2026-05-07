@@ -1,4 +1,4 @@
-import { botInit, getAnsweredCids, reply, resolveImageUrl } from "../bots.ts";
+import { botInit, getAnsweredCids, isFresh, MAX_AGE_MS, reply, resolveImageUrl } from "../bots.ts";
 import sharp from "sharp";
 
 const { apiUrl, auth, botUsername } = botInit("DITHER");
@@ -58,16 +58,24 @@ async function toBraille(imageBytes: Uint8Array): Promise<string> {
 }
 
 async function main() {
-  const answeredCids = await getAnsweredCids(auth, botUsername, apiUrl);
-  console.log(`Already answered ${answeredCids.size} posts`);
+  const answeredCids = await getAnsweredCids(auth, botUsername, apiUrl, { since: Date.now() - MAX_AGE_MS });
+  console.log(`Already answered ${answeredCids.size} posts in last 4h`);
 
   const res = await fetch(`${apiUrl}/c?mention=${botUsername}&comments=1&sort=new&limit=20`, {
     headers: { Accept: "application/json", Authorization: `Basic ${auth}` },
   });
   if (!res.ok) throw new Error(`Failed to fetch mentions: HTTP ${res.status}`);
-  const posts: { cid: number; parent_cid: number | null; body: string; created_by: string }[] = await res.json();
+  const posts: {
+    cid: number;
+    parent_cid: number | null;
+    body: string;
+    created_by: string;
+    created_at: string;
+  }[] = await res.json();
 
-  const unanswered = posts.filter((p) => p.created_by !== botUsername && !answeredCids.has(p.cid));
+  const unanswered = posts.filter((p) =>
+    p.created_by !== botUsername && !answeredCids.has(p.cid) && isFresh(p.created_at)
+  );
   console.log(`Found ${unanswered.length} unanswered mentions`);
 
   for (const post of unanswered.slice(0, 5)) {

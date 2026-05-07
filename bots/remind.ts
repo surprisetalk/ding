@@ -1,7 +1,7 @@
 // Responds to posts tagged #remind with time-delayed reminders.
 // Usage: tag a post #remind with body like "2h check the deploy".
 
-import { botInit, getJson, reply } from "../bots.ts";
+import { botInit, getJson, isFresh, reply } from "../bots.ts";
 
 const { apiUrl, auth, botUsername } = botInit("REMIND");
 
@@ -61,6 +61,10 @@ async function main() {
     const elapsed = now - new Date(post.created_at).getTime();
 
     if (!hasAck) {
+      if (!isFresh(post.created_at)) {
+        console.log(`Skipping ack for stale cid=${post.cid} (>4h old)`);
+        continue;
+      }
       console.log(`Acking cid=${post.cid}: ${parsed.label}`);
       if (await reply(auth, apiUrl, post.cid, `Got it, I'll remind you in ${parsed.label}.`)) acks++;
       continue;

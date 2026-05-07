@@ -1,5 +1,5 @@
-import { assertEquals } from "@std/assert";
-import { isLinkPost } from "./bots.ts";
+import { assertEquals, assertRejects, assertThrows } from "@std/assert";
+import { extractPubDate, isFresh, isLinkPost, MAX_AGE_MS, paginate } from "./bots.ts";
 
 Deno.test("isLinkPost: bare url → true", () => {
   assertEquals(isLinkPost("https://example.com/foo"), true);
@@ -26,4 +26,137 @@ Deno.test("isLinkPost: empty body → false", () => {
 
 Deno.test("isLinkPost: multiple urls, minimal text → true", () => {
   assertEquals(isLinkPost("https://a.com https://b.com see"), true);
+});
+
+// ---- isFresh ----
+
+Deno.test("isFresh: now → true", () => {
+  assertEquals(isFresh(Date.now()), true);
+});
+
+Deno.test("isFresh: 1h ago → true", () => {
+  assertEquals(isFresh(Date.now() - 60 * 60_000), true);
+});
+
+Deno.test("isFresh: just past MAX_AGE_MS → false", () => {
+  assertEquals(isFresh(Date.now() - MAX_AGE_MS - 1000), false);
+});
+
+Deno.test("isFresh: invalid timestamp → throws", () => {
+  assertThrows(() => isFresh("not-a-date"), Error, "invalid timestamp");
+});
+
+Deno.test("isFresh: future timestamp → true (clock skew tolerant)", () => {
+  assertEquals(isFresh(Date.now() + 60_000), true);
+});
+
+// ---- extractPubDate ----
+
+Deno.test("extractPubDate: pubDate", () => {
+  assertEquals(
+    extractPubDate("<item><pubDate>Wed, 01 Jan 2026 00:00:00 GMT</pubDate></item>"),
+    "Wed, 01 Jan 2026 00:00:00 GMT",
+  );
+});
+
+Deno.test("extractPubDate: published (atom)", () => {
+  assertEquals(
+    extractPubDate("<entry><published>2026-01-01T00:00:00Z</published></entry>"),
+    "2026-01-01T00:00:00Z",
+  );
+});
+
+Deno.test("extractPubDate: dc:date", () => {
+  assertEquals(extractPubDate("<item><dc:date>2026-01-01</dc:date></item>"), "2026-01-01");
+});
+
+Deno.test("extractPubDate: missing → null", () => {
+  assertEquals(extractPubDate("<item><title>x</title></item>"), null);
+});
+
+// ---- paginate ----
+
+const mockFetch = (pages: unknown[][]) => {
+  const original = globalThis.fetch;
+  let i = 0;
+  globalThis.fetch = (() =>
+    Promise.resolve(
+      new Response(JSON.stringify(pages[i++] ?? []), {
+        status: 200,
+        headers: { "content-type": "application/json" },
+      }),
+    )) as typeof fetch;
+  return () => (globalThis.fetch = original);
+};
+
+Deno.test("paginate: stops on short page", async () => {
+  const restore = mockFetch([
+    Array(100).fill({ x: 1 }),
+    Array(50).fill({ x: 2 }),
+  ]);
+  try {
+    const out = await paginate<{ x: number }>(
+      (p) => `/c?p=${p}`,
+      "auth",
+      "http://x",
+      { pageSize: 100 },
+    );
+    assertEquals(out.length, 150);
+  } finally {
+    restore();
+  }
+});
+
+Deno.test("paginate: stops on empty page", async () => {
+  const restore = mockFetch([
+    Array(100).fill({ x: 1 }),
+    [],
+  ]);
+  try {
+    const out = await paginate<{ x: number }>(
+      (p) => `/c?p=${p}`,
+      "auth",
+      "http://x",
+      { pageSize: 100 },
+    );
+    assertEquals(out.length, 100);
+  } finally {
+    restore();
+  }
+});
+
+Deno.test("paginate: until() short-circuits mid-page", async () => {
+  const restore = mockFetch([
+    [{ id: 5 }, { id: 4 }, { id: 3 }, { id: 2 }, { id: 1 }],
+  ]);
+  try {
+    const out = await paginate<{ id: number }>(
+      (p) => `/c?p=${p}`,
+      "auth",
+      "http://x",
+      { pageSize: 5, until: (it) => it.id < 3 },
+    );
+    assertEquals(out.map((x) => x.id), [5, 4, 3]);
+  } finally {
+    restore();
+  }
+});
+
+Deno.test("paginate: throws past maxPages", async () => {
+  const restore = mockFetch(Array(10).fill(Array(100).fill({ x: 1 })));
+  try {
+    await assertRejects(
+      () =>
+        paginate(
+          (p) => `/c?p=${p}`,
+          "auth",
+          "http://x",
+          { pageSize: 100, maxPages: 3 },
+        ),
+      Error,
+      "maxPages=3",
+    );
+  } finally {
+    restore();
+  }
 });

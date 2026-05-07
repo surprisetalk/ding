@@ -1,4 +1,4 @@
-import { botInit, claude, getAnsweredCids, getJson, reply } from "../bots.ts";
+import { botInit, claude, getAnsweredCids, getJson, isFresh, MAX_AGE_MS, reply } from "../bots.ts";
 
 const SYSTEM = "Summarize in 1 short sentence (max 200 chars). " +
   "No preamble, no 'TLDR:' prefix, no sign-off, no hashtags, no quotes.";
@@ -25,9 +25,9 @@ const cleanOutput = (s: string) => {
 
 async function main() {
   const { apiUrl, auth, botUsername } = botInit("TLDR");
-  const answered = await getAnsweredCids(auth, botUsername, apiUrl);
+  const answered = await getAnsweredCids(auth, botUsername, apiUrl, { since: Date.now() - MAX_AGE_MS });
 
-  type PostLite = { cid: number; body: string; created_by: string };
+  type PostLite = { cid: number; body: string; created_by: string; created_at: string };
   const [top, comments] = await Promise.all([
     getJson<PostLite[]>(`/c?sort=new&limit=50`, auth, apiUrl).catch(() => [] as PostLite[]),
     getJson<PostLite[]>(`/c?sort=new&comments=1&limit=50`, auth, apiUrl).catch(() => [] as PostLite[]),
@@ -37,7 +37,7 @@ async function main() {
     .filter((p) => !seen.has(p.cid) && !!seen.add(p.cid));
 
   const candidates = posts.filter((p) =>
-    p.created_by !== botUsername && !answered.has(p.cid) &&
+    p.created_by !== botUsername && !answered.has(p.cid) && isFresh(p.created_at) &&
     p.body.replace(/https?:\S+/g, "").trim().length >= MIN_BODY_LEN &&
     !isQuoteHeavy(p.body)
   );

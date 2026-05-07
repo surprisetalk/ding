@@ -1,4 +1,4 @@
-import { botInit, claude, getAnsweredCids, getJson, reply, resolveTextContent } from "../bots.ts";
+import { botInit, claude, getAnsweredCids, getJson, isFresh, MAX_AGE_MS, reply, resolveTextContent } from "../bots.ts";
 
 const SYSTEM = "Rewrite the user's text using only the thousand most common English words, " +
   "in the style of xkcd's Up Goer Five / Thing Explainer. " +
@@ -11,13 +11,13 @@ const MAX_REPLIES_PER_RUN = 5;
 
 async function main() {
   const { apiUrl, auth, botUsername } = botInit("UPGOERFIVE");
-  const answered = await getAnsweredCids(auth, botUsername, apiUrl);
+  const answered = await getAnsweredCids(auth, botUsername, apiUrl, { since: Date.now() - MAX_AGE_MS });
 
   const posts = await getJson<
-    { cid: number; parent_cid: number | null; body: string; created_by: string }[]
+    { cid: number; parent_cid: number | null; body: string; created_by: string; created_at: string }[]
   >(`/c?mention=${botUsername}&comments=1&sort=new&limit=20`, auth, apiUrl);
 
-  const unanswered = posts.filter((p) => p.created_by !== botUsername && !answered.has(p.cid));
+  const unanswered = posts.filter((p) => p.created_by !== botUsername && !answered.has(p.cid) && isFresh(p.created_at));
   console.log(`Found ${unanswered.length} unanswered mentions`);
 
   for (const p of unanswered.slice(0, MAX_REPLIES_PER_RUN)) {

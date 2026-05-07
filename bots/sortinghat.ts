@@ -1,4 +1,4 @@
-import { botInit, getAnsweredCids, getJson, reply } from "../bots.ts";
+import { botInit, getAnsweredCids, getJson, isFresh, MAX_AGE_MS, reply } from "../bots.ts";
 
 const { apiUrl, auth, botUsername } = botInit("SORTINGHAT");
 
@@ -10,13 +10,15 @@ const HOUSES = [
 ];
 
 async function main() {
-  const answeredCids = await getAnsweredCids(auth, botUsername, apiUrl);
-  const posts = await getJson<{ cid: number; created_by: string }[]>(
+  const answeredCids = await getAnsweredCids(auth, botUsername, apiUrl, { since: Date.now() - MAX_AGE_MS });
+  const posts = await getJson<{ cid: number; created_by: string; created_at: string }[]>(
     `/c?tag=sortinghat&sort=new&limit=20`,
     auth,
     apiUrl,
   );
-  const unanswered = posts.filter((p) => p.created_by !== botUsername && !answeredCids.has(p.cid));
+  const unanswered = posts.filter((p) =>
+    p.created_by !== botUsername && !answeredCids.has(p.cid) && isFresh(p.created_at)
+  );
 
   for (const p of unanswered) {
     const house = HOUSES[p.cid % HOUSES.length];

@@ -18,6 +18,17 @@ export function botInit(envPrefix: string) {
   return { apiUrl, auth, botUsername };
 }
 
+// ---- Freshness cutoff ----
+// Hard 4h limit on candidate content age. Defence-in-depth so a broken dedup
+// helper can only re-process up to 4h of content before the cutoff stops it.
+
+export const MAX_AGE_MS = 4 * 60 * 60 * 1000;
+export const isFresh = (ts: string | number | Date, max = MAX_AGE_MS) => {
+  const t = new Date(ts).getTime();
+  if (!Number.isFinite(t)) throw new Error(`isFresh: invalid timestamp ${ts}`);
+  return Date.now() - t < max;
+};
+
 // ---- HTTP helpers ----
 
 export async function getJson<T = unknown>(path: string, auth: string, apiUrl: string): Promise<T> {
@@ -26,6 +37,27 @@ export async function getJson<T = unknown>(path: string, auth: string, apiUrl: s
   });
   if (!res.ok) throw new Error(`GET ${path} → ${res.status}: ${await res.text()}`);
   return res.json();
+}
+
+export async function paginate<T>(
+  pathFor: (p: number) => string,
+  auth: string,
+  apiUrl: string,
+  opts: { until?: (item: T) => boolean; pageSize?: number; maxPages?: number } = {},
+): Promise<T[]> {
+  const pageSize = opts.pageSize ?? 100;
+  const maxPages = opts.maxPages ?? 50;
+  const out: T[] = [];
+  for (let p = 0; p < maxPages; p++) {
+    const items = await getJson<T[]>(pathFor(p), auth, apiUrl);
+    if (!items.length) return out;
+    for (const it of items) {
+      if (opts.until?.(it)) return out;
+      out.push(it);
+    }
+    if (items.length < pageSize) return out;
+  }
+  throw new Error(`paginate: hit maxPages=${maxPages} for ${pathFor(0)}`);
 }
 
 export async function postForm(
@@ -51,11 +83,17 @@ export const slugTag = (s: string) => s.toLowerCase().replace(/[^a-z0-9]+/g, "_"
 
 // ---- API helpers ----
 
-export async function getAnsweredCids(auth: string, botUsername: string, apiUrl: string): Promise<Set<number>> {
-  const replies = await getJson<{ parent_cid: number }[]>(
-    `/c?usr=${botUsername}&comments=1&limit=100`,
+export async function getAnsweredCids(
+  auth: string,
+  botUsername: string,
+  apiUrl: string,
+  opts: { since?: number } = {},
+): Promise<Set<number>> {
+  const replies = await paginate<{ parent_cid: number; created_at: string }>(
+    (p) => `/c?usr=${botUsername}&comments=1&sort=new&limit=100&p=${p}`,
     auth,
     apiUrl,
+    opts.since !== undefined ? { until: (r) => new Date(r.created_at).getTime() < opts.since! } : {},
   );
   return new Set(replies.map((r) => r.parent_cid));
 }
@@ -76,18 +114,31 @@ export async function getLastPostAge(
   return Date.now() - new Date(posts[0].created_at).getTime();
 }
 
-export async function getPostedUrls(auth: string, apiUrl: string, botUsername: string): Promise<Set<string>> {
-  const posts = await getJson<{ body: string }[]>(
-    `/c?usr=${botUsername}&limit=100`,
+export async function getPostedUrls(
+  auth: string,
+  apiUrl: string,
+  botUsername: string,
+  opts: { since?: number } = {},
+): Promise<Set<string>> {
+  const posts = await paginate<{ body: string; created_at: string }>(
+    (p) => `/c?usr=${botUsername}&sort=new&limit=100&p=${p}`,
     auth,
     apiUrl,
-  ).catch(() => []);
+    opts.since !== undefined ? { until: (r) => new Date(r.created_at).getTime() < opts.since! } : {},
+  );
   const urls = new Set<string>();
   for (const p of posts) for (const u of p.body.match(/https?:\/\/[^\s]+/g) || []) urls.add(u);
   return urls;
 }
 
 export type FeedItem = { link: string; commentsUrl?: string; body: string; tags: string };
+
+const PUBDATE_RE = /<(?:pubDate|published|updated|dc:date)>([\s\S]*?)<\/(?:pubDate|published|updated|dc:date)>/i;
+
+export const extractPubDate = (itemXml: string): string | null => {
+  const m = itemXml.match(PUBDATE_RE);
+  return m ? m[1].trim() : null;
+};
 
 export async function rssBot(opts: {
   envPrefix: string;
@@ -97,13 +148,31 @@ export async function rssBot(opts: {
   max?: number;
 }) {
   const { apiUrl, auth, botUsername } = botInit(opts.envPrefix);
+  // Dedup spans full bot history (paginated). Feed-item 4h cutoff is the safety net
+  // against runaway re-posts, but a stale URL can still resurface with a fresh pubDate
+  // (HN front-page churn, etc.) so dedup must be wider than the cutoff.
   const posted = await getPostedUrls(auth, apiUrl, botUsername);
   console.log(`Found ${posted.size} previously posted URLs`);
   const res = await fetch(opts.feedUrl);
   if (!res.ok) throw new Error(`Feed fetch failed: HTTP ${res.status}`);
   const xml = await res.text();
-  const items = (xml.match(opts.itemRe ?? /<item>[\s\S]*?<\/item>/g) || [])
-    .map(opts.parseItem).filter((x): x is FeedItem => !!x);
+  const rawItems = xml.match(opts.itemRe ?? /<item>[\s\S]*?<\/item>/g) || [];
+  let stale = 0, undated = 0;
+  const items: FeedItem[] = [];
+  for (const itemXml of rawItems) {
+    const pubDate = extractPubDate(itemXml);
+    if (!pubDate) {
+      undated++;
+      continue;
+    }
+    if (!isFresh(pubDate)) {
+      stale++;
+      continue;
+    }
+    const parsed = opts.parseItem(itemXml);
+    if (parsed) items.push(parsed);
+  }
+  if (stale || undated) console.log(`Filtered ${stale} stale, ${undated} undated items`);
   const todo = items.filter((i) => !posted.has(i.link) && !(i.commentsUrl && posted.has(i.commentsUrl)));
   console.log(`Found ${todo.length} new items to post`);
   for (const it of todo.slice(0, opts.max ?? 10)) {
@@ -355,10 +424,11 @@ export type Candidate = {
   parent_cid: number | null;
   body: string;
   created_by: string;
+  created_at: string;
   c_comments: number;
 };
 
-// Fetches top-level posts + comments, filters bot's own posts + already-answered,
+// Fetches top-level posts + comments, filters bot's own posts + already-answered + stale,
 // ranks: prefer posts with fewer replies (spreads bots across threads), random tiebreak.
 export async function pickCandidates(
   auth: string,
@@ -384,6 +454,7 @@ export async function pickCandidates(
     .filter((p) =>
       p.created_by !== botUsername &&
       !answered.has(p.cid) &&
+      isFresh(p.created_at) &&
       p.body.length > 1 &&
       p.body.replace(/https?:\S+/g, "").trim().length >= minBodyLen &&
       (!excludeLinkPosts || !isLinkPost(p.body))

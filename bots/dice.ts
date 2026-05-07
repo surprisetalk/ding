@@ -1,6 +1,6 @@
 // Dice roller bot — responds to posts tagged #dice. Supports NdS, NdSkhX, coin, pick X Y Z.
 
-import { botInit, getAnsweredCids, getJson, reply } from "../bots.ts";
+import { botInit, getAnsweredCids, getJson, isFresh, MAX_AGE_MS, reply } from "../bots.ts";
 
 const { apiUrl, auth, botUsername } = botInit("DICE");
 
@@ -45,15 +45,15 @@ function parseAndRoll(body: string): string | null {
 }
 
 async function main() {
-  const answered = await getAnsweredCids(auth, botUsername, apiUrl);
-  console.log(`Already answered ${answered.size} posts`);
+  const answered = await getAnsweredCids(auth, botUsername, apiUrl, { since: Date.now() - MAX_AGE_MS });
+  console.log(`Already answered ${answered.size} posts in last 4h`);
 
-  const posts = await getJson<{ cid: number; created_by: string; body: string }[]>(
+  const posts = await getJson<{ cid: number; created_by: string; body: string; created_at: string }[]>(
     `/c?tag=dice&sort=new&limit=20`,
     auth,
     apiUrl,
   );
-  const todo = posts.filter((p) => p.created_by !== botUsername && !answered.has(p.cid));
+  const todo = posts.filter((p) => p.created_by !== botUsername && !answered.has(p.cid) && isFresh(p.created_at));
   console.log(`Found ${todo.length} unanswered dice posts`);
 
   for (const post of todo.slice(0, 10)) {

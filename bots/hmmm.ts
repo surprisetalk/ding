@@ -1,6 +1,6 @@
 // Reddit r/hmmm image bot — posts images from the r/hmmm subreddit.
 
-import { botInit, getPostedUrls, post } from "../bots.ts";
+import { botInit, getPostedUrls, isFresh, post } from "../bots.ts";
 
 const { apiUrl, auth, botUsername } = botInit("HMMM");
 
@@ -30,6 +30,7 @@ interface RedditItem {
   link: string;
   imageUrl: string | null;
   author: string;
+  published: number;
 }
 
 function extractImageUrl(html: string): string | null {
@@ -55,7 +56,10 @@ async function fetchRedditFeed(): Promise<RedditItem[]> {
     const content = entry.match(/<content[^>]*>([\s\S]*?)<\/content>/)?.[1] || "";
     const imageUrl = extractImageUrl(content);
     const author = entry.match(/<author>[\s\S]*?<name>([^<]+)<\/name>/)?.[1]?.trim() || "";
-    if (title && link) items.push({ title, link, imageUrl, author });
+    const pubStr = entry.match(/<published>([^<]+)<\/published>/)?.[1] ??
+      entry.match(/<updated>([^<]+)<\/updated>/)?.[1] ?? "";
+    const published = pubStr ? +new Date(pubStr) : 0;
+    if (title && link) items.push({ title, link, imageUrl, author, published });
   }
   return items;
 }
@@ -67,7 +71,9 @@ async function main() {
   const items = await fetchRedditFeed();
   console.log(`Fetched ${items.length} items from r/hmmm`);
 
-  const newItems = items.filter((i) => !postedUrls.has(i.link));
+  const newItems = items
+    .filter((i) => i.published > 0 && isFresh(i.published))
+    .filter((i) => !postedUrls.has(i.link));
   console.log(`Found ${newItems.length} new items to post`);
 
   for (const item of newItems.slice(0, 1)) {

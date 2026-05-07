@@ -47,6 +47,7 @@ const SAMPLE = 12;
 const CONCURRENCY = 4;
 const MAX_POSTS = 3;
 const FETCH_TIMEOUT_MS = 15_000;
+const FRESHNESS_MS = 24 * 60 * 60 * 1000;
 const UA = "ding-bot/1.0 (+https://ding.bar; contact: taylor@ding.bar)";
 
 const { apiUrl, auth, botUsername } = botInit("REDDIT");
@@ -145,8 +146,10 @@ await Promise.all(
 );
 console.log(`Fetched ${newestPerSub.length} newest entries`);
 
+const cutoff = Date.now() - FRESHNESS_MS;
 const posted = await getPostedUrls(auth, apiUrl, botUsername);
 const todo = newestPerSub
+  .filter((i) => i.published > cutoff)
   .filter((i) => !posted.has(i.link))
   .sort((a, b) => b.published - a.published);
 console.log(`${todo.length} new items after dedup; posting up to ${MAX_POSTS}`);

@@ -1,4 +1,4 @@
-import { botInit, getAnsweredCids, getJson, reply } from "../bots.ts";
+import { botInit, getAnsweredCids, getJson, isFresh, MAX_AGE_MS, reply } from "../bots.ts";
 
 const { apiUrl, auth, botUsername } = botInit("8BALL");
 
@@ -26,15 +26,15 @@ const ANSWERS = [
 ];
 
 async function main() {
-  const answered = await getAnsweredCids(auth, botUsername, apiUrl);
-  console.log(`Already answered ${answered.size} questions`);
+  const answered = await getAnsweredCids(auth, botUsername, apiUrl, { since: Date.now() - MAX_AGE_MS });
+  console.log(`Already answered ${answered.size} questions in last 4h`);
 
-  const posts = await getJson<{ cid: number; created_by: string }[]>(
+  const posts = await getJson<{ cid: number; created_by: string; created_at: string }[]>(
     `/c?tag=8ball&sort=new&limit=20`,
     auth,
     apiUrl,
   );
-  const todo = posts.filter((p) => p.created_by !== botUsername && !answered.has(p.cid));
+  const todo = posts.filter((p) => p.created_by !== botUsername && !answered.has(p.cid) && isFresh(p.created_at));
   console.log(`Found ${todo.length} unanswered questions`);
 
   for (const post of todo.slice(0, 10)) {

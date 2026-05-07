@@ -10,7 +10,7 @@ const CONCURRENCY = 20;
 const FETCH_TIMEOUT_MS = 8_000;
 const MAX_POSTS = 3;
 const MAX_PROBES = 10;
-const FRESHNESS_MS = 72 * 60 * 60 * 1000;
+const FRESHNESS_MS = 24 * 60 * 60 * 1000;
 const UA = "Mozilla/5.0 ding-youtube-bot";
 
 const { apiUrl, auth, botUsername } = botInit("YOUTUBE");

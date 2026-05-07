@@ -1,4 +1,4 @@
-import { botInit, getJson, post } from "../bots.ts";
+import { botInit, extractPubDate, getJson, isFresh, post } from "../bots.ts";
 
 const { auth, botUsername, apiUrl } = botInit("ARXIV");
 const CATEGORIES = ["cs"];
@@ -13,7 +13,17 @@ async function fetchArxivFeed(category: string): Promise<ArxivItem[]> {
   const res = await fetch(`https://rss.arxiv.org/rss/${category}`);
   const xml = await res.text();
   const items: ArxivItem[] = [];
+  let stale = 0, undated = 0;
   for (const itemXml of xml.match(/<item>[\s\S]*?<\/item>/g) || []) {
+    const pubDate = extractPubDate(itemXml);
+    if (!pubDate) {
+      undated++;
+      continue;
+    }
+    if (!isFresh(pubDate)) {
+      stale++;
+      continue;
+    }
     const title = (itemXml.match(/<title>([\s\S]*?)<\/title>/)?.[1] || "")
       .replace(/\s*\(arXiv:[^)]+\)\s*$/, "")
       .replace(/&lt;/g, "<").replace(/&gt;/g, ">").replace(/&amp;/g, "&")
@@ -26,6 +36,7 @@ async function fetchArxivFeed(category: string): Promise<ArxivItem[]> {
     const categories = [...new Set(cats.length ? cats : [category])];
     if (title && link) items.push({ title, link, categories });
   }
+  if (stale || undated) console.log(`Filtered ${stale} stale, ${undated} undated arxiv items`);
   return items;
 }
 

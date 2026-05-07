@@ -1,4 +1,4 @@
-import { botInit, getAnsweredCids, getJson, reply, resolveTextContent } from "../bots.ts";
+import { botInit, getAnsweredCids, getJson, isFresh, MAX_AGE_MS, reply, resolveTextContent } from "../bots.ts";
 
 const { apiUrl, auth, botUsername } = botInit("COWSAY");
 
@@ -89,14 +89,18 @@ function cowsay(text: string, animalKey: string): string {
 const ANIMAL_KEYS = ["cow", "tux", "stegosaurus", "dragon"];
 
 async function main() {
-  const answeredCids = await getAnsweredCids(auth, botUsername, apiUrl);
-  const posts = await getJson<{ cid: number; parent_cid: number | null; created_by: string; body: string }[]>(
+  const answeredCids = await getAnsweredCids(auth, botUsername, apiUrl, { since: Date.now() - MAX_AGE_MS });
+  const posts = await getJson<
+    { cid: number; parent_cid: number | null; created_by: string; body: string; created_at: string }[]
+  >(
     `/c?tag=cowsay&sort=new&limit=20`,
     auth,
     apiUrl,
   );
 
-  const unanswered = posts.filter((p) => p.created_by !== botUsername && !answeredCids.has(p.cid));
+  const unanswered = posts.filter((p) =>
+    p.created_by !== botUsername && !answeredCids.has(p.cid) && isFresh(p.created_at)
+  );
   let replies = 0;
 
   for (const p of unanswered) {

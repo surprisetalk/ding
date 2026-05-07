@@ -1,4 +1,4 @@
-import { botInit, extractImageUrl, getAnsweredCids, getJson, reply } from "../bots.ts";
+import { botInit, extractImageUrl, getAnsweredCids, getJson, isFresh, MAX_AGE_MS, reply } from "../bots.ts";
 
 const { apiUrl, auth, botUsername } = botInit("SUMMONER");
 
@@ -31,9 +31,11 @@ async function main() {
   }
 
   const posts = await getJson<Post[]>(`/c?sort=new&limit=50`, auth, apiUrl);
-  const answered = await getAnsweredCids(auth, botUsername, apiUrl);
+  const answered = await getAnsweredCids(auth, botUsername, apiUrl, { since: Date.now() - MAX_AGE_MS });
 
-  const eligible = posts.filter((p) => p.created_by !== botUsername && !answered.has(p.cid) && !hasBotMention(p));
+  const eligible = posts.filter((p) =>
+    p.created_by !== botUsername && !answered.has(p.cid) && isFresh(p.created_at) && !hasBotMention(p)
+  );
 
   const imagePosts = eligible.filter((p) => extractImageUrl(p.body));
   const textPosts = eligible.filter((p) => !extractImageUrl(p.body));
