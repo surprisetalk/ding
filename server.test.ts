@@ -174,7 +174,7 @@ const pglite = (f: (sql: pg.Sql) => (t: Deno.TestContext) => Promise<void>) => a
   const db = new PGlite({ extensions: { citext, hstore } });
   const testSql = pg(`postgresql://postgres@127.0.0.1:${port}/postgres`, {
     fetch_types: true,
-    onnotice: (n) => n.severity !== "DEBUG" && console.log(n),
+    onnotice: (n: { severity: string }) => n.severity !== "DEBUG" && console.log(n),
   });
 
   (async () => {
