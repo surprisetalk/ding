@@ -694,7 +694,10 @@ const Post = (c: Com, user?: string, p?: URLSearchParams) => {
 
 //// HONO //////////////////////////////////////////////////////////////////////
 
-const cookieSecret = Deno.env.get("COOKIE_SECRET") ?? Math.random().toString();
+const cookieSecret = Deno.env.get("COOKIE_SECRET") ?? (() => {
+  throw new Error("COOKIE_SECRET required (a stable value, or sessions die on every restart)");
+})();
+const cookieOpts = { maxAge: 60 * 60 * 24 * 365, path: "/", httpOnly: true, sameSite: "Lax" as const };
 const notFound = () => {
   throw new HTTPException(404, { message: "Not found." });
 };
@@ -751,7 +754,7 @@ const authed = some(
       const [usr] =
         await sql`select name, (password = crypt(${p}, password)) as ok from usr where email=${u} or name=${u}`;
       if (!usr?.ok) return false;
-      await setSignedCookie(c, "name", usr.name, cookieSecret);
+      await setSignedCookie(c, "name", usr.name, cookieSecret, cookieOpts);
       c.set("name", usr.name);
       return true;
     },
@@ -1379,7 +1382,7 @@ app.post("/login", async (c) => {
       resendFailed = true;
     }
   }
-  await setSignedCookie(c, "name", u.name, cookieSecret);
+  await setSignedCookie(c, "name", u.name, cookieSecret, cookieOpts);
   if (resendFailed) return c.redirect("/u?error=verify_resend_failed");
   return c.redirect(
     c.req.query("next")?.startsWith("/") ? c.req.query("next")! : "/u",
@@ -1482,7 +1485,7 @@ app.post("/password", async (c) => {
   }
   const [u] =
     await sql`update usr set password = crypt(${password}, gen_salt('bf', 8)), email_verified_at = coalesce(email_verified_at, now()) where email = ${email} returning name`;
-  if (u) await setSignedCookie(c, "name", u.name, cookieSecret);
+  if (u) await setSignedCookie(c, "name", u.name, cookieSecret, cookieOpts);
   return ok(c);
 });
 
