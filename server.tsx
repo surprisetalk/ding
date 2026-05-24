@@ -305,11 +305,23 @@ const resendErrBody = (err: unknown) => {
   return r?.body ?? err;
 };
 
+const VERIFY_COOLDOWN = `5 minutes`;
+
 const sendVerify = async (email: string) => {
   if (!Deno.env.get(`RESEND_API_KEY`)) {
     throw new Error(
       `RESEND_API_KEY missing — cannot send verification email to ${email}`,
     );
+  }
+  const claimed = await sql`
+    update usr set verify_sent_at = now()
+    where email = ${email}
+      and (verify_sent_at is null or verify_sent_at < now() - ${VERIFY_COOLDOWN}::interval)
+    returning email
+  `;
+  if (claimed.length === 0) {
+    console.log(`sendVerify skipped (cooldown) for ${email}`);
+    return;
   }
   const token = await emailToken(new Date(), email);
   const { error } = await resend.emails.send({
@@ -2045,7 +2057,7 @@ app.post("/o/:name/invite", authed, async (c) => {
         .get(
           "name",
         )!}, ${[org.name]}, ${[org.name]})`;
-      sendVerify(email);
+      await sendVerify(email);
     }
   } catch (err) {
     console.error(

@@ -10,6 +10,7 @@ create table usr (
   password text check (password <> ''),
   bio text not null check (length(bio) between 1 and 4096),
   email_verified_at timestamptz,
+  verify_sent_at timestamptz,
   invited_by citext not null references usr (name),
   orgs_r text[] not null default '{}',  -- orgs user can read
   orgs_w text[] not null default '{}',  -- orgs user can write

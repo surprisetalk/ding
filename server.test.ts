@@ -475,6 +475,40 @@ Deno.test(
       );
     });
 
+    await t.step(
+      "sendVerify cooldown: two POSTs to /signup/resend within 5min trigger only one Resend send",
+      async () => {
+        const body = new FormData();
+        body.append("name", "cooldown_user");
+        body.append("email", "cooldown@example.com");
+        await app.request("/signup", { method: "POST", body }); // creates + first send
+
+        const before = sentEmails.filter((m) => m.to === "cooldown@example.com").length;
+        const r1 = new FormData();
+        r1.append("email", "cooldown@example.com");
+        const res1 = await app.request("/signup/resend", { method: "POST", body: r1 });
+        assertEquals(res1.status, 302);
+        assertEquals(res1.headers.get("location"), "/signup?resent");
+        const r2 = new FormData();
+        r2.append("email", "cooldown@example.com");
+        const res2 = await app.request("/signup/resend", { method: "POST", body: r2 });
+        assertEquals(res2.status, 302);
+        assertEquals(res2.headers.get("location"), "/signup?resent");
+
+        const after = sentEmails.filter((m) => m.to === "cooldown@example.com").length;
+        assertEquals(after - before, 0); // both extra calls suppressed by cooldown
+
+        // Backdating verify_sent_at past the cooldown allows another send.
+        await sql`update usr set verify_sent_at = now() - interval '10 minutes' where email = 'cooldown@example.com'`;
+        const r3 = new FormData();
+        r3.append("email", "cooldown@example.com");
+        const res3 = await app.request("/signup/resend", { method: "POST", body: r3 });
+        assertEquals(res3.status, 302);
+        const afterReset = sentEmails.filter((m) => m.to === "cooldown@example.com").length;
+        assertEquals(afterReset - after, 1);
+      },
+    );
+
     await t.step("GET /signup renders error message for ?error=name_taken", async () => {
       const res = await app.request("/signup?error=name_taken&email=x%40y.com");
       const html = await res.text();
