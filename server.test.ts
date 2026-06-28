@@ -3000,7 +3000,7 @@ Deno.test(
         await sql`select count(*)::int as n from com where hash is null and char_length(body) > 1 and orgs = '{}' and usrs = '{}'`;
       assertEquals(pending > 0, true); // the seed has public posts to sign
 
-      const { signed } = await backfill(sql);
+      const { signed } = await backfill(sql, { concurrency: 1 }); // PGlite is single-connection
       assertEquals(signed > 0, true);
 
       // a backfilled post now carries the signed columns + a matching dht msg row
@@ -3014,7 +3014,7 @@ Deno.test(
       assertEquals(c.author_id, await idOf(d.pubkey)); // author_id == sha256(author pubkey)
 
       // resumable / idempotent: re-running signs nothing new
-      const { signed: again } = await backfill(sql);
+      const { signed: again } = await backfill(sql, { concurrency: 1 });
       assertEquals(again, 0);
     });
   }),
