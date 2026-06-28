@@ -582,7 +582,7 @@ a.thumb {
 .check {
   color: var(--muted);
   font-weight: bold;
-  margin-right: -0.35em;
+  margin-right: -0.4em;
 }
 a .check {
   margin-right: 0;
