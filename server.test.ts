@@ -400,6 +400,11 @@ Deno.test(
       assertEquals(res.status, 200);
     });
 
+    await t.step("GET / and /c tolerate malformed p/limit (no 500)", async () => {
+      for (const u of ["/?p=notanumber", "/?p=-5", "/c?p=notanumber", "/c?p=-9", "/c?limit=garbage", "/c?limit=-3"])
+        assertEquals((await app.request(u)).status, 200, u);
+    });
+
     await t.step("GET /verify invalid token", async () => {
       const res = await app.request("/verify?email=john@example.com&token=123:invalid_token");
       assertEquals(res.status, 400); // Invalid or expired token

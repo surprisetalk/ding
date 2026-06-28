@@ -1695,7 +1695,7 @@ app.onError((err, c) => {
 
 app.get("/", async (c) => {
   const q = c.req.query(),
-    p = +(q.p || 0),
+    p = Math.max(0, Math.trunc(+(q.p || 0)) || 0),
     s = q.sort || "hot",
     name = c.get("name");
   const [viewer] = name ? await sql`select orgs_r, orgs_w from usr where name = ${name}` : [{ orgs_r: [], orgs_w: [] }];
@@ -2888,8 +2888,8 @@ app.get("/c/:cid?", async (c) => {
     cid = c.req.param("cid"),
     n = c.get("name") ?? (await basicAuthName(c)) ?? undefined,
     s = q.sort || "hot",
-    p = +(q.p || 0),
-    lim = Math.min(+(q.limit || 25), 100);
+    p = Math.max(0, Math.trunc(+(q.p || 0)) || 0),
+    lim = Math.min(100, Math.max(1, Math.trunc(+(q.limit || 25)) || 25));
   const [viewer] = n ? await sql`select orgs_r from usr where name = ${n}` : [{ orgs_r: [] }];
   const rT = viewer?.orgs_r || [],
     tags = c.req.queries("tag") || [],
