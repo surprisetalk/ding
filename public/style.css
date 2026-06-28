@@ -582,7 +582,10 @@ a.thumb {
 .check {
   color: var(--muted);
   font-weight: bold;
-  margin-right: 0.2em;
+  margin-right: -0.35em;
+}
+a .check {
+  margin-right: 0;
 }
 
 .author-foreign {
