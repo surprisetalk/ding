@@ -1326,6 +1326,7 @@ app.use("*", async (c, next) => {
   if (url.search && botRe.test(ua)) return c.text("Forbidden", 403);
   const n = await getSignedCookie(c, cookieSecret, "name");
   if (n) c.set("name", n);
+  else if (n === false) deleteCookie(c, "name", { path: "/" }); // stale cookie (e.g. COOKIE_SECRET rotated) → clear it
   let unread = 0;
   if (n && !host(c)) {
     const [row] = await sql`
@@ -3277,7 +3278,21 @@ app.use("/*", serveStatic({ root: "./public" }));
 if (Deno.env.get("DENO_DEPLOYMENT_ID")) {
   Deno.cron("ding-checkmark", "0 * * * *", async () => {
     try {
-      await runCheckmark();
+      // Ingest marks straight into the dht via ingestMsg — NOT an HTTP POST back to our own
+      // db.ding.bar (a Deno Deploy isolate fetching its own custom domain redirect-loops).
+      await runCheckmark({
+        sql,
+        sink: async (rows) => {
+          for (const row of rows) {
+            try {
+              await ingestMsg(row, { verify: true });
+            } catch (e) {
+              if (!(e instanceof DhtReject)) throw e;
+              console.error(`checkmark: mark dropped — ${e.message}`);
+            }
+          }
+        },
+      });
     } catch (e) {
       console.error(`checkmark cron failed: ${e instanceof Error ? e.message : e}`);
     }

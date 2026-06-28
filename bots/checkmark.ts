@@ -11,6 +11,7 @@
 import pg from "postgres";
 import { buildMark, idOf, importPriv, type Row, signRow } from "../dht.ts";
 
+type Sql = ReturnType<typeof pg>;
 const YEAR = 365 * 86400, DAY = 86400;
 
 // link -> {host, handle}. Accepts bare "taylor.town" or "github.com/you".
@@ -46,12 +47,12 @@ export const githubDingId = async (handle: string, id: string): Promise<boolean>
 
 // One cron run: issue any missing email/dns/github marks. Throws on misconfig/unreachable
 // node (no Deno.exit — safe to call from Deno.cron or `deno run`). Only holder of DING_ORG_SK.
-export const runCheckmark = async () => {
+export const runCheckmark = async (opts: { sql?: Sql; sink?: (rows: Row[]) => Promise<void> } = {}) => {
   const DB = Deno.env.get("DING_DB") ?? "https://db.ding.bar";
   const ORG_PK = Deno.env.get("DING_ORG_PK"), ORG_SK = Deno.env.get("DING_ORG_SK");
   if (!ORG_PK || !ORG_SK) throw new Error("DING_ORG_PK and DING_ORG_SK (the org's private JWK) are required");
   const orgPriv = await importPriv(JSON.parse(ORG_SK));
-  const sql = pg(Deno.env.get("DATABASE_URL")?.replace(/flycast/, "internal")!, { database: "ding" });
+  const sql = opts.sql ?? pg(Deno.env.get("DATABASE_URL")?.replace(/flycast/, "internal")!, { database: "ding" });
   try {
     const now = Math.floor(Date.now() / 1000);
     // current org-issued marks still comfortably fresh, keyed "<subject>:<claim>", so we don't
@@ -95,14 +96,19 @@ export const runCheckmark = async () => {
     }
 
     if (!rows.length) return console.log("checkmark: nothing to mark");
-    const res = await fetch(DB, {
-      method: "POST",
-      headers: { "content-type": "application/x-ndjson" },
-      body: rows.map((r) => JSON.stringify(r)).join("\n"),
-    });
-    console.log(`checkmark: posted ${rows.length} marks → ${res.status} ${await res.text()}`);
+    if (opts.sink) { // in-server cron: ingest straight into the dht (no HTTP loopback to our own domain)
+      await opts.sink(rows);
+      console.log(`checkmark: ingested ${rows.length} marks`);
+    } else {
+      const res = await fetch(DB, {
+        method: "POST",
+        headers: { "content-type": "application/x-ndjson" },
+        body: rows.map((r) => JSON.stringify(r)).join("\n"),
+      });
+      console.log(`checkmark: posted ${rows.length} marks → ${res.status} ${await res.text()}`);
+    }
   } finally {
-    await sql.end();
+    if (!opts.sql) await sql.end(); // only close a connection we opened ourselves
   }
 };
 
