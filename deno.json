@@ -1,16 +1,18 @@
 {
   "unstable": [
-    "raw-imports"
+    "raw-imports",
+    "cron"
   ],
   "fmt": {
     "lineWidth": 120,
     "useBraces": "preferNone",
-    "singleBodyPosition": "maintain"
+    "singleBodyPosition": "maintain",
+    "exclude": [".impeccable"]
   },
   "compilerOptions": {
     "jsx": "precompile",
     "jsxImportSource": "jsr:@hono/hono/jsx",
-    "lib": ["deno.ns", "deno.window", "dom", "dom.iterable", "esnext"]
+    "lib": ["deno.ns", "deno.window", "deno.unstable", "dom", "dom.iterable", "esnext"]
   },
   "imports": {
     "@electric-sql/pglite": "npm:@electric-sql/pglite@0.3.15",
@@ -25,7 +27,12 @@
     "resend": "npm:resend@^6.12.2"
   },
   "tasks": {
-    "deploy": "deno run -A jsr:@deno/deployctl deploy --prod --project=dong server.tsx"
+    "deploy": "deno run -A jsr:@deno/deployctl deploy --prod --project=dong server.tsx",
+    "ding": "deno run -A ding.ts",
+    "node": "deno serve -A node.tsx",
+    "checkmark": "deno run -A bots/checkmark.ts",
+    "backfill": "deno run -A backfill.ts",
+    "test": "deno test -A"
   },
   "deploy": {
     "project": "95835fd2-7685-4cb3-851e-ea50c53f0128",

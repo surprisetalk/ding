@@ -1,2 +1,3 @@
 /.vim
 .env
+.DS_Store

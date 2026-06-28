@@ -9,7 +9,7 @@ import { logger } from "@hono/hono/logger";
 import { basicAuth } from "@hono/hono/basic-auth";
 import { html, raw } from "@hono/hono/html";
 import { deleteCookie, getSignedCookie, setSignedCookie } from "@hono/hono/cookie";
-import { serveStatic } from "@hono/hono/deno";
+import { serveStatic, upgradeWebSocket } from "@hono/hono/deno";
 import type { HtmlEscapedString } from "@hono/hono/utils/html";
 import pg from "postgres";
 import { Resend } from "resend";
@@ -17,6 +17,30 @@ export const resend = new Resend(Deno.env.get("RESEND_API_KEY") ?? "");
 import Stripe from "stripe";
 import { uploadToR2 } from "./bots.ts";
 export const r2 = { uploadToR2 };
+import { runCheckmark } from "./bots/checkmark.ts";
+import {
+  buildMsg,
+  DhtReject,
+  exportJwk,
+  genKey,
+  hex,
+  idOf,
+  importPriv,
+  type Kind,
+  KINDS,
+  type Labels,
+  parseLabels,
+  PFX,
+  pubHexOf,
+  type Row,
+  signRow,
+  unwrapSecret,
+  verifyBytes,
+  verifyRow,
+  wrapSecret,
+} from "./dht.ts";
+export { parseLabels };
+export type { Labels };
 
 declare module "@hono/hono" {
   interface ContextRenderer {
@@ -71,6 +95,9 @@ export type Com = {
   cid: number;
   parent_cid: number | null;
   created_by: string;
+  author_id?: string | null;
+  hash?: string | null;
+  checked?: boolean;
   tags: string[];
   orgs: string[];
   usrs: string[];
@@ -157,38 +184,9 @@ const resolveThumbnail = async (url: string) => {
 };
 
 //// LABEL PARSING /////////////////////////////////////////////////////////////
+// parseLabels / Labels / PFX live in dht.ts (shared with the CLI); re-exported above.
 
-export type Labels = {
-  tag: string[];
-  org: string[];
-  usr: string[];
-  www: string[];
-  text: string;
-};
-
-const PFX: Record<string, keyof Labels> = {
-  "#": "tag",
-  "*": "org",
-  "@": "usr",
-  "~": "www",
-};
 const SYM: Record<string, string> = { tag: "#", org: "*", usr: "@", www: "~" };
-
-export const parseLabels = (input: string): Labels => {
-  const labels: Labels = { tag: [], org: [], usr: [], www: [], text: "" };
-  input
-    .split(/\s+/)
-    .filter(Boolean)
-    .forEach((t) => {
-      const k = PFX[t[0]];
-      if (k) {
-        (labels[k] as string[]).push(
-          k === "usr" ? t.slice(1) : t.slice(1).toLowerCase(),
-        );
-      } else { labels.text = labels.text ? labels.text + " " + t : t; }
-    });
-  return labels;
-};
 
 export const encodeLabels = (l: Labels) => {
   const p = new URLSearchParams();
@@ -291,6 +289,358 @@ export let sql: Sql = pg(
   { database: "ding" },
 );
 export const setSql = (s: Sql) => (sql = s);
+
+//// DHT ////////////////////////////////////////////////////////////////////////
+
+const KEY_WRAP_SECRET = Deno.env.get("KEY_WRAP_SECRET") ?? (() => {
+  throw new Error("KEY_WRAP_SECRET required (stable; custodial private keys are encrypted under it)");
+})();
+
+// The default trust root: marks signed by this pubkey render a verified ✓. Optional —
+// without it, no checkmarks show (the network still works). The matching secret key
+// lives ONLY on the checkmark cron, never here.
+const DING_ORG_PK = Deno.env.get("DING_ORG_PK") ?? null;
+
+const custodialSigner = async (
+  seckey_enc: Uint8Array,
+  pubkey: string,
+): Promise<{ priv: CryptoKey; pub: string }> => ({
+  priv: await importPriv(JSON.parse(await unwrapSecret(seckey_enc, KEY_WRAP_SECRET))),
+  pub: pubkey,
+});
+
+// Mint-on-demand custodial keypair for a local user; returns a signer. The mint is
+// atomic (`where pubkey is null`) so concurrent first-posts can't fork an identity.
+// usr.id (= sha256 pubkey) is maintained here so private @recipient ids resolve to names.
+const ensureKey = async (name: string): Promise<{ priv: CryptoKey; pub: string }> => {
+  const [u] = await sql`select pubkey, seckey_enc, id from usr where name = ${name}`;
+  if (u?.pubkey && u?.seckey_enc) {
+    if (!u.id) await sql`update usr set id = ${await idOf(u.pubkey)} where name = ${name}`;
+    return custodialSigner(u.seckey_enc, u.pubkey);
+  }
+  const kp = await genKey();
+  const pub = await pubHexOf(kp);
+  const enc = await wrapSecret(JSON.stringify(await exportJwk(kp)), KEY_WRAP_SECRET);
+  const [claimed] = await sql`update usr set pubkey = ${pub}, seckey_enc = ${enc}, id = ${await idOf(
+    pub,
+  )} where name = ${name} and pubkey is null returning pubkey`;
+  if (claimed) return { priv: kp.privateKey, pub };
+  const [now] = await sql`select pubkey, seckey_enc from usr where name = ${name}`;
+  if (!now?.seckey_enc) {
+    throw new HTTPException(409, {
+      message: `@${name} is self-custody (server holds no key). Post with the ding CLI instead.`,
+    });
+  }
+  return custodialSigner(now.seckey_enc, now.pubkey);
+};
+
+// Store a signed row in the dht log and project it: msg -> com; flag -> the target's
+// distinct-flagger count. dht is the source of truth, com the rebuildable projection —
+// so the log insert + projection share ONE transaction (a partial failure rolls back
+// the dht row, so replay re-ingests cleanly). on-conflict-do-nothing makes a genuine
+// replay a no-op. PUBLIC posts only: msg rows scoped to *org or @usr are rejected so
+// private bodies never enter the log.
+export const ingestMsg = async (
+  row: Row,
+  opts: { verify?: boolean; parentCid?: number | null; gate?: (pubkey: string) => void; comTags?: string[] } = {},
+): Promise<{ cid: number | null; isNew: boolean }> => {
+  if (opts.verify) {
+    try {
+      await verifyRow(row);
+      if (row.ts > Math.floor(Date.now() / 1000) + 3600) {
+        throw new DhtReject(
+          `row ${String(row.k).slice(0, 8)}…: ts ${row.ts} is more than 1h in the future — clock skew or forgery.`,
+        );
+      }
+    } catch (e) {
+      throw e instanceof DhtReject ? e : new DhtReject(e instanceof Error ? e.message : String(e));
+    }
+  }
+  opts.gate?.(row.pubkey); // post-verify policy hook (rate-limit); throws DhtReject to drop the row
+  const { k, kind, pubkey, ts, sig, ...payload } = row;
+  const tags = (payload.tags as string[]) ?? [];
+  const orgs = (payload.orgs as string[]) ?? [];
+  const usrs = (payload.usrs as string[]) ?? [];
+  const target = (payload.target as string) ?? (payload.subject as string) ?? null;
+  if (kind === "msg") {
+    // Private *org / @recipients are ids (names aren't key-bound, so couldn't be auth-gated).
+    if (orgs.some((o) => !/^[0-9a-f]{64}$/.test(o)))
+      throw new DhtReject(`row ${String(k).slice(0, 8)}…: *org recipients must be 64-hex ids, not names. refusing.`);
+    if (usrs.some((u) => !/^[0-9a-f]{64}$/.test(u))) {
+      throw new DhtReject(
+        `row ${String(k).slice(0, 8)}…: private @recipients must be 64-hex ids, not names. refusing.`,
+      );
+    }
+  }
+  if (kind === "mark") {
+    // exp/v must be well-typed or the feed's `(val->'mark'->>'exp')::bigint` cast would throw.
+    const m = payload.mark as { v?: unknown; exp?: unknown } | undefined;
+    if (typeof payload.subject !== "string" || !m || typeof m.v !== "string" || !Number.isSafeInteger(m.exp))
+      throw new DhtReject(`row ${String(k).slice(0, 8)}…: mark needs {subject, mark:{v:string, exp:int}}. refusing.`);
+  }
+
+  // Derivations (incl. the network thumbnail fetch) happen OUTSIDE the transaction.
+  const body = kind === "msg" ? (payload.body as string) ?? "" : "";
+  const author = kind === "msg" ? (await sql`select name from usr where pubkey = ${pubkey}`)[0] : null;
+  // dht.usrs stays id-scoped (for auth-gated delivery); com.usrs resolves to local names
+  // (for the existing name-based feed ACL + rendering). CRITICAL: a DM (usrs non-empty)
+  // must NEVER project to com.usrs='{}', or the feed ACL would render it PUBLICLY — so when
+  // no recipient is local, fall back to the raw ids (non-empty, matches no local viewer).
+  const usrNames = kind === "msg" && usrs.length
+    ? (await sql`select name from usr where id = any(${usrs})`).map((r: { name: string }) => r.name)
+    : [];
+  const comUsrs = usrNames.length ? usrNames : usrs;
+  // dht.tags stays sorted (canonical); com.tags keeps submission order so the rendered feed
+  // is byte-for-byte unchanged for existing users (the local /c path passes the original order).
+  const comTags = opts.comTags ?? tags;
+  const parentHash = (payload.parent as string) ?? null;
+  const parentCid = kind !== "msg"
+    ? null
+    : opts.parentCid !== undefined
+    ? opts.parentCid
+    : parentHash
+    ? (await sql`select cid from com where hash = ${parentHash}`)[0]?.cid ?? null
+    : null;
+  const author_id = kind === "msg" ? await idOf(pubkey) : null;
+  const mentions = extractMentions(body);
+  const links = extractLinks(body);
+  const domains = extractDomains(body);
+  const thumb = kind !== "msg" || parentCid != null ? null : extractImageUrl(body) ||
+    (extractFirstUrl(body) ? await resolveThumbnail(extractFirstUrl(body)!) : null);
+
+  // delivery scope (orgs/usrs) is meaningful only on msg rows; force '{}' elsewhere so a
+  // signed non-msg row can't craft a value that games the drain's visibility gate.
+  const dhtOrgs = kind === "msg" ? orgs : [];
+  const dhtUsrs = kind === "msg" ? usrs : [];
+  const rowId = kind === "usr" || kind === "org" || kind === "peer" ? await idOf(pubkey) : null;
+  const members = kind === "org" ? (payload.members as string[]) ?? [] : []; // org register: member ids
+  const res = await sql.begin(async (tx: Sql) => {
+    const [stored] = await tx`
+      insert into dht (k, kind, pubkey, id, ts, sig, val, tags, orgs, usrs, members, target)
+      values (${k}, ${kind}, ${pubkey}, ${rowId}, ${ts}, ${sig}, ${
+      sql.json(payload)
+    }, ${tags}, ${dhtOrgs}, ${dhtUsrs}, ${members}, ${target})
+      on conflict (k) do nothing returning k`;
+    if (!stored) {
+      const [c] = kind === "msg" ? await tx`select cid from com where hash = ${k}` : [];
+      return { cid: c?.cid ?? null, isNew: false, scoreTarget: null as number | null };
+    }
+    await tx`select pg_notify('dht', ${k})`; // wake any live WS subscriber (fires on commit)
+    if (kind === "flag" && target) {
+      // count DISTINCT flagger pubkeys (replay-/sybil-resistant), mirror onto the
+      // projected com row's c_flags, and mark the target row at the threshold.
+      const [{ n }] =
+        await tx`select count(distinct pubkey)::int as n from dht where kind = 'flag' and target = ${target}`;
+      await tx`update com set c_flags = ${n} where hash = ${target}`;
+      if (n >= FLAG_THRESHOLD) await tx`update dht set flagged = true where k = ${target}`;
+    }
+    if (kind !== "msg") return { cid: null, isNew: true, scoreTarget: null as number | null };
+    // *org content is dht-only for now (the web org UI stays on the local name-based ACL).
+    if (orgs.length) return { cid: null, isNew: true, scoreTarget: null as number | null };
+    const [cm] = await tx`
+      insert into com (parent_cid, created_by, hash, author_id, sig, parent_hash, t, body, tags, orgs, usrs, mentions, links, thumb, domains)
+      values (${parentCid}, ${
+      author?.name ?? null
+    }, ${k}, ${author_id}, ${sig}, ${parentHash}, ${ts}, ${body}, ${comTags}, ${orgs}, ${comUsrs}, ${mentions}, ${links}, ${thumb}, ${domains})
+      returning cid`;
+    // Backfill suppression from any flag rows that arrived before this msg (out-of-order ingest).
+    const [{ fn }] = await tx`select count(distinct pubkey)::int as fn from dht where kind = 'flag' and target = ${k}`;
+    if (fn > 0) await tx`update com set c_flags = ${fn} where cid = ${cm.cid}`;
+    if (fn >= FLAG_THRESHOLD) await tx`update dht set flagged = true where k = ${k}`;
+    if (parentCid != null) {
+      if (isReaction(body))
+        await tx`update com set c_reactions = c_reactions || hstore(${body}, (coalesce((c_reactions->${body})::int,0)+1)::text) where cid = ${parentCid}`;
+      else
+        await tx`update com set c_comments = c_comments + 1 where cid = ${parentCid}`;
+    }
+    return { cid: cm.cid, isNew: true, scoreTarget: parentCid ?? cm.cid };
+  });
+  if (res.isNew && res.scoreTarget != null) await refreshScores(res.scoreTarget);
+  return { cid: res.cid, isNew: res.isNew };
+};
+
+// ?t=YYYYMMDDhhmmss is a coarse "since this UTC time" filter on seen_at (human/manual
+// drains). The precise, resumable replication cursor is ?after=<seq> (a strictly
+// increasing local arrival counter) — immune to clock skew and same-second collisions.
+const parseT = (t: string | null): string =>
+  t && /^\d{14}$/.test(t)
+    ? `${t.slice(0, 4)}-${t.slice(4, 6)}-${t.slice(6, 8)} ${t.slice(8, 10)}:${t.slice(10, 12)}:${t.slice(12, 14)}`
+    : "1970-01-01 00:00:00";
+
+// q = "$msg #lol" | "mark @gwern" | "$peer" → { kind, tags, orgs, usrs }. Free text rejected.
+const parseQ = (q: string) => {
+  const parts = q.trim().split(/\s+/).filter(Boolean);
+  const kind = (parts[0] ?? "").replace(/^\$/, "");
+  if (!KINDS.includes(kind as Kind)) {
+    throw new HTTPException(400, {
+      message: `bad q "${q}": first token must be a kind (${KINDS.map((k) => "$" + k).join(", ")}).`,
+    });
+  }
+  const l = parseLabels(parts.slice(1).join(" "));
+  if (l.text) throw new HTTPException(400, { message: `bad q "${q}": free text not allowed; use #tag/*org/@usr.` });
+  return { kind, tags: l.tag, orgs: l.org, usrs: l.usr };
+};
+
+const dhtWhere = (qs: ReturnType<typeof parseQ>[]) =>
+  qs.length
+    ? qs
+      .map((q) =>
+        sql`(kind = ${q.kind}${q.tags.length ? sql` and tags @> ${q.tags}::text[]` : sql``}${
+          q.orgs.length ? sql` and orgs @> ${q.orgs}::text[]` : sql``
+        }${q.usrs.length ? sql` and usrs @> ${q.usrs}::text[]` : sql``})`
+      )
+      .reduce((a, b) => sql`${a} or ${b}`)
+    : sql`true`;
+
+// Shared per-isolate live-tail: ONE sql.listen('dht') for the whole isolate, fanned out in
+// memory to every WS subscriber — instead of one DB connection per subscriber. On NOTIFY the
+// row is fetched ONCE, then matched against each subscriber's q-filters in memory (matchesQ
+// mirrors dhtWhere's `kind = … and tags/orgs/usrs @> …` containment). Public rows only.
+type DhtFull = {
+  k: string;
+  seq: string;
+  kind: Kind;
+  pubkey: string;
+  ts: number;
+  sig: string;
+  val: Record<string, unknown>;
+  tags: string[];
+  orgs: string[];
+  usrs: string[];
+};
+type WsSub = { qs: ReturnType<typeof parseQ>[]; onRow: (r: DhtFull) => void };
+const wsSubs = new Set<WsSub>();
+const supersetOf = (have: string[], need: string[]) => need.every((n) => have.includes(n));
+export const matchesQ = (r: Pick<DhtFull, "kind" | "tags" | "orgs" | "usrs">, qs: WsSub["qs"]) =>
+  qs.length === 0 ||
+  qs.some((q) =>
+    r.kind === q.kind && supersetOf(r.tags, q.tags) && supersetOf(r.orgs, q.orgs) && supersetOf(r.usrs, q.usrs)
+  );
+
+let listenerHandle: { unlisten: () => Promise<void> } | null = null;
+let listenerStarting: Promise<{ unlisten: () => Promise<void> }> | null = null;
+const startDhtListener = async () => {
+  if (listenerHandle) return;
+  if (!listenerStarting) {
+    listenerStarting = sql.listen("dht", async (k: string) => {
+      if (wsSubs.size === 0) return;
+      const [r] = await sql`
+        select k, seq, kind, pubkey, ts, sig, val, tags, orgs, usrs from dht
+        where k = ${k} and orgs = '{}' and usrs = '{}'` as unknown as DhtFull[];
+      if (!r) return; // private/missing → never fans out over WS
+      for (const sub of wsSubs) if (matchesQ(r, sub.qs)) sub.onRow(r);
+    });
+  }
+  listenerHandle = await listenerStarting;
+};
+const stopDhtListenerIfIdle = async () => {
+  if (wsSubs.size === 0 && listenerHandle) {
+    const h = listenerHandle;
+    listenerHandle = null;
+    listenerStarting = null;
+    await h.unlisten();
+  }
+};
+
+// Stateless node-auth challenge: nonce = "<exp>:<salt>:<hmac>". The salt makes every
+// nonce unique (even within a second), so single-use doesn't collide. A subscriber
+// proves an identity by signing the nonce; the drain then ALSO serves that id's private rows.
+const nonceHmac = async (body: string) => {
+  const key = await crypto.subtle.importKey(
+    "raw",
+    new TextEncoder().encode(SECRET),
+    { name: "HMAC", hash: "SHA-256" },
+    false,
+    ["sign"],
+  );
+  return hex(new Uint8Array(await crypto.subtle.sign("HMAC", key, new TextEncoder().encode(`nonce:${body}`))));
+};
+const nodeChallenge = async () => {
+  const now = Math.floor(Date.now() / 1000);
+  await sql`delete from used_nonce where exp < ${now}`; // GC spent nonces
+  const body = `${now + 60}:${hex(crypto.getRandomValues(new Uint8Array(8)))}`;
+  return `${body}:${await nonceHmac(body)}`;
+};
+const nonceValid = async (nonce: string) => {
+  const [expStr, salt, h] = nonce.split(":");
+  const exp = parseInt(expStr);
+  return !!exp && !!salt && !!h && exp > Math.floor(Date.now() / 1000) && h === await nonceHmac(`${expStr}:${salt}`);
+};
+// Authorization: `Ding <pubkey> <nonce> <sig>`  (sig = Ed25519(pubkey, nonce)). Returns
+// the authenticated id, or "" (which sees only public rows). Nonces are single-use.
+const drainAuthId = async (c: Context): Promise<string> => {
+  const a = c.req.header("authorization");
+  if (!a?.startsWith("Ding ")) return "";
+  const [pubkey, nonce, sig] = a.slice(5).split(" ");
+  if (!/^[0-9a-f]{64}$/.test(pubkey ?? "") || !nonce || !sig || !(await nonceValid(nonce))) return "";
+  if (!(await verifyBytes(pubkey, sig, nonce))) return "";
+  const [claimed] = await sql`insert into used_nonce (nonce, exp) values (${nonce}, ${
+    parseInt(nonce.split(":")[0])
+  }) on conflict do nothing returning nonce`;
+  return claimed ? await idOf(pubkey) : ""; // already used → reject
+};
+
+// Pull-based replication: drain a bootstrap node's log from `cursor` onward, verify +
+// store each row locally, and return the advanced cursor. The dull, Deno-Deploy-friendly
+// mirror of the WS live-tail; a node polls this on an interval.
+export const replicate = async (bootstrap: string, queries: string[], cursor: string): Promise<string> => {
+  const qp = queries.map((q) => `q=${encodeURIComponent(q)}`).join("&");
+  const res = await fetch(`${bootstrap}/?after=${cursor}&${qp}`);
+  if (!res.ok) throw new Error(`replicate: GET ${bootstrap} → ${res.status} ${await res.text()}`);
+  for (const line of (await res.text()).split("\n").map((l) => l.trim()).filter(Boolean)) {
+    let row: Row;
+    try {
+      row = JSON.parse(line) as Row;
+    } catch {
+      console.error(`replicate drop: not valid JSON from ${bootstrap}`);
+      continue;
+    }
+    try {
+      await ingestMsg(row, { verify: true });
+    } catch (e) {
+      if (!(e instanceof DhtReject)) throw e; // infra error → keep the old cursor, retry next tick
+      console.error(`replicate drop: ${e.message}`);
+    }
+  }
+  return res.headers.get("x-ding-cursor") ?? cursor;
+};
+
+// Gossip discovery: read peer rows from a node to learn other nodes' dialable origins.
+export const discoverPeers = async (bootstrap: string): Promise<{ ips: string[]; serves: string[] }[]> => {
+  const res = await fetch(`${bootstrap}/?q=$peer`);
+  if (!res.ok) return [];
+  return (await res.text()).split("\n").map((l) => l.trim()).filter(Boolean).map((l) => {
+    const r = JSON.parse(l);
+    return { ips: (r.ips ?? []) as string[], serves: (r.serves ?? []) as string[] };
+  });
+};
+
+// Announce this node's dialable origins + the queries it serves, so others can find us.
+export const publishPeer = async (bootstrap: string, ips: string[], serves: string[], priv: CryptoKey, pub: string) => {
+  const row = await signRow("peer", Math.floor(Date.now() / 1000), { ips, serves }, priv, pub);
+  await fetch(bootstrap, {
+    method: "POST",
+    headers: { "content-type": "application/x-ndjson" },
+    body: JSON.stringify(row),
+  });
+};
+
+// Resolve a self-asserted @name to a canonical id when multiple usr registers claim it:
+// prefer the one with the most live trust-root marks, then the earliest seen (first-come).
+// Returns null if no register claims the name. (Names aren't key-bound; marks break ties.)
+export const resolveName = async (name: string): Promise<string | null> => {
+  const [best] = await sql`
+    select u.id from (
+      select distinct on (pubkey) id, seq from dht where kind = 'usr' and val->>'name' = ${name} order by pubkey, seq asc
+    ) u
+    order by (
+      select count(*) from dht m
+      where m.kind = 'mark' and m.target = u.id and m.pubkey = ${DING_ORG_PK ?? ""}
+        and (m.val->'mark'->>'exp')::bigint > extract(epoch from now())
+    ) desc, u.seq asc
+    limit 1`;
+  return best?.id ?? null;
+};
 
 //// RESEND ///////////////////////////////////////////////////////////////////
 
@@ -624,7 +974,10 @@ const Meta = (
         {Reactions(c, votesOnly)}
       </span>
       {c.parent_cid && <a href={`/c/${c.parent_cid}`}>parent</a>}
-      <a href={`/u/${c.created_by}`}>@{c.created_by || "unknown"}</a>
+      {c.created_by
+        ? <a href={`/u/${c.created_by}`}>@{c.created_by}</a>
+        : <span class="author-foreign">@{((c as Com).author_id ?? "").slice(0, 8) || "anon"}</span>}
+      {(c as Com).checked && <span class="check" title="verified">✓</span>}
       {c.body && user == c.created_by && <a href={`/c/${c.cid}/delete`}>delete</a>}
       {formatLabels(c).map((l) => (
         <a key={l} href={lh(l)}>
@@ -713,9 +1066,14 @@ const form = async (c: Context) => {
   );
 };
 const host = (c: Context) => {
-  const h = c.req
-    .header("host")
-    ?.match(/^(?:https?:\/\/)?(?:www\.)?([^\/]+)\.([^\/]+)\./)?.[1];
+  const src = c.req.header("host") ?? (() => {
+    try {
+      return new URL(c.req.url).host;
+    } catch {
+      return "";
+    }
+  })();
+  const h = src?.match(/^(?:https?:\/\/)?(?:www\.)?([^\/]+)\.([^\/]+)\./)?.[1];
   if (h) return h;
   const a = c.req.header("accept") || "",
     t = c.req.header("content-type") || "";
@@ -794,6 +1152,168 @@ app.use("*", async (c, next) => {
       "Cache-Control": "public, max-age=31536000, immutable",
     },
   });
+});
+
+// Public POST /db ingest rate limits (in-memory, per-isolate like postRate — tune for prod).
+// `ip` bounds a single source (incl. sybil key-minting + verify-CPU); `key` bounds per-identity
+// DHT bloat. Per-pubkey alone is sybil-bypassable (keys are free) — a future "require a checkmark
+// to gossip" closes that. Limits live on the object so they're tunable / overridable in tests.
+export const dbIngestRate = {
+  ip: new Map<string, number[]>(),
+  key: new Map<string, number[]>(),
+  reqPerMin: 300,
+  rowsPerKeyPerMin: 120,
+  windowMs: 60_000,
+};
+const rateBump = (m: Map<string, number[]>, k: string, max: number): boolean => {
+  const now = Date.now();
+  const fresh = (m.get(k) ?? []).filter((t) => now - t < dbIngestRate.windowMs);
+  m.set(k, fresh);
+  if (fresh.length >= max) return false;
+  fresh.push(now);
+  return true;
+};
+
+// db.ding.bar node endpoint: POST ingests signed rows (per-row verify + rate-limit, drop bad);
+// GET drains the dht log oldest->newest by local seen_at, filtered by q=.
+app.use("*", async (c, next) => {
+  if (host(c) !== "db") return next();
+  if (c.req.method === "POST") {
+    const ip = (c.req.header("x-forwarded-for") ?? "").split(",")[0].trim() || "unknown";
+    if (!rateBump(dbIngestRate.ip, ip, dbIngestRate.reqPerMin))
+      throw new HTTPException(429, { message: "ingest rate limit — slow down." });
+    if (+(c.req.header("content-length") ?? 0) > 8_000_000)
+      throw new HTTPException(413, { message: "ingest body too large (max 8MB per request)." });
+    const lines = (await c.req.text()).split("\n").map((l) => l.trim()).filter(Boolean);
+    if (lines.length > 10_000) throw new HTTPException(413, { message: "too many rows (max 10000 per request)." });
+    const gate = (pubkey: string) => {
+      if (!rateBump(dbIngestRate.key, pubkey, dbIngestRate.rowsPerKeyPerMin)) {
+        throw new DhtReject(
+          `row from ${pubkey.slice(0, 8)}…: rate limit ${dbIngestRate.rowsPerKeyPerMin} rows/min/pubkey.`,
+        );
+      }
+    };
+    let okN = 0;
+    const errors: string[] = [];
+    for (const line of lines) {
+      // Per-row drops (bad json / bad sig / policy) are collected; infrastructure
+      // errors (DB down, etc.) propagate to a real 5xx so peers retry.
+      let row: Row;
+      try {
+        row = JSON.parse(line) as Row;
+      } catch {
+        errors.push("row: not valid JSON.");
+        continue;
+      }
+      try {
+        await ingestMsg(row, { verify: true, gate });
+        okN++;
+      } catch (e) {
+        if (!(e instanceof DhtReject)) throw e;
+        errors.push(e.message);
+        console.error(`dht ingest drop: ${e.message}`);
+      }
+    }
+    return c.json({ ok: okN, bad: errors.length, errors });
+  }
+  // WebSocket live-tail (optional, low-latency). Runs on Deno Deploy: WS is supported and
+  // Postgres LISTEN/NOTIFY coordinates cross-isolate (the POST that fires pg_notify and the
+  // shared sql.listen needn't share a process). Each subscriber registers in `wsSubs` and is
+  // fed by ONE per-isolate listener (see startDhtListener) — no DB connection per subscriber.
+  // PUBLIC rows only; auth-gated private delivery stays on the HTTP drain.
+  // Drain history → {hb:<seq>} → live-tail via NOTIFY.
+  if (c.req.method === "GET" && (c.req.header("upgrade") ?? "").toLowerCase() === "websocket") {
+    const url = new URL(c.req.url);
+    const qs = url.searchParams.getAll("q").map(parseQ);
+    let after = /^\d+$/.test(url.searchParams.get("after") ?? "") ? BigInt(url.searchParams.get("after")!) : 0n;
+    const frame = (r: DhtFull) =>
+      JSON.stringify({ k: r.k, kind: r.kind, pubkey: r.pubkey, ts: Number(r.ts), sig: r.sig, ...r.val });
+    let mySub: WsSub | undefined;
+    let hb: ReturnType<typeof setInterval> | undefined;
+    let closed = false;
+    return upgradeWebSocket(() => ({
+      async onOpen(_e: Event, ws: { send: (s: string) => void }) {
+        for (;;) { // drain public history oldest→newest
+          if (closed) return;
+          const rows = await sql`
+            select k, seq, kind, pubkey, ts, sig, val, tags, orgs, usrs from dht
+            where seq > ${after} and orgs = '{}' and usrs = '{}' and (${dhtWhere(qs)})
+            order by seq asc limit 1000` as unknown as DhtFull[];
+          if (!rows.length) break;
+          for (const r of rows) {
+            ws.send(frame(r));
+            after = BigInt(r.seq);
+          }
+        }
+        if (closed) return;
+        ws.send(JSON.stringify({ hb: String(after) }));
+        // register with the shared per-isolate listener (no per-subscriber DB connection)
+        mySub = {
+          qs,
+          onRow: (r) => {
+            ws.send(frame(r));
+            after = BigInt(r.seq);
+          },
+        };
+        wsSubs.add(mySub);
+        await startDhtListener();
+        // catch-up: any rows ingested between the history drain and registration (client
+        // dedups by k, so a row caught by both the sweep and the live listener is harmless).
+        for (
+          const r of await sql`
+            select k, seq, kind, pubkey, ts, sig, val, tags, orgs, usrs from dht
+            where seq > ${after} and orgs = '{}' and usrs = '{}' and (${dhtWhere(qs)})
+            order by seq asc limit 1000` as unknown as DhtFull[]
+        ) {
+          ws.send(frame(r));
+          after = BigInt(r.seq);
+        }
+        hb = setInterval(() => ws.send(JSON.stringify({ hb: String(after) })), 60_000);
+      },
+      async onClose() {
+        closed = true;
+        if (hb !== undefined) clearInterval(hb);
+        if (mySub) wsSubs.delete(mySub);
+        await stopDhtListenerIfIdle(); // last subscriber out → release the shared connection
+      },
+    }))(c, async () => {});
+  }
+  if (c.req.method === "GET") {
+    const url = new URL(c.req.url);
+    if (url.pathname === "/challenge") return c.json({ nonce: await nodeChallenge() });
+    const qs = url.searchParams.getAll("q").map(parseQ);
+    const afterRaw = url.searchParams.get("after") ?? "0";
+    const after = /^\d+$/.test(afterRaw) ? BigInt(afterRaw) : 0n;
+    // DEFAULT-DENY: serve only public rows, plus — for an authenticated identity — that
+    // id's private DMs and the *org rows of orgs whose current register lists it as a member.
+    const me = await drainAuthId(c);
+    const myOrgs = me
+      ? (await sql`select id from (select distinct on (pubkey) id, members from dht where kind = 'org' order by pubkey, ts desc) o where ${me}::text = any(o.members)`)
+        .map((r: { id: string }) => r.id)
+      : [];
+    type DhtRow = {
+      k: string;
+      seq: string;
+      kind: Kind;
+      pubkey: string;
+      ts: number;
+      sig: string;
+      val: Record<string, unknown>;
+    };
+    const rows = await sql`
+      select k, seq, kind, pubkey, ts, sig, val from dht
+      where seq > ${after} and seen_at > (${parseT(url.searchParams.get("t"))})::timestamp at time zone 'UTC'
+        and (orgs = '{}' or orgs && ${myOrgs}::text[]) and (usrs = '{}' or ${me}::text = any(usrs))
+        and (${dhtWhere(qs)})
+      order by seq asc limit 10000` as unknown as DhtRow[];
+    const body = rows
+      .map((r) => JSON.stringify({ k: r.k, kind: r.kind, pubkey: r.pubkey, ts: Number(r.ts), sig: r.sig, ...r.val }))
+      .join("\n");
+    const headers: Record<string, string> = { "content-type": "application/x-ndjson" };
+    if (rows.length) headers["x-ding-cursor"] = String(rows[rows.length - 1].seq);
+    return c.body(body, 200, headers);
+  }
+  throw new HTTPException(405, { message: `db.ding.bar accepts GET (drain) and POST (ingest), not ${c.req.method}.` });
 });
 
 const botRe = /bot|crawl|spider|slurp|bing|facebook|google|yandex|baidu|duck|sogou|semrush|ahref/i;
@@ -2178,6 +2698,21 @@ app.post("/c/:cid/delete", authed, async (c) => {
   return c.redirect(cm?.parent_cid ? `/c/${cm.parent_cid}` : "/");
 });
 
+app.get("/key", authed, async (c) => {
+  const [u] = await sql`select seckey_enc from usr where name = ${c.get("name")!}`;
+  if (!u?.seckey_enc)
+    throw new HTTPException(404, { message: "No custodial key to download — you're already self-custody." });
+  return c.body(await unwrapSecret(u.seckey_enc, KEY_WRAP_SECRET), 200, {
+    "content-type": "application/json",
+    "content-disposition": `attachment; filename="ding-key.json"`,
+  });
+});
+
+app.post("/key/delete", authed, async (c) => {
+  await sql`update usr set seckey_enc = null where name = ${c.get("name")!}`;
+  return ok(c);
+});
+
 export const postRate = new Map<string, number[]>();
 const POST_RATE_MAX = 10,
   POST_RATE_MS = 60_000;
@@ -2225,6 +2760,7 @@ app.post("/c/:p?", async (c) => {
     usrs: string[];
     created_by: string;
     prm_parent: number | null;
+    prm_hash: string | null;
     domains: string[];
   };
   let prm: Prm | undefined;
@@ -2232,7 +2768,7 @@ app.post("/c/:p?", async (c) => {
   if (pid) {
     [prm] = await sql<
       Prm[]
-    >`select tags, orgs, usrs, created_by, parent_cid as prm_parent, domains from com where cid = ${pid}`;
+    >`select tags, orgs, usrs, created_by, parent_cid as prm_parent, hash as prm_hash, domains from com where cid = ${pid}`;
     if (!prm)
       throw new HTTPException(404, { message: "Parent post not found." });
     if (
@@ -2290,30 +2826,51 @@ app.post("/c/:p?", async (c) => {
   }
 
   if (pid && b === "flag") {
-    const [prm2] = await sql`select created_by, parent_cid as prm_parent, flaggers from com where cid = ${pid}`;
+    const [prm2] =
+      await sql`select created_by, parent_cid as prm_parent, hash as prm_hash, flaggers from com where cid = ${pid}`;
     const back = prm2.prm_parent ? `/c/${prm2.prm_parent}#${pid}` : `/c/${pid}`;
     if (prm2.created_by === n) return c.redirect(`${back}?err=self-flag`);
-    if (!prm2.flaggers.includes(n))
+    if (prm2.prm_hash) {
+      // signed post → sign a flag row; ingestMsg recomputes c_flags from distinct flaggers
+      const key = await ensureKey(n);
+      await ingestMsg(
+        await signRow("flag", Math.floor(Date.now() / 1000), { target: prm2.prm_hash }, key.priv, key.pub),
+      );
+    } else if (!prm2.flaggers.includes(n)) {
       await sql`update com set c_flags = c_flags + 1, flaggers = array_append(flaggers, ${n}) where cid = ${pid}`;
+    }
     return c.redirect(back);
   }
 
-  const links = extractLinks(b);
-  const mentions = extractMentions(b);
-  const thumb = pid ? null : extractImageUrl(b) ||
-    (extractFirstUrl(b) ? await resolveThumbnail(extractFirstUrl(b)!) : null);
-  const domains = extractDomains(b);
-  const [cm] =
-    await sql`insert into com (parent_cid, created_by, body, tags, orgs, usrs, mentions, links, thumb, domains) values (${pid}, ${n}, ${b}, ${tags}, ${orgs}, ${usrs}, ${mentions}, ${links}, ${thumb}, ${domains}) returning cid`;
-
-  if (pid) {
-    if (isReaction(b))
-      await sql`update com set c_reactions = c_reactions || hstore(${b}, (coalesce((c_reactions->${b})::int,0)+1)::text) where cid = ${pid}`;
-    else
-      await sql`update com set c_comments = c_comments + 1 where cid = ${pid}`;
-    await refreshScores(pid);
+  // Sign PUBLIC root posts and public replies-to-signed-parents into the dht log.
+  // Reactions, *org / @usr (private) posts, and replies-to-legacy-posts stay on the
+  // unsigned com path so private bodies never enter the public log (Phase 1 scope).
+  const parentHash = pid ? prm?.prm_hash ?? null : null;
+  let cm: { cid: number };
+  if (!isReaction(b) && !orgs.length && !usrs.length && (!pid || parentHash)) {
+    const key = await ensureKey(n);
+    const payload = buildMsg({ parent: parentHash ?? undefined, tags, orgs, usrs, body: b });
+    const row = await signRow("msg", Math.floor(Date.now() / 1000), payload, key.priv, key.pub);
+    const { cid } = await ingestMsg(row, { parentCid: pid ? +pid : null, comTags: tags });
+    if (cid == null) throw new HTTPException(500, { message: "post was logged but its com projection is missing." });
+    cm = { cid };
   } else {
-    await refreshScores(cm.cid);
+    const links = extractLinks(b);
+    const mentions = extractMentions(b);
+    const thumb = pid ? null : extractImageUrl(b) ||
+      (extractFirstUrl(b) ? await resolveThumbnail(extractFirstUrl(b)!) : null);
+    const domains = extractDomains(b);
+    [cm] =
+      await sql`insert into com (parent_cid, created_by, body, tags, orgs, usrs, mentions, links, thumb, domains) values (${pid}, ${n}, ${b}, ${tags}, ${orgs}, ${usrs}, ${mentions}, ${links}, ${thumb}, ${domains}) returning cid`;
+    if (pid) {
+      if (isReaction(b))
+        await sql`update com set c_reactions = c_reactions || hstore(${b}, (coalesce((c_reactions->${b})::int,0)+1)::text) where cid = ${pid}`;
+      else
+        await sql`update com set c_comments = c_comments + 1 where cid = ${pid}`;
+      await refreshScores(pid);
+    } else {
+      await refreshScores(cm.cid);
+    }
   }
 
   if (pid && isReaction(b)) {
@@ -2342,7 +2899,12 @@ app.get("/c/:cid?", async (c) => {
     www = c.req.queries("www") || [];
 
   const items = await sql`
-    select c.*, (select count(*) from com c_ where c_.parent_cid = c.cid and char_length(c_.body) > 1) as comments,
+    select c.*, ${
+    DING_ORG_PK
+      ? sql`exists(select 1 from dht m where m.kind='mark' and m.target = c.author_id and m.pubkey = ${DING_ORG_PK} and m.val->'mark'->>'v' in ('email','payment','human') and (m.val->'mark'->>'exp')::bigint > extract(epoch from now()))`
+      : sql`false`
+  } as checked,
+      (select count(*) from com c_ where c_.parent_cid = c.cid and char_length(c_.body) > 1) as comments,
       (select count(*) from com r where r.parent_cid = c.cid and char_length(r.body) = 1) as reaction_count,
       (select coalesce(jsonb_object_agg(body, cnt), '{}') from (select body, count(*) as cnt from com where parent_cid = c.cid and char_length(body) = 1 group by body) r) as reaction_counts,
       array(select body from com where parent_cid = c.cid and char_length(body) = 1 and created_by = ${
@@ -2707,4 +3269,19 @@ app.post("/i", authed, async (c) => {
 });
 
 app.use("/*", serveStatic({ root: "./public" }));
+
+// Hourly checkmark cron via Deno.cron — registered ONLY on Deno Deploy (DENO_DEPLOYMENT_ID
+// is unset locally/in tests, so this never fires there or trips the test sanitizer).
+// SIMPLE path for now: DING_ORG_SK lives on the main server. Harden later by moving the cron
+// to a separate Deno Deploy project (or GitHub Actions) so the trust root is off the public server.
+if (Deno.env.get("DENO_DEPLOYMENT_ID")) {
+  Deno.cron("ding-checkmark", "0 * * * *", async () => {
+    try {
+      await runCheckmark();
+    } catch (e) {
+      console.error(`checkmark cron failed: ${e instanceof Error ? e.message : e}`);
+    }
+  });
+}
+
 export default app;

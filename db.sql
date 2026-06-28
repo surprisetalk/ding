@@ -14,12 +14,16 @@ create table usr (
   invited_by citext not null references usr (name),
   orgs_r text[] not null default '{}',  -- orgs user can read
   orgs_w text[] not null default '{}',  -- orgs user can write
+  pubkey text check (pubkey ~ '^[0-9a-f]{64}$'),  -- Ed25519 identity (custodial or self-managed)
+  id text check (id ~ '^[0-9a-f]{64}$'),  -- sha256(pubkey); resolves private @recipient ids -> name
+  seckey_enc bytea,  -- custodial private key, AES-256-GCM(JWK, KEY_WRAP_SECRET); null = self-custody
   last_seen_at timestamptz not null default current_timestamp,
   created_at timestamptz not null default current_timestamp
 );
 
 create index usr_email_idx on usr (email);
 create index usr_orgs_r_idx on usr using gin (orgs_r);
+create index usr_id_idx on usr (id);
 
 create table org (
   name citext primary key check (name ~ '^[0-9a-zA-Z_]{4,32}$'),
@@ -31,7 +35,12 @@ create table org (
 create table com (
   cid serial primary key,
   parent_cid int references com (cid),
-  created_by citext references usr (name) not null,
+  created_by citext references usr (name),  -- null for foreign authors (no local usr); see author_id
+  hash text unique,  -- dht content hash for signed msgs (null for legacy unsigned rows)
+  author_id text,    -- sha256(pubkey) of the signing identity
+  sig text,          -- Ed25519 signature
+  parent_hash text,  -- parent msg content hash (content-addressed threading)
+  t bigint,          -- signed unix-seconds timestamp
   tags text[] not null default '{}',  -- public tags (e.g., 'linking')
   orgs text[] not null default '{}',  -- org/private tags (e.g., 'secret')
   usrs text[] not null default '{}',  -- direct-message targeting (restricts visibility)
@@ -70,6 +79,43 @@ create index com_parent_cid_idx on com (parent_cid);
 create index com_created_by_idx on com (created_by);
 create index com_score_idx on com (score desc);
 create index com_domains_idx on com using gin (domains);
+create index com_hash_idx on com (hash);
+create index com_parent_hash_idx on com (parent_hash);
+
+-- The DHT: signed, content-addressed, append-only log. Source of truth; com/usr/org
+-- are a projection rebuilt from it. seen_at (LOCAL arrival) is the replication cursor,
+-- never the attacker-controlled signed ts.
+create table dht (
+  k        text primary key,                       -- content hash = sha256(canonical signed bytes)
+  seq      bigserial,                               -- strictly-increasing LOCAL arrival order = the replication cursor
+  kind     text not null check (kind in ('peer','usr','org','msg','flag','mark')),
+  pubkey   text not null check (pubkey ~ '^[0-9a-f]{64}$'),
+  id       text,                                    -- sha256(pubkey) for register kinds (usr/org/peer); the org's id
+  ts       bigint not null,                         -- signed unix seconds (register-version order only)
+  sig      text not null check (sig ~ '^[0-9a-f]{128}$'),
+  val      jsonb not null,                          -- canonical payload (kind/pubkey/ts live outside)
+  tags     text[] not null default '{}',            -- denormalized from val for q= filters
+  orgs     text[] not null default '{}',            -- msg delivery scope: *org ids
+  usrs     text[] not null default '{}',            -- msg delivery scope: @recipient ids
+  members  text[] not null default '{}',            -- org register: the member ids (for *org delivery gating)
+  target   text,                                    -- flag/mark subject (id or content hash)
+  flagged  boolean not null default false,          -- set when >=3 distinct flagger pubkeys target k
+  seen_at  timestamptz not null default current_timestamp
+);
+create unique index dht_seq_idx on dht (seq);
+create index dht_seen_idx on dht (seen_at);
+create index dht_id_idx on dht (id);
+create index dht_members_idx on dht using gin (members);
+
+-- single-use drain-auth challenge nonces (so a captured Authorization header can't be replayed)
+create table used_nonce (
+  nonce text primary key,
+  exp   bigint not null
+);
+create index used_nonce_exp_idx on used_nonce (exp);
+create index dht_kind_ts_idx on dht (kind, pubkey, ts desc);
+create index dht_tags_idx on dht using gin (tags);
+create index dht_target_idx on dht (target);
 
 create view stat_usr as
 with posts as (

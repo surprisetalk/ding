@@ -83,7 +83,8 @@ a {
   text-decoration: none;
 }
 
-.body a:link, .body a:visited {
+.body a:link,
+.body a:visited {
   color: var(--fg);
   text-decoration: underline;
   text-decoration-style: dotted;
@@ -112,7 +113,8 @@ nav a:visited,
   font-weight: 600;
 }
 
-input, textarea {
+input,
+textarea {
   background: var(--bg);
   color: var(--fg);
   border: 1px solid var(--border);
@@ -132,7 +134,10 @@ textarea {
   line-height: var(--lh-prose);
 }
 
-input:focus, textarea:focus, button:focus-visible, a:focus-visible {
+input:focus,
+textarea:focus,
+button:focus-visible,
+a:focus-visible {
   outline: 2px solid var(--focus);
   outline-offset: 1px;
 }
@@ -165,7 +170,11 @@ button.btn-sm:hover {
   color: var(--fg);
 }
 
-textarea, input, button, a:link, .upload-btn {
+textarea,
+input,
+button,
+a:link,
+.upload-btn {
   border-radius: 4px;
 }
 
@@ -367,7 +376,9 @@ pre {
   margin-bottom: 0;
 }
 
-.body h3, .body h4, .body h5 {
+.body h3,
+.body h4,
+.body h5 {
   margin: var(--space-3) 0 var(--space-1);
   font-weight: 600;
 }
@@ -428,7 +439,8 @@ pre {
   width: initial;
 }
 
-.reaction button, .reaction a {
+.reaction button,
+.reaction a {
   background: none;
   border: 0;
   padding: 0;
@@ -440,7 +452,8 @@ pre {
   font-size: var(--text-xs);
 }
 
-.reaction.reacted button, .reaction.reacted a {
+.reaction.reacted button,
+.reaction.reacted a {
   color: var(--fg);
   background: var(--accent-bg);
 }
@@ -456,7 +469,8 @@ pre {
   margin-top: var(--space-1);
 }
 
-.tag-preset, .filter-pill {
+.tag-preset,
+.filter-pill {
   font-size: var(--text-xs);
   padding: var(--space-1) var(--space-2);
   background: none;
@@ -466,7 +480,8 @@ pre {
   text-decoration: none;
 }
 
-.tag-preset:hover, .filter-pill:hover {
+.tag-preset:hover,
+.filter-pill:hover {
   color: var(--fg);
   background: var(--accent-bg);
   text-decoration: none;
@@ -562,6 +577,16 @@ a.thumb {
 
 .meta-date {
   font-family: var(--font-mono);
+}
+
+.check {
+  color: var(--link, #1a0dab);
+  font-weight: bold;
+}
+
+.author-foreign {
+  font-family: var(--font-mono);
+  color: var(--muted);
 }
 
 .note {

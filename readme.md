@@ -26,6 +26,29 @@ http ding.bar/u?q=lisp     # search users
 http POST ding.bar ...     # TODO
 ```
 
+## dht (decentralization, phase 1)
+
+ding's data is a signed, content-addressed log. identity is an ed25519 keypair; every post is content-addressed
+(`k = sha256(canonical signed bytes)`) and signed, so any node can verify it without trusting the publisher.
+
+```bash
+deno task ding msg "hello world" "#tag"     # sign with ~/.ding/key.json, POST to a node
+deno task ding usr --name=you --links=you.com,github.com/you   # identity register (links get verified)
+deno task ding flag <content-hash>           # signed flag (3 distinct flaggers suppress a post)
+deno task ding mark <id>                      # personally vouch for an identity
+deno task ding id                            # print your pubkey + id
+
+http POST db.ding.bar < rows.ndjson          # ingest signed rows (per-row verify; bad rows dropped)
+http  db.ding.bar/?q='$msg #lol'             # drain the log, filtered by kind + labels
+http  ding.bar/key                           # download your custodial key (then POST /key/delete for self-custody)
+```
+
+verified identities show a ✓ — `bots/checkmark.ts` (the checkmark cron) signs `mark` rows for verified emails
+(DNS/GitHub proofs next); the renderer trusts marks from `DING_ORG_PK`.
+
+ding.bar holds keys for users who don't want to (custodial, AES-256-GCM at rest); self-managed users publish directly.
+multi-peer gossip, the checkmark/verification service, and leases are not yet built.
+
 ## local dev
 
 prereqs: [deno](https://deno.com/), `postgresql`, `postgresql-contrib`, & `postgresql-client` (includes the `psql` CLI)
