@@ -45,6 +45,7 @@ import app, {
   resolveName,
   setSql,
   stripe,
+  verified,
 } from "./server.tsx";
 
 //// MOCK SHAPES ///////////////////////////////////////////////////////////////
@@ -2681,6 +2682,18 @@ Deno.test(
       // a valid, unexpired trust-root mark → ✓
       await orgMark(now + 100 * YEAR);
       assertEquals(await checked(), true);
+    });
+
+    await t.step("a verified handle renders a gray ✓ BEFORE the @name in HTML", async () => {
+      verified.names = new Set(["jane_doe"]); // inject the cache; fresh `at` so the middleware skips re-query
+      verified.at = Date.now();
+      const html = await (await app.request("http://ding.bar/u/jane_doe")).text();
+      const ci = html.indexOf('class="check"'), hi = html.indexOf("@jane_doe");
+      assertEquals(ci !== -1 && ci < hi, true); // present AND before the handle
+      verified.names = new Set(); // unverified → no ✓
+      verified.at = Date.now();
+      assertEquals((await (await app.request("http://ding.bar/u/jane_doe")).text()).includes('class="check"'), false);
+      verified.at = 0; // restore normal refresh for later steps
     });
 
     await t.step("a flag that arrives before its target msg still suppresses (out-of-order)", async () => {

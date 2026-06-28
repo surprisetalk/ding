@@ -301,6 +301,20 @@ const KEY_WRAP_SECRET = Deno.env.get("KEY_WRAP_SECRET") ?? (() => {
 // lives ONLY on the checkmark cron, never here.
 const DING_ORG_PK = Deno.env.get("DING_ORG_PK") ?? null;
 
+// Verified handles (local names with a live trust-root identity mark), cached ~60s so a ✓ can
+// render beside a username anywhere without a per-render query. Refreshed in the "*" middleware.
+export const verified = { at: 0, names: new Set<string>() };
+const refreshVerified = async () => {
+  if (!DING_ORG_PK || Date.now() - verified.at < 60_000) return;
+  const rows = await sql`
+    select u.name from usr u where exists(
+      select 1 from dht m where m.kind = 'mark' and m.target = u.id and m.pubkey = ${DING_ORG_PK}
+        and m.val->'mark'->>'v' in ('email','payment','human')
+        and (m.val->'mark'->>'exp')::bigint > extract(epoch from now()))`;
+  verified.names = new Set(rows.map((r: { name: string }) => r.name.toLowerCase())); // names are citext
+  verified.at = Date.now();
+};
+
 const custodialSigner = async (
   seckey_enc: Uint8Array,
   pubkey: string,
@@ -710,13 +724,17 @@ export const stripe = new Stripe(
 
 //// COMPONENTS ////////////////////////////////////////////////////////////////
 
+// A gray ✓ rendered BEFORE a handle when that name is verified (live trust-root mark).
+const isVerified = (name?: string | null | false) => !!name && verified.names.has(name.toLowerCase());
+const Check = (name?: string | null) => isVerified(name) ? <span class="check" title="verified">✓</span> : null;
+
 const User = (u: Usr, viewerName?: string) => {
   const isOwner = viewerName && viewerName == u.name;
   return (
     <section class="user">
-      <h2>@{u.name}</h2>
+      <h2>{Check(u.name)}@{u.name}</h2>
       <div class="user-links">
-        {u.name !== u.invited_by || <a href={`/u/${u.invited_by}`}>invited by @{u.invited_by}</a>}
+        {u.name !== u.invited_by || <a href={`/u/${u.invited_by}`}>invited by {Check(u.invited_by)}@{u.invited_by}</a>}
         <a href={`/c?usr=${u.name}`}>posts</a>
         <a href={`/c?usr=${u.name}&comments=1`}>comments</a>
         {isOwner && (
@@ -806,6 +824,7 @@ const ActiveFilters = ({
               href={`${basePath}?${n}`}
               class="filter-pill"
             >
+              {x.param === "usr" ? Check(x.value) : null}
               {x.label} x
             </a>
           );
@@ -974,13 +993,14 @@ const Meta = (
         {Reactions(c, votesOnly)}
       </span>
       {c.parent_cid && <a href={`/c/${c.parent_cid}`}>parent</a>}
+      {c.created_by ? Check(c.created_by) : (c as Com).checked && <span class="check" title="verified">✓</span>}
       {c.created_by
         ? <a href={`/u/${c.created_by}`}>@{c.created_by}</a>
         : <span class="author-foreign">@{((c as Com).author_id ?? "").slice(0, 8) || "anon"}</span>}
-      {(c as Com).checked && <span class="check" title="verified">✓</span>}
       {c.body && user == c.created_by && <a href={`/c/${c.cid}/delete`}>delete</a>}
       {formatLabels(c).map((l) => (
         <a key={l} href={lh(l)}>
+          {l[0] === "@" ? Check(l.slice(1)) : null}
           {l}
         </a>
       ))}
@@ -1327,6 +1347,7 @@ app.use("*", async (c, next) => {
   const n = await getSignedCookie(c, cookieSecret, "name");
   if (n) c.set("name", n);
   else if (n === false) deleteCookie(c, "name", { path: "/" }); // stale cookie (e.g. COOKIE_SECRET rotated) → clear it
+  if (!host(c)) await refreshVerified(); // keep the verified-handle set warm for HTML renders
   let unread = 0;
   if (n && !host(c)) {
     const [row] = await sql`
@@ -1562,7 +1583,9 @@ app.use("*", async (c, next) => {
             <section>
               <a href="/" class="brand"><span>✦</span>ding</a>
               <nav aria-label="site">
-                <a href="/u" ${cur("/u")}>${n ? `@${n}` : "account"}</a>
+                <a href="/u" ${cur("/u")}>${raw(
+                  isVerified(n) ? '<span class="check" title="verified">✓</span>' : "",
+                )}${n ? `@${n}` : "account"}</a>
                 ${n
                   ? html`
                     <a href="/n" ${cur("/n")}>inbox${unread ? ` (${unread})` : ""}</a>
@@ -2488,7 +2511,7 @@ app.get("/o/:name", async (c) => {
     <section>
       <h2>*{org.name}</h2>
       <p class="note-sm">
-        created by @{org.created_by} on {new Date(org.created_at).toLocaleDateString()}.
+        created by {Check(org.created_by)}@{org.created_by} on {new Date(org.created_at).toLocaleDateString()}.
       </p>
       <div class="stack stack--loose">
         <div>
@@ -2496,7 +2519,7 @@ app.get("/o/:name", async (c) => {
           <div class="stack">
             {members.map((m: { name: string }) => (
               <div class="member-row">
-                <a href={`/u/${m.name}`}>@{m.name}</a>
+                <a href={`/u/${m.name}`}>{Check(m.name)}@{m.name}</a>
                 {org.created_by === viewer && m.name !== viewer && (
                   <form
                     method="post"
@@ -3039,7 +3062,7 @@ app.get("/c/:cid?", async (c) => {
                 {orgMembers} member{orgMembers === 1 ? "" : "s"}
                 {orgCreatedBy && (
                   <>
-                    {" · "}created by <a href={`/u/${orgCreatedBy}`}>@{orgCreatedBy}</a>
+                    {" · "}created by <a href={`/u/${orgCreatedBy}`}>{Check(orgCreatedBy)}@{orgCreatedBy}</a>
                     {" · "}
                     <a href={`/o/${singleOrg}`}>settings</a>
                   </>
@@ -3052,14 +3075,14 @@ app.get("/c/:cid?", async (c) => {
           )}
           {singleUsr && usrRow && (
             <div class="info-block">
-              <h2>@{singleUsr}</h2>
+              <h2>{Check(singleUsr)}@{singleUsr}</h2>
               <p class="note">
                 {usrPostCount} post{usrPostCount === 1 ? "" : "s"}
                 {" · "}
                 <a href={`/u/${singleUsr}`}>profile</a>
               </p>
               <p class="note-sm">
-                <a href={`/?usr=${singleUsr}`}>post to @{singleUsr}</a>
+                <a href={`/?usr=${singleUsr}`}>post to {Check(singleUsr)}@{singleUsr}</a>
               </p>
             </div>
           )}
@@ -3068,7 +3091,7 @@ app.get("/c/:cid?", async (c) => {
             <div class="user-matches">
               {userMatches.map((u: { name: string }) => (
                 <a key={u.name} href={`/c?usr=${u.name}`}>
-                  @{u.name}
+                  {Check(u.name)}@{u.name}
                 </a>
               ))}
             </div>
