@@ -82,11 +82,13 @@ signed.
   `bots/checkmark.ts` exports `runCheckmark()` (the **only** signer with `DING_ORG_SK`): `email` marks for verified
   users (100yr), plus `dns:`/`github:` marks (1-day leases) proved from a user's **`usr` register** links —
   `_ding.<domain>` TXT `ding_id=<id>` or the id in a GitHub bio (handle sanitized). It runs hourly via **`Deno.cron`**
-  in `server.tsx`, gated on `DENO_DEPLOYMENT_ID` so it registers only on Deno Deploy (never in tests/local). `Deno.cron`
-  needs `unstable: ["cron"]` + `deno.unstable` lib (in `deno.json`). `deno task checkmark` triggers a manual run. Proof
-  helpers + `runCheckmark` are testable (`bots/checkmark.test.ts` mocks DNS/fetch). `ding mark <id>` is a personal
-  vouch. ⚠️ SIMPLE path: `DING_ORG_SK` is on the main server — harden later (separate cron project) so a server breach
-  can't forge checkmarks.
+  in `server.tsx`, gated on `DENO_DEPLOYMENT_ID` so it registers only on Deno Deploy (never in tests/local). The
+  in-server cron passes a **`sink`** so `runCheckmark` ingests marks via `ingestMsg` **directly** — NOT an HTTP POST to
+  `db.ding.bar` (a Deno Deploy isolate fetching its own custom domain redirect-loops, which silently dropped every
+  mark). `deno task checkmark` (standalone) still POSTs over HTTP. `Deno.cron` needs `unstable: ["cron"]` +
+  `deno.unstable` lib (in `deno.json`). `deno task checkmark` triggers a manual run. Proof helpers + `runCheckmark` are
+  testable (`bots/checkmark.test.ts` mocks DNS/fetch). `ding mark <id>` is a personal vouch. ⚠️ SIMPLE path:
+  `DING_ORG_SK` is on the main server — harden later (separate cron project) so a server breach can't forge checkmarks.
 - **`usr` register**: a signed `usr` row `{name, bio, links[]}` (`ding usr --name --bio --links`), ingested into the
   dht; the checkmark cron reads it to verify domain/social links. (Leases + resolution come with Phase 4.)
 - **Replication** (Phase 3, Stage 1 — pull/short-poll): the dht has a `seq bigserial` (strictly-increasing local arrival
