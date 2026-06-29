@@ -297,14 +297,40 @@ pre {
 }
 
 .body {
+  --cap: 50rem;
   white-space: pre-wrap;
   word-wrap: break-word;
   overflow-wrap: anywhere;
   line-height: var(--lh-prose);
   font-size: var(--text-sm);
-  max-height: 50rem;
+  max-height: var(--cap);
   overflow: hidden;
   margin-top: var(--space-2);
+  position: relative;
+}
+
+.body::after {
+  content: "";
+  position: absolute;
+  left: 0;
+  right: 0;
+  top: calc(var(--cap) - 4rem);
+  height: 4rem;
+  background: linear-gradient(to bottom, transparent, var(--bg));
+  pointer-events: none;
+}
+
+.body-full {
+  max-height: none;
+  overflow: visible;
+}
+
+.body-full::after {
+  content: none;
+}
+
+.body-full pre {
+  max-height: none;
 }
 
 .body pre {

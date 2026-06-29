@@ -1024,7 +1024,7 @@ const Comment = (c: Com | ChildCom, user?: string, asPost?: boolean) => {
     <div key={c.cid} class="comment" id={String(c.cid)}>
       {Meta(c, user)}
       {title && <h1 class="post-title">{title}</h1>}
-      <div class="body">
+      <div class={asPost ? "body body-full" : "body"}>
         {flagged ? "[flagged]" : c.body ? rest ? formatBody(rest) : null : "[deleted by author]"}
       </div>
       <div class="children">

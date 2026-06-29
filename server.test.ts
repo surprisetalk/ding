@@ -1145,10 +1145,10 @@ Deno.test(
         await sql`insert into com (created_by, body, tags, c_flags, flaggers) values ('BugHunter42', 'secret body text', '{humor}', 3, '{a,b,c}') returning cid`;
       const res = await app.request(`/c/${seed.cid}`, { headers: jAuth });
       const html = await res.text();
-      assertEquals(html.includes(`class="body"`), true);
+      assertEquals(html.includes(`class="body body-full"`), true);
       assertEquals(html.includes("[flagged]"), true);
       assertEquals(
-        /class="body">\s*secret body text/.test(html),
+        /class="body[^"]*">\s*secret body text/.test(html),
         false,
       );
     });
