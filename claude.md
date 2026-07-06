@@ -32,15 +32,17 @@ git config core.hooksPath .githooks
 
 ## Architecture
 
-**Single-file server** (`server.tsx`, ~1,100 lines) using:
+**Single-file server** (`server.tsx`, ~3,200 lines) using:
 
 - **Hono** - HTTP framework with middleware chain
 - **postgres.js** - SQL via template literals (`sql\`SELECT ...\``)
 - **JSX** - Server-side rendered components (no frontend framework)
-- **SendGrid** - Email delivery
+- **Resend** - Email delivery
 
-Server is organized with `//// SECTION ////` headers: IMPORTS, CONSTANTS, HELPERS, LABEL PARSING, EMAIL TOKEN, POSTGRES,
-SENDGRID, COMPONENTS, HONO.
+Server is organized with `//// SECTION ////` headers: IMPORTS, TYPES, CONSTANTS & HELPERS, LABEL PARSING, EMAIL TOKEN,
+POSTGRES, DHT, RESEND, STRIPE, COMPONENTS, HONO. The `GET /` and `GET /c` feed queries share fragment builders
+(`visibleTo` ACL, `aggCols`/`aggPairs` per-row aggregates, `orderBy`) so the two feeds can't drift; `wireRow` is the
+single definition of the NDJSON wire format (WS live-tail + HTTP drain must stay byte-identical).
 
 **Database** (`db.sql`):
 
@@ -135,7 +137,14 @@ signed.
 - Content aggregators (HN, Lobsters, arXiv, etc.) that POST via Basic Auth
 - LLM persona bots (kenm, linkedin, bigfoot, caveman, critic) use `claude()` helper in `bots.ts` with Haiku 3; require
   `ANTHROPIC_API_KEY`
-- Run every 5 minutes via GitHub Actions (`.github/workflows/bots.yml`)
+- Run every 5 minutes via GitHub Actions (`.github/workflows/bots.yml`); each bot is a standalone entrypoint keyed by
+  `BOT_<UPPERNAME>_EMAIL`/`_PASSWORD` env vars (missing env → log + exit 1)
+- Most bots are thin configs over shared harnesses in `bots.ts`: `rssBot` (single RSS feed), `personaBot` (LLM replies),
+  `tagResponderBot` (reply to fresh `#tag` posts), `imageMentionBot` (transform an image from a @mention),
+  `dailyPostBot` (one gated post per run). Shared helpers: `sweepFeeds` (bounded-concurrency newest-per-feed),
+  `redditFetch`/`parseRedditEntries`, `glitchSvg`/`glitchTwemojiToR2`, `fetchFreshPosts`, `atomTitleLink`,
+  `parseTitleLinkComments`
+- `bots/checkmark.ts` is NOT part of the fleet (no `bots.ts` import; consumed by `server.tsx` as `runCheckmark`)
 
 ## Label System
 
