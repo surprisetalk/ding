@@ -21,24 +21,20 @@ import { runCheckmark } from "./bots/checkmark.ts";
 import {
   buildMsg,
   DhtReject,
-  exportJwk,
-  genKey,
+  ensureCustodialKey,
   hex,
   idOf,
-  importPriv,
   type Kind,
   KINDS,
   type Labels,
   nowSec,
   parseLabels,
   PFX,
-  pubHexOf,
   type Row,
   signRow,
   unwrapSecret,
   verifyBytes,
   verifyRow,
-  wrapSecret,
 } from "./dht.ts";
 export { parseLabels };
 export type { Labels };
@@ -326,37 +322,15 @@ const refreshVerified = async () => {
   verified.at = Date.now();
 };
 
-const custodialSigner = async (
-  seckey_enc: Uint8Array,
-  pubkey: string,
-): Promise<{ priv: CryptoKey; pub: string }> => ({
-  priv: await importPriv(JSON.parse(await unwrapSecret(seckey_enc, KEY_WRAP_SECRET))),
-  pub: pubkey,
-});
-
-// Mint-on-demand custodial keypair for a local user; returns a signer. The mint is
-// atomic (`where pubkey is null`) so concurrent first-posts can't fork an identity.
-// usr.id (= sha256 pubkey) is maintained here so private @recipient ids resolve to names.
+// Custodial signer for a local user (see ensureCustodialKey in dht.ts).
 const ensureKey = async (name: string): Promise<{ priv: CryptoKey; pub: string }> => {
-  const [u] = await sql`select pubkey, seckey_enc, id from usr where name = ${name}`;
-  if (u?.pubkey && u?.seckey_enc) {
-    if (!u.id) await sql`update usr set id = ${await idOf(u.pubkey)} where name = ${name}`;
-    return custodialSigner(u.seckey_enc, u.pubkey);
-  }
-  const kp = await genKey();
-  const pub = await pubHexOf(kp);
-  const enc = await wrapSecret(JSON.stringify(await exportJwk(kp)), KEY_WRAP_SECRET);
-  const [claimed] = await sql`update usr set pubkey = ${pub}, seckey_enc = ${enc}, id = ${await idOf(
-    pub,
-  )} where name = ${name} and pubkey is null returning pubkey`;
-  if (claimed) return { priv: kp.privateKey, pub };
-  const [now] = await sql`select pubkey, seckey_enc from usr where name = ${name}`;
-  if (!now?.seckey_enc) {
+  const key = await ensureCustodialKey(sql, name, KEY_WRAP_SECRET);
+  if (!key) {
     throw new HTTPException(409, {
       message: `@${name} is self-custody (server holds no key). Post with the ding CLI instead.`,
     });
   }
-  return custodialSigner(now.seckey_enc, now.pubkey);
+  return key;
 };
 
 // A new child bumps its parent's denormalized counters: reactions land in the

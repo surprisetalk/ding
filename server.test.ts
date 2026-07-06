@@ -2859,8 +2859,11 @@ Deno.test(
       assertEquals(await drainHas(await authAs(dave, davePub)), true); // the recipient sees it
       const stranger = await genKey();
       assertEquals(await drainHas(await authAs(stranger, await pubHexOf(stranger))), false); // a third party does not
-      const bad = await authAs(dave, davePub);
-      assertEquals(await drainHas({ Authorization: bad.Authorization.slice(0, -2) + "00" }), false); // forged sig → no access
+      // forge by FLIPPING the sig's last byte (always differs — appending a fixed "00"
+      // collides with a real sig ending in 00 about 1 run in 256 and flaked)
+      const bad = (await authAs(dave, davePub)).Authorization;
+      const flipped = (parseInt(bad.slice(-2), 16) ^ 0xff).toString(16).padStart(2, "0");
+      assertEquals(await drainHas({ Authorization: bad.slice(0, -2) + flipped }), false); // forged sig → no access
     });
 
     await t.step("a DM to a NON-local recipient never renders publicly in the web feed", async () => {

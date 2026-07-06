@@ -13,11 +13,11 @@ export class DhtReject extends Error {}
 export const nowSec = () => Math.floor(Date.now() / 1000); // row ts are integer epoch-seconds
 
 export const hex = (b: Uint8Array) => Array.from(b).map((x) => x.toString(16).padStart(2, "0")).join("");
-export const unhex = (s: string) => {
+const unhex = (s: string) => {
   if (!/^[0-9a-f]*$/.test(s) || s.length % 2) throw new Error(`bad hex: ${s.slice(0, 16)}…`);
   return new Uint8Array(s.match(/../g)?.map((h) => parseInt(h, 16)) ?? []);
 };
-export const sha256hex = async (b: Uint8Array) => {
+const sha256hex = async (b: Uint8Array) => {
   const buf = new ArrayBuffer(b.byteLength);
   new Uint8Array(buf).set(b);
   return hex(new Uint8Array(await crypto.subtle.digest("SHA-256", buf)));
@@ -68,7 +68,7 @@ const bytesOf = (kind: Kind, pubkey: string, ts: number, payload: unknown) =>
 export const idOf = (pubkeyHex: string) => sha256hex(unhex(pubkeyHex));
 
 // set semantics: lowercased, deduped, sorted — so ["b","a"] ≡ ["a","b"] when signed
-export const normLabels = (xs: string[] = []) => [...new Set(xs.map((s) => s.toLowerCase()))].sort();
+const normLabels = (xs: string[] = []) => [...new Set(xs.map((s) => s.toLowerCase()))].sort();
 
 export const buildMsg = (p: { parent?: string; tags?: string[]; orgs?: string[]; usrs?: string[]; body: string }) => {
   const payload: Record<string, unknown> = {
@@ -177,4 +177,38 @@ export const unwrapSecret = async (buf: Uint8Array, secret: string) => {
         "the key cannot be recovered without the original KEY_WRAP_SECRET.",
     );
   }
+};
+
+export const unwrapPriv = async (enc: Uint8Array, secret: string) =>
+  importPriv(JSON.parse(await unwrapSecret(enc, secret)));
+
+// Minimal structural view of a postgres.js `sql` tag, so dht.ts stays dependency-free.
+// deno-lint-ignore no-explicit-any
+type SqlTag = (s: TemplateStringsArray, ...args: any[]) => PromiseLike<any[]>;
+
+// Mint-on-demand custodial keypair for a local user. The mint is atomic
+// (`where pubkey is null`) so concurrent first-posts can't fork an identity; on a lost
+// race the winner's key is adopted. usr.id (= sha256 pubkey) is maintained here so
+// private @recipient ids resolve to names. Returns null when the user is self-custody
+// (server holds no key) — callers decide whether that's a 409 or a crash.
+export const ensureCustodialKey = async (
+  sql: SqlTag,
+  name: string,
+  secret: string,
+): Promise<{ priv: CryptoKey; pub: string; id: string } | null> => {
+  const [u] = await sql`select pubkey, seckey_enc, id from usr where name = ${name}`;
+  if (u?.pubkey && u?.seckey_enc) {
+    const id = u.id ?? await idOf(u.pubkey);
+    if (!u.id) await sql`update usr set id = ${id} where name = ${name}`;
+    return { priv: await unwrapPriv(u.seckey_enc, secret), pub: u.pubkey, id };
+  }
+  const kp = await genKey(), pub = await pubHexOf(kp), id = await idOf(pub);
+  const enc2 = await wrapSecret(JSON.stringify(await exportJwk(kp)), secret);
+  const claimed = await sql`
+    update usr set pubkey = ${pub}, seckey_enc = ${enc2}, id = ${id} where name = ${name} and pubkey is null
+    returning pubkey`;
+  if (claimed.length) return { priv: kp.privateKey, pub, id };
+  const [u2] = await sql`select pubkey, seckey_enc, id from usr where name = ${name}`; // lost the race → adopt theirs
+  if (!u2?.seckey_enc) return null; // self-custody: server holds no key
+  return { priv: await unwrapPriv(u2.seckey_enc, secret), pub: u2.pubkey, id: u2.id ?? await idOf(u2.pubkey) };
 };

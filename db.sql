@@ -79,12 +79,13 @@ create index com_parent_cid_idx on com (parent_cid);
 create index com_created_by_idx on com (created_by);
 create index com_score_idx on com (score desc);
 create index com_domains_idx on com using gin (domains);
-create index com_hash_idx on com (hash);
 create index com_parent_hash_idx on com (parent_hash);
 
 -- The DHT: signed, content-addressed, append-only log. Source of truth; com/usr/org
 -- are a projection rebuilt from it. seen_at (LOCAL arrival) is the replication cursor,
 -- never the attacker-controlled signed ts.
+-- NOTE: this table is duplicated verbatim in migrate.sql (the applied prod migration) —
+-- schema changes must touch both.
 create table dht (
   k        text primary key,                       -- content hash = sha256(canonical signed bytes)
   seq      bigserial,                               -- strictly-increasing LOCAL arrival order = the replication cursor
@@ -106,6 +107,9 @@ create unique index dht_seq_idx on dht (seq);
 create index dht_seen_idx on dht (seen_at);
 create index dht_id_idx on dht (id);
 create index dht_members_idx on dht using gin (members);
+create index dht_kind_ts_idx on dht (kind, pubkey, ts desc);
+create index dht_tags_idx on dht using gin (tags);
+create index dht_target_idx on dht (target);
 
 -- single-use drain-auth challenge nonces (so a captured Authorization header can't be replayed)
 create table used_nonce (
@@ -113,9 +117,6 @@ create table used_nonce (
   exp   bigint not null
 );
 create index used_nonce_exp_idx on used_nonce (exp);
-create index dht_kind_ts_idx on dht (kind, pubkey, ts desc);
-create index dht_tags_idx on dht using gin (tags);
-create index dht_target_idx on dht (target);
 
 create view stat_usr as
 with posts as (

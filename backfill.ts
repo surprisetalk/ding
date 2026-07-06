@@ -13,7 +13,7 @@
 //   optional: BACKFILL_LIMIT (rows/pass; default all), BACKFILL_CONCURRENCY (default 8)
 
 import pg from "postgres";
-import { buildMsg, exportJwk, genKey, idOf, importPriv, pubHexOf, signRow, unwrapSecret, wrapSecret } from "./dht.ts";
+import { buildMsg, ensureCustodialKey, signRow } from "./dht.ts";
 
 type Sql = ReturnType<typeof pg>;
 type ComRow = {
@@ -37,33 +37,10 @@ export const backfill = async (
   const keyFor = (name: string) => {
     let p = cache.get(name);
     if (p) return p;
-    p = (async () => {
-      const [u] = await sql`select pubkey, seckey_enc, id from usr where name = ${name}`;
-      if (u?.pubkey && u?.seckey_enc) {
-        const id = u.id ?? await idOf(u.pubkey);
-        if (!u.id) await sql`update usr set id = ${id} where name = ${name}`;
-        return {
-          priv: await importPriv(JSON.parse(await unwrapSecret(u.seckey_enc, KEY_WRAP_SECRET))),
-          pub: u.pubkey,
-          id,
-        };
-      }
-      // Mint atomically (where pubkey is null) so we never clobber a key the live server
-      // minted concurrently for the same user — that would split their identity / lose a key.
-      const kp = await genKey(), pub = await pubHexOf(kp), id = await idOf(pub);
-      const enc = await wrapSecret(JSON.stringify(await exportJwk(kp)), KEY_WRAP_SECRET);
-      const claimed = await sql`
-        update usr set pubkey = ${pub}, seckey_enc = ${enc}, id = ${id} where name = ${name} and pubkey is null
-        returning pubkey`;
-      if (claimed.length) return { priv: kp.privateKey, pub, id };
-      const [u2] = await sql`select pubkey, seckey_enc, id from usr where name = ${name}`; // lost the race → adopt theirs
-      const id2 = u2.id ?? await idOf(u2.pubkey);
-      return {
-        priv: await importPriv(JSON.parse(await unwrapSecret(u2.seckey_enc, KEY_WRAP_SECRET))),
-        pub: u2.pubkey,
-        id: id2,
-      };
-    })();
+    p = ensureCustodialKey(sql, name, KEY_WRAP_SECRET).then((key) => {
+      if (!key) throw new Error(`@${name} is self-custody — cannot sign their history with a custodial key.`);
+      return key;
+    });
     cache.set(name, p);
     return p;
   };

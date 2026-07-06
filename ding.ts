@@ -11,6 +11,7 @@ import {
   genKey,
   idOf,
   importPriv,
+  nowSec,
   parseLabels,
   pubHexOf,
   type Row,
@@ -21,6 +22,8 @@ const YEAR = 365 * 86400;
 
 const DB = Deno.env.get("DING_DB") ?? "https://db.ding.bar";
 const KEY_PATH = `${Deno.env.get("HOME")}/.ding/key.json`;
+
+const csv = (s?: string) => (s ?? "").split(",").map((x) => x.trim()).filter(Boolean);
 
 const die = (msg: string): never => {
   console.error(`ding: ${msg}`);
@@ -94,17 +97,17 @@ switch (cmd) {
     const l = parseLabels(positional.slice(1).join(" "));
     const key = await loadKey();
     const payload = buildMsg({ tags: l.tag, orgs: l.org, usrs: l.usr, body });
-    await send(await signRow("msg", Math.floor(Date.now() / 1000), payload, key.priv, key.pub));
+    await send(await signRow("msg", nowSec(), payload, key.priv, key.pub));
     break;
   }
   case "usr": {
     // declare an identity register: a self-asserted name/bio + links the checkmark
     // cron will verify (DNS TXT, GitHub bio) into dns:/github: marks
     if (!flags.name) die(`usage: ding usr --name=taylor_town [--bio=hello] [--links=taylor.town,github.com/you]`);
-    const links = (flags.links ?? "").split(",").map((s) => s.trim()).filter(Boolean);
+    const links = csv(flags.links);
     const key = await loadKey();
     const payload = { name: flags.name, bio: flags.bio ?? "", links };
-    await send(await signRow("usr", Math.floor(Date.now() / 1000), payload, key.priv, key.pub));
+    await send(await signRow("usr", nowSec(), payload, key.priv, key.pub));
     break;
   }
   case "flag": {
@@ -112,17 +115,17 @@ switch (cmd) {
     if (!/^[0-9a-f]{64}$/.test(target ?? ""))
       die(`usage: ding flag <content-hash>  (64 hex chars; identity flagging by handle is not yet supported)`);
     const key = await loadKey();
-    await send(await signRow("flag", Math.floor(Date.now() / 1000), { target }, key.priv, key.pub));
+    await send(await signRow("flag", nowSec(), { target }, key.priv, key.pub));
     break;
   }
   case "org": {
     // an org register: the org IS this key. members are 64-hex ids who may read *org content.
     if (!flags.name) die(`usage: ding org --name=nba [--bio=...] [--links=nba.com] [--members=id1,id2]`);
-    const links = (flags.links ?? "").split(",").map((s) => s.trim()).filter(Boolean);
-    const members = (flags.members ?? "").split(",").map((s) => s.trim()).filter(Boolean);
+    const links = csv(flags.links);
+    const members = csv(flags.members);
     const key = await loadKey();
     const payload = { name: flags.name, bio: flags.bio ?? "", links, members };
-    await send(await signRow("org", Math.floor(Date.now() / 1000), payload, key.priv, key.pub));
+    await send(await signRow("org", nowSec(), payload, key.priv, key.pub));
     break;
   }
   case "mark": {
@@ -131,8 +134,8 @@ switch (cmd) {
     if (!/^[0-9a-f]{64}$/.test(subject ?? ""))
       die(`usage: ding mark <id>  (the 64-hex id of the identity you vouch for)`);
     const key = await loadKey();
-    const payload = buildMark(subject, "vouch", Math.floor(Date.now() / 1000) + YEAR);
-    await send(await signRow("mark", Math.floor(Date.now() / 1000), payload, key.priv, key.pub));
+    const payload = buildMark(subject, "vouch", nowSec() + YEAR);
+    await send(await signRow("mark", nowSec(), payload, key.priv, key.pub));
     break;
   }
   case "id": {
