@@ -1767,6 +1767,36 @@ app.onError((err, c) => {
   );
 });
 
+// Feed-query fragments, shared by GET / and GET /c so the two feeds can't drift.
+// Builders are FUNCTIONS (fragments must read the live `sql` — tests swap it via setSql).
+// The feed ACL: post is visible if its orgs are within the viewer's readable orgs AND
+// it's not a DM — unless the viewer is a recipient or the author.
+const visibleTo = (rT: string[], me: string) =>
+  sql`orgs <@ ${rT}::text[] and (usrs = '{}' or ${me}::text = any(usrs) or created_by = ${me})`;
+
+const orderBy = (s: string) =>
+  s === "new" ? sql`created_at desc` : s === "top" ? sql`reaction_count desc, created_at desc` : sql`score desc`;
+
+// Per-row aggregates (comment count / reaction tallies / the viewer's own reactions),
+// repeated at every nesting level; `a` is the row alias at that level.
+const aggComments = (a: string) =>
+  sql`(select count(*) from com x where x.parent_cid = ${sql(a)}.cid and char_length(x.body) > 1)`;
+const aggReactionCounts = (a: string) =>
+  sql`(select coalesce(jsonb_object_agg(body, cnt), '{}') from (select body, count(*) as cnt from com where parent_cid = ${
+    sql(a)
+  }.cid and char_length(body) = 1 group by body) r)`;
+const aggUserReactions = (a: string, me: string) =>
+  sql`array(select body from com where parent_cid = ${sql(a)}.cid and char_length(body) = 1 and created_by = ${me})`;
+const aggCols = (a: string, me: string) =>
+  sql`${aggComments(a)} as comments,
+      (select count(*) from com x where x.parent_cid = ${sql(a)}.cid and char_length(x.body) = 1) as reaction_count,
+      ${aggReactionCounts(a)} as reaction_counts,
+      ${aggUserReactions(a, me)} as user_reactions`;
+const aggPairs = (a: string, me: string) =>
+  sql`'comments', ${aggComments(a)},
+      'reaction_counts', ${aggReactionCounts(a)},
+      'user_reactions', ${aggUserReactions(a, me)}`;
+
 app.get("/", async (c) => {
   const q = c.req.query(),
     p = Math.max(0, Math.trunc(+(q.p || 0)) || 0),
@@ -1815,29 +1845,15 @@ app.get("/", async (c) => {
   `;
 
   const items = await sql`
-    select c.*,
-      (select count(*) from com c_ where c_.parent_cid = c.cid and char_length(c_.body) > 1) as comments,
-      (select count(*) from com r where r.parent_cid = c.cid and char_length(r.body) = 1) as reaction_count,
-      (select coalesce(jsonb_object_agg(body, cnt), '{}') from (select body, count(*) as cnt from com where parent_cid = c.cid and char_length(body) = 1 group by body) r) as reaction_counts,
-      array(select body from com where parent_cid = c.cid and char_length(body) = 1 and created_by = ${
-    name || ""
-  }) as user_reactions,
+    select c.*, ${aggCols("c", me)},
       array(select jsonb_build_object('body', ch.body, 'created_by', ch.created_by, 'cid', ch.cid, 'created_at', ch.created_at, 'c_flags', ch.c_flags,
-        'comments', (select count(*) from com c2 where c2.parent_cid = ch.cid and char_length(c2.body) > 1),
-        'reaction_counts', (select coalesce(jsonb_object_agg(body, cnt), '{}') from (select body, count(*) as cnt from com where parent_cid = ch.cid and char_length(body) = 1 group by body) r),
-        'user_reactions', array(select body from com where parent_cid = ch.cid and char_length(body) = 1 and created_by = ${
-    name || ""
-  })
+        ${aggPairs("ch", me)}
       ) from com ch where ch.parent_cid = c.cid and char_length(ch.body) > 1 order by ch.created_at desc) as child_comments
-    from com c where parent_cid is null and char_length(c.body) > 0 and orgs <@ ${rT}::text[] and (usrs = '{}' or ${
-    name || ""
-  }::text = any(usrs) or created_by = ${name || ""})
+    from com c where parent_cid is null and char_length(c.body) > 0 and ${visibleTo(rT, me)}
     ${tags.length ? sql`and tags @> ${tags}::text[]` : sql``}
     ${orgs.length ? sql`and orgs @> ${orgs}::text[]` : sql``}
     ${usrs.length ? sql`and usrs @> ${usrs}::text[]` : sql``}
-    order by ${
-    s === "new" ? sql`created_at desc` : s === "top" ? sql`reaction_count desc, created_at desc` : sql`score desc`
-  }
+    order by ${orderBy(s)}
     offset ${p * 25} limit 25
   `;
 
@@ -2894,24 +2910,11 @@ app.get("/c/:cid?", async (c) => {
       ? sql`exists(select 1 from dht m where m.kind='mark' and m.target = c.author_id and m.pubkey = ${DING_ORG_PK} and m.val->'mark'->>'v' in ('email','payment','human') and (m.val->'mark'->>'exp')::bigint > extract(epoch from now()))`
       : sql`false`
   } as checked,
-      (select count(*) from com c_ where c_.parent_cid = c.cid and char_length(c_.body) > 1) as comments,
-      (select count(*) from com r where r.parent_cid = c.cid and char_length(r.body) = 1) as reaction_count,
-      (select coalesce(jsonb_object_agg(body, cnt), '{}') from (select body, count(*) as cnt from com where parent_cid = c.cid and char_length(body) = 1 group by body) r) as reaction_counts,
-      array(select body from com where parent_cid = c.cid and char_length(body) = 1 and created_by = ${
-    n || ""
-  }) as user_reactions,
+      ${aggCols("c", n || "")},
       array(select jsonb_build_object('body', ch.body, 'created_by', ch.created_by, 'cid', ch.cid, 'parent_cid', ch.parent_cid, 'created_at', ch.created_at, 'tags', ch.tags, 'orgs', ch.orgs, 'usrs', ch.usrs, 'c_flags', ch.c_flags,
-        'comments', (select count(*) from com c2 where c2.parent_cid = ch.cid and char_length(c2.body) > 1),
-        'reaction_counts', (select coalesce(jsonb_object_agg(body, cnt), '{}') from (select body, count(*) as cnt from com where parent_cid = ch.cid and char_length(body) = 1 group by body) r),
-        'user_reactions', array(select body from com where parent_cid = ch.cid and char_length(body) = 1 and created_by = ${
-    n || ""
-  }),
+        ${aggPairs("ch", n || "")},
         'child_comments', array(select jsonb_build_object('body', gc.body, 'created_by', gc.created_by, 'cid', gc.cid, 'parent_cid', gc.parent_cid, 'created_at', gc.created_at, 'tags', gc.tags, 'orgs', gc.orgs, 'usrs', gc.usrs, 'c_flags', gc.c_flags,
-          'comments', (select count(*) from com c3 where c3.parent_cid = gc.cid and char_length(c3.body) > 1),
-          'reaction_counts', (select coalesce(jsonb_object_agg(body, cnt), '{}') from (select body, count(*) as cnt from com where parent_cid = gc.cid and char_length(body) = 1 group by body) r),
-          'user_reactions', array(select body from com where parent_cid = gc.cid and char_length(body) = 1 and created_by = ${
-    n || ""
-  })
+          ${aggPairs("gc", n || "")}
         ) from com gc where gc.parent_cid = ch.cid and char_length(gc.body) > 1 order by gc.created_at desc)
       ) from com ch where ch.parent_cid = c.cid and char_length(ch.body) > 1 order by ch.created_at desc) as child_comments
     from com c where ${
@@ -2922,9 +2925,7 @@ app.get("/c/:cid?", async (c) => {
       : sql`parent_cid is null`
   }
     ${usrs.length ? sql`and created_by = any(${usrs}::citext[])` : sql``}
-    and tags @> ${tags}::text[] and orgs <@ ${rT}::text[] and (usrs = '{}' or ${
-    n || ""
-  }::text = any(usrs) or created_by = ${n || ""})
+    and tags @> ${tags}::text[] and ${visibleTo(rT, n || "")}
     ${orgs.length ? sql`and orgs && ${orgs}::text[]` : sql``}
     ${
     mens.length ? sql`and (usrs && ${mens}::text[] or mentions && ${mens.map((m) => m.toLowerCase())}::text[])` : sql``
@@ -2934,9 +2935,7 @@ app.get("/c/:cid?", async (c) => {
     ${q.reactions ? sql`and char_length(body) = 1` : sql``}
     ${q.comments ? sql`and char_length(body) > 1` : sql``}
     ${q.q ? sql`and to_tsvector('english', body) @@ plainto_tsquery('english', ${q.q})` : sql``}
-    order by ${
-    s === "new" ? sql`created_at desc` : s === "top" ? sql`reaction_count desc, created_at desc` : sql`score desc`
-  }
+    order by ${orderBy(s)}
     offset ${p * lim} limit ${lim}
   `;
 
@@ -2974,9 +2973,7 @@ app.get("/c/:cid?", async (c) => {
     const singleUsr = onlyFilter && usrs.length === 1 && !tags.length && !orgs.length ? usrs[0] : null;
     const tagCount = singleTag
       ? (
-        await sql`select count(*)::int as count from com where ${singleTag} = any(tags) and orgs <@ ${rT}::text[] and (usrs = '{}' or ${
-          n || ""
-        }::text = any(usrs) or created_by = ${n || ""})`
+        await sql`select count(*)::int as count from com where ${singleTag} = any(tags) and ${visibleTo(rT, n || "")}`
       )[0].count
       : null;
     const orgInfo = singleOrg
@@ -3082,9 +3079,9 @@ app.get("/c/:cid?", async (c) => {
   const post = items[0];
   if (!post) return notFound();
   const backlinks =
-    await sql`select cid, body, created_at from com where parent_cid is null and ${post.cid} = any(links) and orgs <@ ${rT}::text[] and (usrs = '{}' or ${
-      n || ""
-    }::text = any(usrs) or created_by = ${n || ""}) order by created_at desc limit 5`;
+    await sql`select cid, body, created_at from com where parent_cid is null and ${post.cid} = any(links) and ${
+      visibleTo(rT, n || "")
+    } order by created_at desc limit 5`;
   const replies = (post.child_comments || []).filter(
     (r: ChildCom) => !isReaction(r.body),
   );
