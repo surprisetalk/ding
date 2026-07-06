@@ -10,6 +10,8 @@ const dec = new TextDecoder();
 // per-row drop from an infrastructure error that should surface as a 5xx.
 export class DhtReject extends Error {}
 
+export const nowSec = () => Math.floor(Date.now() / 1000); // row ts are integer epoch-seconds
+
 export const hex = (b: Uint8Array) => Array.from(b).map((x) => x.toString(16).padStart(2, "0")).join("");
 export const unhex = (s: string) => {
   if (!/^[0-9a-f]*$/.test(s) || s.length % 2) throw new Error(`bad hex: ${s.slice(0, 16)}…`);

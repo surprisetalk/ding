@@ -29,6 +29,7 @@ import {
   type Kind,
   KINDS,
   type Labels,
+  nowSec,
   parseLabels,
   PFX,
   pubHexOf,
@@ -182,6 +183,16 @@ const resolveThumbnail = async (url: string) => {
   }
   return `https://www.google.com/s2/favicons?domain=${new URL(url).hostname}&sz=128`;
 };
+
+// Everything com derives from a body: mentions/links/domains, plus (root posts only)
+// a thumbnail — which may fetch the first URL, so call OUTSIDE any transaction.
+const deriveBody = async (body: string, isRoot: boolean) => ({
+  mentions: extractMentions(body),
+  links: extractLinks(body),
+  domains: extractDomains(body),
+  thumb: !isRoot ? null : extractImageUrl(body) ||
+    (extractFirstUrl(body) ? await resolveThumbnail(extractFirstUrl(body)!) : null),
+});
 
 //// LABEL PARSING /////////////////////////////////////////////////////////////
 // parseLabels / Labels / PFX live in dht.ts (shared with the CLI); re-exported above.
@@ -348,6 +359,13 @@ const ensureKey = async (name: string): Promise<{ priv: CryptoKey; pub: string }
   return custodialSigner(now.seckey_enc, now.pubkey);
 };
 
+// A new child bumps its parent's denormalized counters: reactions land in the
+// c_reactions hstore, real comments in c_comments.
+const bumpCounts = (db: Sql, cid: number | string, body: string) =>
+  isReaction(body)
+    ? db`update com set c_reactions = c_reactions || hstore(${body}, (coalesce((c_reactions->${body})::int,0)+1)::text) where cid = ${cid}`
+    : db`update com set c_comments = c_comments + 1 where cid = ${cid}`;
+
 // Store a signed row in the dht log and project it: msg -> com; flag -> the target's
 // distinct-flagger count. dht is the source of truth, com the rebuildable projection —
 // so the log insert + projection share ONE transaction (a partial failure rolls back
@@ -361,7 +379,7 @@ export const ingestMsg = async (
   if (opts.verify) {
     try {
       await verifyRow(row);
-      if (row.ts > Math.floor(Date.now() / 1000) + 3600) {
+      if (row.ts > nowSec() + 3600) {
         throw new DhtReject(
           `row ${String(row.k).slice(0, 8)}…: ts ${row.ts} is more than 1h in the future — clock skew or forgery.`,
         );
@@ -416,11 +434,7 @@ export const ingestMsg = async (
     ? (await sql`select cid from com where hash = ${parentHash}`)[0]?.cid ?? null
     : null;
   const author_id = kind === "msg" ? await idOf(pubkey) : null;
-  const mentions = extractMentions(body);
-  const links = extractLinks(body);
-  const domains = extractDomains(body);
-  const thumb = kind !== "msg" || parentCid != null ? null : extractImageUrl(body) ||
-    (extractFirstUrl(body) ? await resolveThumbnail(extractFirstUrl(body)!) : null);
+  const { mentions, links, domains, thumb } = await deriveBody(body, kind === "msg" && parentCid == null);
 
   // delivery scope (orgs/usrs) is meaningful only on msg rows; force '{}' elsewhere so a
   // signed non-msg row can't craft a value that games the drain's visibility gate.
@@ -461,12 +475,7 @@ export const ingestMsg = async (
     const [{ fn }] = await tx`select count(distinct pubkey)::int as fn from dht where kind = 'flag' and target = ${k}`;
     if (fn > 0) await tx`update com set c_flags = ${fn} where cid = ${cm.cid}`;
     if (fn >= FLAG_THRESHOLD) await tx`update dht set flagged = true where k = ${k}`;
-    if (parentCid != null) {
-      if (isReaction(body))
-        await tx`update com set c_reactions = c_reactions || hstore(${body}, (coalesce((c_reactions->${body})::int,0)+1)::text) where cid = ${parentCid}`;
-      else
-        await tx`update com set c_comments = c_comments + 1 where cid = ${parentCid}`;
-    }
+    if (parentCid != null) await bumpCounts(tx, parentCid, body);
     return { cid: cm.cid, isNew: true, scoreTarget: parentCid ?? cm.cid };
   });
   if (res.isNew && res.scoreTarget != null) await refreshScores(res.scoreTarget);
@@ -524,6 +533,10 @@ type DhtFull = {
 };
 type WsSub = { qs: ReturnType<typeof parseQ>[]; onRow: (r: DhtFull) => void };
 const wsSubs = new Set<WsSub>();
+// The on-the-wire NDJSON row shape. The WS live-tail and the HTTP drain MUST emit
+// byte-identical rows (subscribers dedup by k across both paths).
+const wireRow = (r: Pick<DhtFull, "k" | "kind" | "pubkey" | "ts" | "sig" | "val">) =>
+  JSON.stringify({ k: r.k, kind: r.kind, pubkey: r.pubkey, ts: Number(r.ts), sig: r.sig, ...r.val });
 const supersetOf = (have: string[], need: string[]) => need.every((n) => have.includes(n));
 export const matchesQ = (r: Pick<DhtFull, "kind" | "tags" | "orgs" | "usrs">, qs: WsSub["qs"]) =>
   qs.length === 0 ||
@@ -570,7 +583,7 @@ const nonceHmac = async (body: string) => {
   return hex(new Uint8Array(await crypto.subtle.sign("HMAC", key, new TextEncoder().encode(`nonce:${body}`))));
 };
 const nodeChallenge = async () => {
-  const now = Math.floor(Date.now() / 1000);
+  const now = nowSec();
   await sql`delete from used_nonce where exp < ${now}`; // GC spent nonces
   const body = `${now + 60}:${hex(crypto.getRandomValues(new Uint8Array(8)))}`;
   return `${body}:${await nonceHmac(body)}`;
@@ -578,7 +591,7 @@ const nodeChallenge = async () => {
 const nonceValid = async (nonce: string) => {
   const [expStr, salt, h] = nonce.split(":");
   const exp = parseInt(expStr);
-  return !!exp && !!salt && !!h && exp > Math.floor(Date.now() / 1000) && h === await nonceHmac(`${expStr}:${salt}`);
+  return !!exp && !!salt && !!h && exp > nowSec() && h === await nonceHmac(`${expStr}:${salt}`);
 };
 // Authorization: `Ding <pubkey> <nonce> <sig>`  (sig = Ed25519(pubkey, nonce)). Returns
 // the authenticated id, or "" (which sees only public rows). Nonces are single-use.
@@ -631,7 +644,7 @@ export const discoverPeers = async (bootstrap: string): Promise<{ ips: string[];
 
 // Announce this node's dialable origins + the queries it serves, so others can find us.
 export const publishPeer = async (bootstrap: string, ips: string[], serves: string[], priv: CryptoKey, pub: string) => {
-  const row = await signRow("peer", Math.floor(Date.now() / 1000), { ips, serves }, priv, pub);
+  const row = await signRow("peer", nowSec(), { ips, serves }, priv, pub);
   await fetch(bootstrap, {
     method: "POST",
     headers: { "content-type": "application/x-ndjson" },
@@ -668,6 +681,9 @@ const resendErrBody = (err: unknown) => {
   const r = (err as { response?: { body?: unknown } })?.response;
   return r?.body ?? err;
 };
+
+const logEmailFailure = (where: string, email: string, err: unknown) =>
+  console.error(`${where} email_failed for ${email}:`, resendErrBody(err));
 
 const VERIFY_COOLDOWN = `5 minutes`;
 
@@ -726,7 +742,8 @@ export const stripe = new Stripe(
 
 // A gray ✓ rendered BEFORE a handle when that name is verified (live trust-root mark).
 const isVerified = (name?: string | null | false) => !!name && verified.names.has(name.toLowerCase());
-const Check = (name?: string | null) => isVerified(name) ? <span class="check" title="verified">✓</span> : null;
+const checkSpan = () => <span class="check" title="verified">✓</span>;
+const Check = (name?: string | null) => isVerified(name) ? checkSpan() : null;
 
 const User = (u: Usr, viewerName?: string) => {
   const isOwner = viewerName && viewerName == u.name;
@@ -783,6 +800,21 @@ const SortToggle = ({
     </nav>
   );
 };
+
+const pageHref = (base: string, cur: URLSearchParams, p: number) => {
+  const n = new URLSearchParams(cur);
+  n.set("p", String(p));
+  return `${base}?${n}`;
+};
+
+const Pagination = ({ base, cur, p, more }: { base: string; cur: URLSearchParams; p: number; more: boolean }) => (
+  <section>
+    <div class="pagination">
+      {p > 0 ? <a href={pageHref(base, cur, p - 1)}>prev</a> : <span />}
+      {more && <a href={pageHref(base, cur, p + 1)}>next</a>}
+    </div>
+  </section>
+);
 
 const ActiveFilters = ({
   params,
@@ -993,7 +1025,7 @@ const Meta = (
         {Reactions(c, votesOnly)}
       </span>
       {c.parent_cid && <a href={`/c/${c.parent_cid}`}>parent</a>}
-      {c.created_by ? Check(c.created_by) : (c as Com).checked && <span class="check" title="verified">✓</span>}
+      {c.created_by ? Check(c.created_by) : (c as Com).checked && checkSpan()}
       {c.created_by
         ? <a href={`/u/${c.created_by}`}>@{c.created_by}</a>
         : <span class="author-foreign">@{((c as Com).author_id ?? "").slice(0, 8) || "anon"}</span>}
@@ -1120,6 +1152,27 @@ const basicAuthName = async (c: Context): Promise<string | null> => {
   }
 };
 
+// Optionally-authed viewer: session cookie if present, else Basic auth, else anonymous.
+const viewer = async (c: Context): Promise<string | undefined> =>
+  c.get("name") ?? (await basicAuthName(c)) ?? undefined;
+
+const threadUrl = (parent: number | string | null | undefined, cid: number | string) =>
+  parent ? `/c/${parent}#${cid}` : `/c/${cid}`;
+
+const getOrg = async (c: Context) => {
+  const [org] = await sql`select * from org where name = ${c.req.param("name")}`;
+  if (!org) notFound();
+  return org;
+};
+
+// Bump the org subscription's seat count by ±1 (never below 1); returns the new count.
+const subQty = async (subId: string, delta: 1 | -1) => {
+  const sub = await stripe.subscriptions.retrieve(subId);
+  const qty = sub.items.data[0].quantity! + delta;
+  if (qty >= 1) await stripe.subscriptions.update(subId, { items: [{ id: sub.items.data[0].id, quantity: qty }] });
+  return qty;
+};
+
 const authed = some(
   createMiddleware<{ Variables: { name: string } }>(async (c, next) => {
     const n = await getSignedCookie(c, cookieSecret, "name");
@@ -1154,212 +1207,9 @@ const MIME_BY_EXT: Record<string, string> = {
 };
 const MAX_UPLOAD_BYTES = 25 * 1024 * 1024;
 
-app.use("*", async (c, next) => {
-  if (host(c) !== "i") return next();
-  const seg = c.req.path.replace(/^\//, "");
-  if (!IMG_EXT_RE.test(seg)) throw new HTTPException(404);
-  const r2Url = Deno.env.get("R2_PUBLIC_URL");
-  if (!r2Url) throw new HTTPException(500, { message: "R2_PUBLIC_URL unset" });
-  const res = await fetch(`${r2Url}/i/${seg}`);
-  if (!res.ok) {
-    throw new HTTPException((res.status === 404 ? 404 : 502) as 404 | 502, {
-      message: res.status === 404 ? "Image not found." : `Image upstream failed (status ${res.status}).`,
-    });
-  }
-  return new Response(res.body, {
-    headers: {
-      "Content-Type": res.headers.get("content-type") ?? "application/octet-stream",
-      "Cache-Control": "public, max-age=31536000, immutable",
-    },
-  });
-});
-
-// Public POST /db ingest rate limits (in-memory, per-isolate like postRate — tune for prod).
-// `ip` bounds a single source (incl. sybil key-minting + verify-CPU); `key` bounds per-identity
-// DHT bloat. Per-pubkey alone is sybil-bypassable (keys are free) — a future "require a checkmark
-// to gossip" closes that. Limits live on the object so they're tunable / overridable in tests.
-export const dbIngestRate = {
-  ip: new Map<string, number[]>(),
-  key: new Map<string, number[]>(),
-  reqPerMin: 300,
-  rowsPerKeyPerMin: 120,
-  windowMs: 60_000,
-};
-const rateBump = (m: Map<string, number[]>, k: string, max: number): boolean => {
-  const now = Date.now();
-  const fresh = (m.get(k) ?? []).filter((t) => now - t < dbIngestRate.windowMs);
-  m.set(k, fresh);
-  if (fresh.length >= max) return false;
-  fresh.push(now);
-  return true;
-};
-
-// db.ding.bar node endpoint: POST ingests signed rows (per-row verify + rate-limit, drop bad);
-// GET drains the dht log oldest->newest by local seen_at, filtered by q=.
-app.use("*", async (c, next) => {
-  if (host(c) !== "db") return next();
-  if (c.req.method === "POST") {
-    const ip = (c.req.header("x-forwarded-for") ?? "").split(",")[0].trim() || "unknown";
-    if (!rateBump(dbIngestRate.ip, ip, dbIngestRate.reqPerMin))
-      throw new HTTPException(429, { message: "ingest rate limit — slow down." });
-    if (+(c.req.header("content-length") ?? 0) > 8_000_000)
-      throw new HTTPException(413, { message: "ingest body too large (max 8MB per request)." });
-    const lines = (await c.req.text()).split("\n").map((l) => l.trim()).filter(Boolean);
-    if (lines.length > 10_000) throw new HTTPException(413, { message: "too many rows (max 10000 per request)." });
-    const gate = (pubkey: string) => {
-      if (!rateBump(dbIngestRate.key, pubkey, dbIngestRate.rowsPerKeyPerMin)) {
-        throw new DhtReject(
-          `row from ${pubkey.slice(0, 8)}…: rate limit ${dbIngestRate.rowsPerKeyPerMin} rows/min/pubkey.`,
-        );
-      }
-    };
-    let okN = 0;
-    const errors: string[] = [];
-    for (const line of lines) {
-      // Per-row drops (bad json / bad sig / policy) are collected; infrastructure
-      // errors (DB down, etc.) propagate to a real 5xx so peers retry.
-      let row: Row;
-      try {
-        row = JSON.parse(line) as Row;
-      } catch {
-        errors.push("row: not valid JSON.");
-        continue;
-      }
-      try {
-        await ingestMsg(row, { verify: true, gate });
-        okN++;
-      } catch (e) {
-        if (!(e instanceof DhtReject)) throw e;
-        errors.push(e.message);
-        console.error(`dht ingest drop: ${e.message}`);
-      }
-    }
-    return c.json({ ok: okN, bad: errors.length, errors });
-  }
-  // WebSocket live-tail (optional, low-latency). Runs on Deno Deploy: WS is supported and
-  // Postgres LISTEN/NOTIFY coordinates cross-isolate (the POST that fires pg_notify and the
-  // shared sql.listen needn't share a process). Each subscriber registers in `wsSubs` and is
-  // fed by ONE per-isolate listener (see startDhtListener) — no DB connection per subscriber.
-  // PUBLIC rows only; auth-gated private delivery stays on the HTTP drain.
-  // Drain history → {hb:<seq>} → live-tail via NOTIFY.
-  if (c.req.method === "GET" && (c.req.header("upgrade") ?? "").toLowerCase() === "websocket") {
-    const url = new URL(c.req.url);
-    const qs = url.searchParams.getAll("q").map(parseQ);
-    let after = /^\d+$/.test(url.searchParams.get("after") ?? "") ? BigInt(url.searchParams.get("after")!) : 0n;
-    const frame = (r: DhtFull) =>
-      JSON.stringify({ k: r.k, kind: r.kind, pubkey: r.pubkey, ts: Number(r.ts), sig: r.sig, ...r.val });
-    let mySub: WsSub | undefined;
-    let hb: ReturnType<typeof setInterval> | undefined;
-    let closed = false;
-    return upgradeWebSocket(() => ({
-      async onOpen(_e: Event, ws: { send: (s: string) => void }) {
-        for (;;) { // drain public history oldest→newest
-          if (closed) return;
-          const rows = await sql`
-            select k, seq, kind, pubkey, ts, sig, val, tags, orgs, usrs from dht
-            where seq > ${after} and orgs = '{}' and usrs = '{}' and (${dhtWhere(qs)})
-            order by seq asc limit 1000` as unknown as DhtFull[];
-          if (!rows.length) break;
-          for (const r of rows) {
-            ws.send(frame(r));
-            after = BigInt(r.seq);
-          }
-        }
-        if (closed) return;
-        ws.send(JSON.stringify({ hb: String(after) }));
-        // register with the shared per-isolate listener (no per-subscriber DB connection)
-        mySub = {
-          qs,
-          onRow: (r) => {
-            ws.send(frame(r));
-            after = BigInt(r.seq);
-          },
-        };
-        wsSubs.add(mySub);
-        await startDhtListener();
-        // catch-up: any rows ingested between the history drain and registration (client
-        // dedups by k, so a row caught by both the sweep and the live listener is harmless).
-        for (
-          const r of await sql`
-            select k, seq, kind, pubkey, ts, sig, val, tags, orgs, usrs from dht
-            where seq > ${after} and orgs = '{}' and usrs = '{}' and (${dhtWhere(qs)})
-            order by seq asc limit 1000` as unknown as DhtFull[]
-        ) {
-          ws.send(frame(r));
-          after = BigInt(r.seq);
-        }
-        hb = setInterval(() => ws.send(JSON.stringify({ hb: String(after) })), 60_000);
-      },
-      async onClose() {
-        closed = true;
-        if (hb !== undefined) clearInterval(hb);
-        if (mySub) wsSubs.delete(mySub);
-        await stopDhtListenerIfIdle(); // last subscriber out → release the shared connection
-      },
-    }))(c, async () => {});
-  }
-  if (c.req.method === "GET") {
-    const url = new URL(c.req.url);
-    if (url.pathname === "/challenge") return c.json({ nonce: await nodeChallenge() });
-    const qs = url.searchParams.getAll("q").map(parseQ);
-    const afterRaw = url.searchParams.get("after") ?? "0";
-    const after = /^\d+$/.test(afterRaw) ? BigInt(afterRaw) : 0n;
-    // DEFAULT-DENY: serve only public rows, plus — for an authenticated identity — that
-    // id's private DMs and the *org rows of orgs whose current register lists it as a member.
-    const me = await drainAuthId(c);
-    const myOrgs = me
-      ? (await sql`select id from (select distinct on (pubkey) id, members from dht where kind = 'org' order by pubkey, ts desc) o where ${me}::text = any(o.members)`)
-        .map((r: { id: string }) => r.id)
-      : [];
-    type DhtRow = {
-      k: string;
-      seq: string;
-      kind: Kind;
-      pubkey: string;
-      ts: number;
-      sig: string;
-      val: Record<string, unknown>;
-    };
-    const rows = await sql`
-      select k, seq, kind, pubkey, ts, sig, val from dht
-      where seq > ${after} and seen_at > (${parseT(url.searchParams.get("t"))})::timestamp at time zone 'UTC'
-        and (orgs = '{}' or orgs && ${myOrgs}::text[]) and (usrs = '{}' or ${me}::text = any(usrs))
-        and (${dhtWhere(qs)})
-      order by seq asc limit 10000` as unknown as DhtRow[];
-    const body = rows
-      .map((r) => JSON.stringify({ k: r.k, kind: r.kind, pubkey: r.pubkey, ts: Number(r.ts), sig: r.sig, ...r.val }))
-      .join("\n");
-    const headers: Record<string, string> = { "content-type": "application/x-ndjson" };
-    if (rows.length) headers["x-ding-cursor"] = String(rows[rows.length - 1].seq);
-    return c.body(body, 200, headers);
-  }
-  throw new HTTPException(405, { message: `db.ding.bar accepts GET (drain) and POST (ingest), not ${c.req.method}.` });
-});
-
-const botRe = /bot|crawl|spider|slurp|bing|facebook|google|yandex|baidu|duck|sogou|semrush|ahref/i;
-
-app.use("*", async (c, next) => {
-  const url = new URL(c.req.url),
-    ua = c.req.header("User-Agent") || "";
-  if (url.searchParams.getAll("tag").length > 3)
-    throw new HTTPException(400, { message: "Too many tags. Use 3 or fewer." });
-  if (url.search && botRe.test(ua)) return c.text("Forbidden", 403);
-  const n = await getSignedCookie(c, cookieSecret, "name");
-  if (n) c.set("name", n);
-  else if (n === false) deleteCookie(c, "name", { path: "/" }); // stale cookie (e.g. COOKIE_SECRET rotated) → clear it
-  if (!host(c)) await refreshVerified(); // keep the verified-handle set warm for HTML renders
-  let unread = 0;
-  if (n && !host(c)) {
-    const [row] = await sql`
-      select count(*)::int as c from com
-      where created_by != ${n}
-        and orgs <@ (select orgs_r from usr where name = ${n})::text[]
-        and created_at > (select last_seen_at from usr where name = ${n})
-        and (${n}::text = any(usrs) or parent_cid in (select cid from com where created_by = ${n}))
-    `;
-    unread = row?.c || 0;
-  }
-  const scriptBody = `
+// Static client-side JS (uploads, drawing pad, search box, compose autosave). The
+// per-login notification poller is appended per-request in the "*" middleware.
+const CLIENT_SCRIPT = `
     document.querySelectorAll("pre").forEach(x => {
       x.innerHTML = x.innerHTML.replace(/(https?:\\/\\/\\S+)/g, u => {
         const isImg = /\\.(jpe?g|png|gif|webp|svg)(\\?.*)?$/i.test(u) || /^https?:\\/\\/(i\\.redd\\.it|i\\.imgur\\.com|pbs\\.twimg\\.com)\\//i.test(u);
@@ -1530,9 +1380,211 @@ app.use("*", async (c, next) => {
         if (ta.value) sessionStorage.setItem(KEY, ta.value);
       });
     })();
-    ${
-    n
-      ? `
+`;
+
+app.use("*", async (c, next) => {
+  if (host(c) !== "i") return next();
+  const seg = c.req.path.replace(/^\//, "");
+  if (!IMG_EXT_RE.test(seg)) throw new HTTPException(404);
+  const r2Url = Deno.env.get("R2_PUBLIC_URL");
+  if (!r2Url) throw new HTTPException(500, { message: "R2_PUBLIC_URL unset" });
+  const res = await fetch(`${r2Url}/i/${seg}`);
+  if (!res.ok) {
+    throw new HTTPException((res.status === 404 ? 404 : 502) as 404 | 502, {
+      message: res.status === 404 ? "Image not found." : `Image upstream failed (status ${res.status}).`,
+    });
+  }
+  return new Response(res.body, {
+    headers: {
+      "Content-Type": res.headers.get("content-type") ?? "application/octet-stream",
+      "Cache-Control": "public, max-age=31536000, immutable",
+    },
+  });
+});
+
+// Public POST /db ingest rate limits (in-memory, per-isolate like postRate — tune for prod).
+// `ip` bounds a single source (incl. sybil key-minting + verify-CPU); `key` bounds per-identity
+// DHT bloat. Per-pubkey alone is sybil-bypassable (keys are free) — a future "require a checkmark
+// to gossip" closes that. Limits live on the object so they're tunable / overridable in tests.
+export const dbIngestRate = {
+  ip: new Map<string, number[]>(),
+  key: new Map<string, number[]>(),
+  reqPerMin: 300,
+  rowsPerKeyPerMin: 120,
+  windowMs: 60_000,
+};
+const rateBump = (m: Map<string, number[]>, k: string, max: number): boolean => {
+  const now = Date.now();
+  const fresh = (m.get(k) ?? []).filter((t) => now - t < dbIngestRate.windowMs);
+  m.set(k, fresh);
+  if (fresh.length >= max) return false;
+  fresh.push(now);
+  return true;
+};
+
+// db.ding.bar node endpoint: POST ingests signed rows (per-row verify + rate-limit, drop bad);
+// GET drains the dht log oldest->newest by local seen_at, filtered by q=.
+app.use("*", async (c, next) => {
+  if (host(c) !== "db") return next();
+  if (c.req.method === "POST") {
+    const ip = (c.req.header("x-forwarded-for") ?? "").split(",")[0].trim() || "unknown";
+    if (!rateBump(dbIngestRate.ip, ip, dbIngestRate.reqPerMin))
+      throw new HTTPException(429, { message: "ingest rate limit — slow down." });
+    if (+(c.req.header("content-length") ?? 0) > 8_000_000)
+      throw new HTTPException(413, { message: "ingest body too large (max 8MB per request)." });
+    const lines = (await c.req.text()).split("\n").map((l) => l.trim()).filter(Boolean);
+    if (lines.length > 10_000) throw new HTTPException(413, { message: "too many rows (max 10000 per request)." });
+    const gate = (pubkey: string) => {
+      if (!rateBump(dbIngestRate.key, pubkey, dbIngestRate.rowsPerKeyPerMin)) {
+        throw new DhtReject(
+          `row from ${pubkey.slice(0, 8)}…: rate limit ${dbIngestRate.rowsPerKeyPerMin} rows/min/pubkey.`,
+        );
+      }
+    };
+    let okN = 0;
+    const errors: string[] = [];
+    for (const line of lines) {
+      // Per-row drops (bad json / bad sig / policy) are collected; infrastructure
+      // errors (DB down, etc.) propagate to a real 5xx so peers retry.
+      let row: Row;
+      try {
+        row = JSON.parse(line) as Row;
+      } catch {
+        errors.push("row: not valid JSON.");
+        continue;
+      }
+      try {
+        await ingestMsg(row, { verify: true, gate });
+        okN++;
+      } catch (e) {
+        if (!(e instanceof DhtReject)) throw e;
+        errors.push(e.message);
+        console.error(`dht ingest drop: ${e.message}`);
+      }
+    }
+    return c.json({ ok: okN, bad: errors.length, errors });
+  }
+  // WebSocket live-tail (optional, low-latency). Runs on Deno Deploy: WS is supported and
+  // Postgres LISTEN/NOTIFY coordinates cross-isolate (the POST that fires pg_notify and the
+  // shared sql.listen needn't share a process). Each subscriber registers in `wsSubs` and is
+  // fed by ONE per-isolate listener (see startDhtListener) — no DB connection per subscriber.
+  // PUBLIC rows only; auth-gated private delivery stays on the HTTP drain.
+  // Drain history → {hb:<seq>} → live-tail via NOTIFY.
+  if (c.req.method === "GET" && (c.req.header("upgrade") ?? "").toLowerCase() === "websocket") {
+    const url = new URL(c.req.url);
+    const qs = url.searchParams.getAll("q").map(parseQ);
+    let after = /^\d+$/.test(url.searchParams.get("after") ?? "") ? BigInt(url.searchParams.get("after")!) : 0n;
+    let mySub: WsSub | undefined;
+    let hb: ReturnType<typeof setInterval> | undefined;
+    let closed = false;
+    return upgradeWebSocket(() => ({
+      async onOpen(_e: Event, ws: { send: (s: string) => void }) {
+        for (;;) { // drain public history oldest→newest
+          if (closed) return;
+          const rows = await sql`
+            select k, seq, kind, pubkey, ts, sig, val, tags, orgs, usrs from dht
+            where seq > ${after} and orgs = '{}' and usrs = '{}' and (${dhtWhere(qs)})
+            order by seq asc limit 1000` as unknown as DhtFull[];
+          if (!rows.length) break;
+          for (const r of rows) {
+            ws.send(wireRow(r));
+            after = BigInt(r.seq);
+          }
+        }
+        if (closed) return;
+        ws.send(JSON.stringify({ hb: String(after) }));
+        // register with the shared per-isolate listener (no per-subscriber DB connection)
+        mySub = {
+          qs,
+          onRow: (r) => {
+            ws.send(wireRow(r));
+            after = BigInt(r.seq);
+          },
+        };
+        wsSubs.add(mySub);
+        await startDhtListener();
+        // catch-up: any rows ingested between the history drain and registration (client
+        // dedups by k, so a row caught by both the sweep and the live listener is harmless).
+        for (
+          const r of await sql`
+            select k, seq, kind, pubkey, ts, sig, val, tags, orgs, usrs from dht
+            where seq > ${after} and orgs = '{}' and usrs = '{}' and (${dhtWhere(qs)})
+            order by seq asc limit 1000` as unknown as DhtFull[]
+        ) {
+          ws.send(wireRow(r));
+          after = BigInt(r.seq);
+        }
+        hb = setInterval(() => ws.send(JSON.stringify({ hb: String(after) })), 60_000);
+      },
+      async onClose() {
+        closed = true;
+        if (hb !== undefined) clearInterval(hb);
+        if (mySub) wsSubs.delete(mySub);
+        await stopDhtListenerIfIdle(); // last subscriber out → release the shared connection
+      },
+    }))(c, async () => {});
+  }
+  if (c.req.method === "GET") {
+    const url = new URL(c.req.url);
+    if (url.pathname === "/challenge") return c.json({ nonce: await nodeChallenge() });
+    const qs = url.searchParams.getAll("q").map(parseQ);
+    const afterRaw = url.searchParams.get("after") ?? "0";
+    const after = /^\d+$/.test(afterRaw) ? BigInt(afterRaw) : 0n;
+    // DEFAULT-DENY: serve only public rows, plus — for an authenticated identity — that
+    // id's private DMs and the *org rows of orgs whose current register lists it as a member.
+    const me = await drainAuthId(c);
+    const myOrgs = me
+      ? (await sql`select id from (select distinct on (pubkey) id, members from dht where kind = 'org' order by pubkey, ts desc) o where ${me}::text = any(o.members)`)
+        .map((r: { id: string }) => r.id)
+      : [];
+    type DhtRow = {
+      k: string;
+      seq: string;
+      kind: Kind;
+      pubkey: string;
+      ts: number;
+      sig: string;
+      val: Record<string, unknown>;
+    };
+    const rows = await sql`
+      select k, seq, kind, pubkey, ts, sig, val from dht
+      where seq > ${after} and seen_at > (${parseT(url.searchParams.get("t"))})::timestamp at time zone 'UTC'
+        and (orgs = '{}' or orgs && ${myOrgs}::text[]) and (usrs = '{}' or ${me}::text = any(usrs))
+        and (${dhtWhere(qs)})
+      order by seq asc limit 10000` as unknown as DhtRow[];
+    const body = rows.map(wireRow).join("\n");
+    const headers: Record<string, string> = { "content-type": "application/x-ndjson" };
+    if (rows.length) headers["x-ding-cursor"] = String(rows[rows.length - 1].seq);
+    return c.body(body, 200, headers);
+  }
+  throw new HTTPException(405, { message: `db.ding.bar accepts GET (drain) and POST (ingest), not ${c.req.method}.` });
+});
+
+const botRe = /bot|crawl|spider|slurp|bing|facebook|google|yandex|baidu|duck|sogou|semrush|ahref/i;
+
+app.use("*", async (c, next) => {
+  const url = new URL(c.req.url),
+    ua = c.req.header("User-Agent") || "";
+  if (url.searchParams.getAll("tag").length > 3)
+    throw new HTTPException(400, { message: "Too many tags. Use 3 or fewer." });
+  if (url.search && botRe.test(ua)) return c.text("Forbidden", 403);
+  const n = await getSignedCookie(c, cookieSecret, "name");
+  if (n) c.set("name", n);
+  else if (n === false) deleteCookie(c, "name", { path: "/" }); // stale cookie (e.g. COOKIE_SECRET rotated) → clear it
+  if (!host(c)) await refreshVerified(); // keep the verified-handle set warm for HTML renders
+  let unread = 0;
+  if (n && !host(c)) {
+    const [row] = await sql`
+      select count(*)::int as c from com
+      where created_by != ${n}
+        and orgs <@ (select orgs_r from usr where name = ${n})::text[]
+        and created_at > (select last_seen_at from usr where name = ${n})
+        and (${n}::text = any(usrs) or parent_cid in (select cid from com where created_by = ${n}))
+    `;
+    unread = row?.c || 0;
+  }
+  const scriptBody = CLIENT_SCRIPT + (n
+    ? `
     (async () => {
       if (!("Notification" in window)) return;
       if (Notification.permission === "default") {
@@ -1559,9 +1611,7 @@ app.use("*", async (c, next) => {
       }, 60000);
     })();
     `
-      : ""
-  }
-  `;
+    : "");
   const path = c.req.path;
   const cur = (p: string) => (path === p ? raw(' aria-current="page"') : "");
   c.setRenderer((content, props) =>
@@ -1858,38 +1908,7 @@ app.get("/", async (c) => {
           ? <p class="empty">no posts yet.</p>
           : <div class="posts">{items.map((i: Com) => Post(i, name, cur))}</div>}
       </section>
-      <section>
-        <div class="pagination">
-          {p > 0
-            ? (
-              <a
-                href={`/?${
-                  (() => {
-                    const n = new URLSearchParams(cur);
-                    n.set("p", (p - 1).toString());
-                    return n;
-                  })()
-                }`}
-              >
-                prev
-              </a>
-            )
-            : <span />}
-          {items.length === 25 && (
-            <a
-              href={`/?${
-                (() => {
-                  const n = new URLSearchParams(cur);
-                  n.set("p", (p + 1).toString());
-                  return n;
-                })()
-              }`}
-            >
-              next
-            </a>
-          )}
-        </div>
-      </section>
+      <Pagination base="/" cur={cur} p={p} more={items.length === 25} />
     </>,
     { title: meta || undefined },
   );
@@ -1983,7 +2002,7 @@ app.post("/forgot", async (c) => {
     try {
       await sendVerify(u.email);
     } catch (err) {
-      console.error(`/forgot email failed for ${u.email}:`, err);
+      logEmailFailure("/forgot", u.email, err);
       return c.redirect("/forgot?error=send_failed");
     }
   }
@@ -2052,7 +2071,7 @@ app.post("/invite", authed, async (c) => {
     try {
       await sendVerify(u.email);
     } catch (err) {
-      console.error(`/invite email failed for ${u.email}:`, err);
+      logEmailFailure("/invite", u.email, err);
       throw new HTTPException(502, {
         message: "Invite created, but the email failed to send. Try /invite again in a moment.",
       });
@@ -2130,7 +2149,7 @@ app.post("/signup", async (c) => {
       await sendVerify(email);
       return c.redirect("/signup?ok");
     } catch (err) {
-      console.error(`/signup email_failed for ${email}:`, err);
+      logEmailFailure("/signup", email, err);
       return c.redirect(`/signup?error=email_failed${qs}`);
     }
   }
@@ -2154,10 +2173,7 @@ app.post("/signup", async (c) => {
     await sendVerify(newUsr.email);
     return c.redirect("/signup?ok");
   } catch (err) {
-    console.error(
-      `/signup email_failed for ${newUsr.email}:`,
-      resendErrBody(err),
-    );
+    logEmailFailure("/signup", newUsr.email, err);
     return c.redirect(`/signup?error=email_failed${qs}`);
   }
 });
@@ -2173,10 +2189,7 @@ app.post("/signup/resend", async (c) => {
     await sendVerify(u.email);
     return c.redirect("/signup?resent");
   } catch (err) {
-    console.error(
-      `/signup/resend email_failed for ${email}:`,
-      resendErrBody(err),
-    );
+    logEmailFailure("/signup/resend", email, err);
     return c.redirect(`/signup?error=email_failed${qs}`);
   }
 });
@@ -2309,18 +2322,12 @@ app.get("/n", authed, async (c) => {
             </p>
           )
           : (
-            items.map((i: Com) => {
-              const item = i;
-              return (
-                <div
-                  key={item.cid}
-                  class={`notif${item.unread ? " notif--unread" : ""}`}
-                >
-                  <div class="notif__kind">{item.kind}</div>
-                  {Comment(item, name)}
-                </div>
-              );
-            })
+            items.map((i: Com) => (
+              <div key={i.cid} class={`notif${i.unread ? " notif--unread" : ""}`}>
+                <div class="notif__kind">{i.kind}</div>
+                {Comment(i, name)}
+              </div>
+            ))
           )}
       </section>
     </>,
@@ -2355,7 +2362,7 @@ app.get("/n/unread", authed, async (c) => {
 
 app.get("/u/:name", async (c) => {
   const profileName = c.req.param("name");
-  const viewerName = c.get("name") ?? (await basicAuthName(c)) ?? undefined;
+  const viewerName = await viewer(c);
   if (viewerName) c.set("name", viewerName);
   const isOwner = viewerName && viewerName == profileName;
   const [usr] = await sql`
@@ -2364,14 +2371,8 @@ app.get("/u/:name", async (c) => {
     from usr where name = ${profileName}
   `;
   if (!usr) return notFound();
-  switch (host(c)) {
-    case "api":
-      return c.json(usr, 200);
-    default:
-      return c.render(<section>{User(usr as Usr, viewerName)}</section>, {
-        title: usr.name,
-      });
-  }
+  if (host(c) === "api") return c.json(usr, 200);
+  return c.render(<section>{User(usr as Usr, viewerName)}</section>, { title: usr.name });
 });
 
 app.get("/us", async (c) => {
@@ -2494,16 +2495,13 @@ app.get("/o/success", authed, async (c) => {
 
 app.get("/o/:name", async (c) => {
   const [org, hasAccess, members] = await Promise.all([
-    sql`select * from org where name = ${c.req.param("name")}`.then(
-      (r: { name: string; created_by: string; created_at: string }[]) => r[0],
-    ),
+    getOrg(c),
     sql`select true from usr where true and name = ${c.get("name") ?? ""} and ${c.req.param("name")} = any(orgs_r)`
       .then(
         (r: { exists: boolean }[]) => r[0],
       ),
     sql`select name from usr where ${c.req.param("name")} = any(orgs_r)`,
   ]);
-  if (!org) return notFound();
   if (!hasAccess) throw new HTTPException(403, { message: "Access denied" });
 
   const viewer = c.get("name") ?? "";
@@ -2575,13 +2573,7 @@ app.get("/o/:name", async (c) => {
 });
 
 app.post("/o/:name/invite", authed, async (c) => {
-  const [org, { email }] = await Promise.all([
-    sql`select * from org where name = ${c.req.param("name")}`.then(
-      (r: { name: string; created_by: string }[]) => r[0],
-    ),
-    form(c),
-  ]);
-  if (!org) return notFound();
+  const [org, { email }] = await Promise.all([getOrg(c), form(c)]);
   if (org.created_by !== c.get("name"))
     throw new HTTPException(403, { message: "Only owner can invite" });
   if (!email || !email.includes("@") || email.length < 4 || email.length > 64)
@@ -2590,11 +2582,7 @@ app.post("/o/:name/invite", authed, async (c) => {
   const [existing] = await sql`select name, orgs_r from usr where email = ${email}`;
   if (existing?.orgs_r.includes(org.name)) return c.redirect(`/o/${org.name}`);
 
-  const sub = await stripe.subscriptions.retrieve(org.stripe_sub_id);
-  const newQty = sub.items.data[0].quantity! + 1;
-  await stripe.subscriptions.update(org.stripe_sub_id, {
-    items: [{ id: sub.items.data[0].id, quantity: newQty }],
-  });
+  const newQty = await subQty(org.stripe_sub_id, 1);
   try {
     if (existing)
       await sql`update usr set orgs_r = array_append(orgs_r, ${org.name}), orgs_w = array_append(orgs_w, ${org.name}) where name = ${existing.name}`;
@@ -2617,16 +2605,10 @@ app.post("/o/:name/invite", authed, async (c) => {
 });
 
 app.post("/o/:name/remove", authed, async (c) => {
-  const [org, { name: paramName }] = await Promise.all([
-    sql`select * from org where name = ${c.req.param("name")}`.then(
-      (r: { name: string; created_by: string }[]) => r[0],
-    ),
-    form(c),
-  ]);
-  if (!org) return notFound();
-  const viewer = c.get("name");
-  const isOwner = org.created_by === viewer;
-  const isSelfLeave = paramName === viewer;
+  const [org, { name: paramName }] = await Promise.all([getOrg(c), form(c)]);
+  const me = c.get("name");
+  const isOwner = org.created_by === me;
+  const isSelfLeave = paramName === me;
   if (isOwner && isSelfLeave) {
     throw new HTTPException(400, {
       message: "Owner cannot leave their own org — transfer or delete it first",
@@ -2642,20 +2624,12 @@ app.post("/o/:name/remove", authed, async (c) => {
     });
   }
 
-  const sub = await stripe.subscriptions.retrieve(org.stripe_sub_id);
-  const qty = sub.items.data[0].quantity!;
-  if (qty > 1) {
-    await stripe.subscriptions.update(org.stripe_sub_id, {
-      items: [{ id: sub.items.data[0].id, quantity: qty - 1 }],
-    });
-  }
+  const newQty = await subQty(org.stripe_sub_id, -1);
   try {
     await sql`update usr set orgs_r = array_remove(orgs_r, ${org.name}), orgs_w = array_remove(orgs_w, ${org.name}) where name = ${paramName}`;
   } catch (err) {
     console.error(
-      `DRIFT remove: decremented ${org.stripe_sub_id} to qty=${
-        qty - 1
-      } but SQL update for ${paramName} in ${org.name} failed.`,
+      `DRIFT remove: decremented ${org.stripe_sub_id} to qty=${newQty} but SQL update for ${paramName} in ${org.name} failed.`,
       err,
     );
     throw err;
@@ -2743,7 +2717,7 @@ const POST_RATE_MAX = 10,
 
 app.post("/c/:p?", async (c) => {
   const pid = c.req.param("p") || null;
-  const n = c.get("name") ?? (await basicAuthName(c)) ?? undefined;
+  const n = await viewer(c);
   if (!n)
     return c.redirect(`/u?next=${encodeURIComponent(pid ? `/c/${pid}` : "/")}`);
 
@@ -2810,8 +2784,7 @@ app.post("/c/:p?", async (c) => {
     if (isReaction(b)) {
       if (prm.created_by === n) {
         return c.redirect(
-          (prm.prm_parent ? `/c/${prm.prm_parent}#${pid}` : `/c/${pid}`) +
-            "?err=self-react",
+          threadUrl(prm.prm_parent, pid) + "?err=self-react",
         );
       }
       const [existing] =
@@ -2827,7 +2800,7 @@ app.post("/c/:p?", async (c) => {
         await refreshScores(pid);
         const r = refBack();
         return c.redirect(
-          r ? `${r}#${pid}` : prm.prm_parent ? `/c/${prm.prm_parent}#${pid}` : `/c/${pid}`,
+          r ? `${r}#${pid}` : threadUrl(prm.prm_parent, pid),
         );
       }
     }
@@ -2852,13 +2825,13 @@ app.post("/c/:p?", async (c) => {
   if (pid && b === "flag") {
     const [prm2] =
       await sql`select created_by, parent_cid as prm_parent, hash as prm_hash, flaggers from com where cid = ${pid}`;
-    const back = prm2.prm_parent ? `/c/${prm2.prm_parent}#${pid}` : `/c/${pid}`;
+    const back = threadUrl(prm2.prm_parent, pid);
     if (prm2.created_by === n) return c.redirect(`${back}?err=self-flag`);
     if (prm2.prm_hash) {
       // signed post → sign a flag row; ingestMsg recomputes c_flags from distinct flaggers
       const key = await ensureKey(n);
       await ingestMsg(
-        await signRow("flag", Math.floor(Date.now() / 1000), { target: prm2.prm_hash }, key.priv, key.pub),
+        await signRow("flag", nowSec(), { target: prm2.prm_hash }, key.priv, key.pub),
       );
     } else if (!prm2.flaggers.includes(n)) {
       await sql`update com set c_flags = c_flags + 1, flaggers = array_append(flaggers, ${n}) where cid = ${pid}`;
@@ -2874,23 +2847,16 @@ app.post("/c/:p?", async (c) => {
   if (!isReaction(b) && !orgs.length && !usrs.length && (!pid || parentHash)) {
     const key = await ensureKey(n);
     const payload = buildMsg({ parent: parentHash ?? undefined, tags, orgs, usrs, body: b });
-    const row = await signRow("msg", Math.floor(Date.now() / 1000), payload, key.priv, key.pub);
+    const row = await signRow("msg", nowSec(), payload, key.priv, key.pub);
     const { cid } = await ingestMsg(row, { parentCid: pid ? +pid : null, comTags: tags });
     if (cid == null) throw new HTTPException(500, { message: "post was logged but its com projection is missing." });
     cm = { cid };
   } else {
-    const links = extractLinks(b);
-    const mentions = extractMentions(b);
-    const thumb = pid ? null : extractImageUrl(b) ||
-      (extractFirstUrl(b) ? await resolveThumbnail(extractFirstUrl(b)!) : null);
-    const domains = extractDomains(b);
+    const { mentions, links, domains, thumb } = await deriveBody(b, !pid);
     [cm] =
       await sql`insert into com (parent_cid, created_by, body, tags, orgs, usrs, mentions, links, thumb, domains) values (${pid}, ${n}, ${b}, ${tags}, ${orgs}, ${usrs}, ${mentions}, ${links}, ${thumb}, ${domains}) returning cid`;
     if (pid) {
-      if (isReaction(b))
-        await sql`update com set c_reactions = c_reactions || hstore(${b}, (coalesce((c_reactions->${b})::int,0)+1)::text) where cid = ${pid}`;
-      else
-        await sql`update com set c_comments = c_comments + 1 where cid = ${pid}`;
+      await bumpCounts(sql, pid, b);
       await refreshScores(pid);
     } else {
       await refreshScores(cm.cid);
@@ -2903,19 +2869,19 @@ app.post("/c/:p?", async (c) => {
   }
   const [pr] = pid ? await sql`select parent_cid from com where cid = ${pid}` : [null];
   return c.redirect(
-    pid ? pr?.parent_cid ? `/c/${pr.parent_cid}#${pid}` : `/c/${pid}#${cm.cid}` : `/c/${cm.cid}`,
+    pid ? pr?.parent_cid ? threadUrl(pr.parent_cid, pid) : `/c/${pid}#${cm.cid}` : `/c/${cm.cid}`,
   );
 });
 
 app.get("/c/:cid?", async (c) => {
   const q = c.req.query(),
     cid = c.req.param("cid"),
-    n = c.get("name") ?? (await basicAuthName(c)) ?? undefined,
+    n = await viewer(c),
     s = q.sort || "hot",
     p = Math.max(0, Math.trunc(+(q.p || 0)) || 0),
     lim = Math.min(100, Math.max(1, Math.trunc(+(q.limit || 25)) || 25));
-  const [viewer] = n ? await sql`select orgs_r from usr where name = ${n}` : [{ orgs_r: [] }];
-  const rT = viewer?.orgs_r || [],
+  const [u] = n ? await sql`select orgs_r from usr where name = ${n}` : [{ orgs_r: [] }];
+  const rT = u?.orgs_r || [],
     tags = c.req.queries("tag") || [],
     orgs = c.req.queries("org") || [],
     usrs = c.req.queries("usr") || [],
@@ -3107,38 +3073,7 @@ app.get("/c/:cid?", async (c) => {
             )
             : <div class="posts">{items.map((i: Com) => Post(i, n, cur))}</div>}
         </section>
-        <section>
-          <div class="pagination">
-            {p > 0
-              ? (
-                <a
-                  href={`/c?${
-                    (() => {
-                      const n = new URLSearchParams(cur);
-                      n.set("p", (p - 1).toString());
-                      return n;
-                    })()
-                  }`}
-                >
-                  prev
-                </a>
-              )
-              : <span />}
-            {items.length === lim && (
-              <a
-                href={`/c?${
-                  (() => {
-                    const n = new URLSearchParams(cur);
-                    n.set("p", (p + 1).toString());
-                    return n;
-                  })()
-                }`}
-              >
-                next
-              </a>
-            )}
-          </div>
-        </section>
+        <Pagination base="/c" cur={cur} p={p} more={items.length === lim} />
       </>,
       { title: meta || "search" },
     );
