@@ -1,6 +1,4 @@
-import { botInit, getAnsweredCids, getJson, isFresh, MAX_AGE_MS, reply } from "../bots.ts";
-
-const { apiUrl, auth, botUsername } = botInit("8BALL");
+import { tagResponderBot } from "../bots.ts";
 
 const ANSWERS = [
   "It is certain.",
@@ -25,23 +23,8 @@ const ANSWERS = [
   "Very doubtful.",
 ];
 
-async function main() {
-  const answered = await getAnsweredCids(auth, botUsername, apiUrl, { since: Date.now() - MAX_AGE_MS });
-  console.log(`Already answered ${answered.size} questions in last 4h`);
-
-  const posts = await getJson<{ cid: number; created_by: string; created_at: string }[]>(
-    `/c?tag=8ball&sort=new&limit=20`,
-    auth,
-    apiUrl,
-  );
-  const todo = posts.filter((p) => p.created_by !== botUsername && !answered.has(p.cid) && isFresh(p.created_at));
-  console.log(`Found ${todo.length} unanswered questions`);
-
-  for (const post of todo.slice(0, 10)) {
-    const body = `🎱 ${ANSWERS[post.cid % ANSWERS.length]}`;
-    console.log(`Answering cid=${post.cid}: ${body}`);
-    await reply(auth, apiUrl, post.cid, body);
-  }
-}
-
-main();
+tagResponderBot({
+  envPrefix: "8BALL",
+  tag: "8ball",
+  respond: (p) => `🎱 ${ANSWERS[p.cid % ANSWERS.length]}`,
+});

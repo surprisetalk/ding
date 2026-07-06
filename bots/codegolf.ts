@@ -1,8 +1,6 @@
 // Daily code golf bot — posts one programming challenge per day from a hardcoded bank.
 
-import { botInit, getLastPostAge, post } from "../bots.ts";
-
-const { apiUrl, auth, botUsername } = botInit("CODEGOLF");
+import { dailyPostBot } from "../bots.ts";
 
 const PROBLEMS = [
   {
@@ -300,22 +298,12 @@ const PROBLEMS = [
   },
 ];
 
-async function main() {
-  const ageHours = (await getLastPostAge(auth, botUsername, apiUrl)) / 3_600_000;
-  console.log(`Last post was ${ageHours.toFixed(1)}h ago`);
-  if (ageHours < 20) {
-    console.log("Too soon for a new challenge, skipping");
-    return;
-  }
-
-  const dayIndex = Math.floor(Date.now() / 86_400_000) % PROBLEMS.length;
-  const problem = PROBLEMS[dayIndex];
-  const dayNum = Math.floor(Date.now() / 86_400_000) - 20818;
-  const body =
-    `Day ${dayNum}: ${problem.title} [${problem.difficulty}]\n\n${problem.body}\n\nReply with your solution in any language. Shortest wins!`;
-  console.log(`Posting: Day ${dayNum}: ${problem.title}`);
-  if (!await post(auth, apiUrl, body, "#codegolf #game #bot")) Deno.exit(1);
-  console.log("Posted!");
-}
-
-main();
+dailyPostBot({
+  envPrefix: "CODEGOLF",
+  tags: "#codegolf #game #bot",
+  make: () => {
+    const problem = PROBLEMS[Math.floor(Date.now() / 86_400_000) % PROBLEMS.length];
+    const dayNum = Math.floor(Date.now() / 86_400_000) - 20818;
+    return `Day ${dayNum}: ${problem.title} [${problem.difficulty}]\n\n${problem.body}\n\nReply with your solution in any language. Shortest wins!`;
+  },
+});

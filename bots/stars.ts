@@ -1,6 +1,4 @@
-import { botInit, getLastPostAge, post, seededRng, todaySeed } from "../bots.ts";
-
-const { apiUrl, auth, botUsername } = botInit("STARS");
+import { dailyPostBot, seededRng, todaySeed } from "../bots.ts";
 
 const STAR_CHARS = ["✦", "✧", "⋆", "˚", "∘", "·", "★", "☆", "✶", "✸"];
 const SYLLABLES = ["or", "us", "ium", "ax", "en", "al", "is", "ar", "el", "on", "um", "ix", "an", "os", "ur"];
@@ -23,17 +21,13 @@ function generate(): { name: string; grid: string } {
   return { name: capitalized, grid: cells.map((r) => r.join("")).join("\n").replace(/\s+$/gm, "").replace(/\n+$/, "") };
 }
 
-async function main() {
-  const ageMs = await getLastPostAge(auth, botUsername, apiUrl);
-  if (ageMs / 3_600_000 < 20) {
-    console.log("Too soon, skipping");
-    return;
-  }
-
-  const { name, grid } = generate();
-  const body = `${name}\n\n${grid}`;
-  console.log(body);
-  await post(auth, apiUrl, body, "#stars #unicode #bot");
-}
-
-main();
+dailyPostBot({
+  envPrefix: "STARS",
+  tags: "#stars #unicode #bot",
+  make: () => {
+    const { name, grid } = generate();
+    const body = `${name}\n\n${grid}`;
+    console.log(body);
+    return body;
+  },
+});

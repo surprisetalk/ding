@@ -1,6 +1,4 @@
-import { botInit, getLastPostAge, post } from "../bots.ts";
-
-const { apiUrl, auth, botUsername } = botInit("MUSEUM");
+import { dailyPostBot } from "../bots.ts";
 
 async function fetchArtwork(): Promise<{ title: string; creator: string; imageUrl: string; url: string } | null> {
   for (let attempt = 0; attempt < 2; attempt++) {
@@ -22,25 +20,16 @@ async function fetchArtwork(): Promise<{ title: string; creator: string; imageUr
   return null;
 }
 
-async function main() {
-  const ageMs = await getLastPostAge(auth, botUsername, apiUrl);
-  console.log(`Last post was ${(ageMs / 3_600_000).toFixed(1)}h ago`);
-  if (ageMs < 14_400_000) {
-    console.log("Too soon, skipping");
-    return;
-  }
-
-  const artwork = await fetchArtwork();
-  if (!artwork) {
-    console.error("Failed to fetch artwork after retries");
-    Deno.exit(1);
-  }
-
-  const body = `${artwork.title}\n\n${artwork.creator}\n\n${artwork.imageUrl}\n\n${artwork.url}`;
-  console.log(`Posting: ${artwork.title}`);
-  const ok = await post(auth, apiUrl, body, "#art #museum #bot");
-  if (!ok) Deno.exit(1);
-  console.log("Posted!");
-}
-
-main();
+dailyPostBot({
+  envPrefix: "MUSEUM",
+  tags: "#art #museum #bot",
+  minGapMs: 14_400_000,
+  make: async () => {
+    const artwork = await fetchArtwork();
+    if (!artwork) {
+      console.error("Failed to fetch artwork after retries");
+      Deno.exit(1);
+    }
+    return `${artwork.title}\n\n${artwork.creator}\n\n${artwork.imageUrl}\n\n${artwork.url}`;
+  },
+});

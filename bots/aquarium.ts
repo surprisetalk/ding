@@ -1,6 +1,4 @@
-import { botInit, getLastPostAge, post, seededRng, todaySeed } from "../bots.ts";
-
-const { apiUrl, auth, botUsername } = botInit("AQUARIUM");
+import { dailyPostBot, seededRng, todaySeed } from "../bots.ts";
 
 const SWIMMERS = ["🐟", "🐠", "🐡", "🦈", "🦑", "🐡"];
 const BOTTOM_DWELLERS = ["🐌", "🦀", "🐙"];
@@ -33,16 +31,12 @@ function generateAquarium(): string {
   return grid.map((row) => row.join("")).join("\n");
 }
 
-async function main() {
-  const ageMs = await getLastPostAge(auth, botUsername, apiUrl);
-  if (ageMs / 3_600_000 < 20) {
-    console.log("Too soon, skipping");
-    return;
-  }
-
-  const scene = generateAquarium();
-  console.log(scene);
-  await post(auth, apiUrl, scene, "#emoji #aquarium #bot");
-}
-
-main();
+dailyPostBot({
+  envPrefix: "AQUARIUM",
+  tags: "#emoji #aquarium #bot",
+  make: () => {
+    const scene = generateAquarium();
+    console.log(scene);
+    return scene;
+  },
+});

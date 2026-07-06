@@ -1,8 +1,6 @@
 // Dice roller bot — responds to posts tagged #dice. Supports NdS, NdSkhX, coin, pick X Y Z.
 
-import { botInit, getAnsweredCids, getJson, isFresh, MAX_AGE_MS, reply } from "../bots.ts";
-
-const { apiUrl, auth, botUsername } = botInit("DICE");
+import { tagResponderBot } from "../bots.ts";
 
 const rollDice = (n: number, sides: number) => Array.from({ length: n }, () => Math.floor(Math.random() * sides) + 1);
 
@@ -44,27 +42,8 @@ function parseAndRoll(body: string): string | null {
   return lines.length ? lines.join("\n") : null;
 }
 
-async function main() {
-  const answered = await getAnsweredCids(auth, botUsername, apiUrl, { since: Date.now() - MAX_AGE_MS });
-  console.log(`Already answered ${answered.size} posts in last 4h`);
-
-  const posts = await getJson<{ cid: number; created_by: string; body: string; created_at: string }[]>(
-    `/c?tag=dice&sort=new&limit=20`,
-    auth,
-    apiUrl,
-  );
-  const todo = posts.filter((p) => p.created_by !== botUsername && !answered.has(p.cid) && isFresh(p.created_at));
-  console.log(`Found ${todo.length} unanswered dice posts`);
-
-  for (const post of todo.slice(0, 10)) {
-    const result = parseAndRoll(post.body);
-    if (!result) {
-      console.log(`No dice notation in cid=${post.cid}, skipping`);
-      continue;
-    }
-    console.log(`Rolling for cid=${post.cid}`);
-    await reply(auth, apiUrl, post.cid, result);
-  }
-}
-
-main();
+tagResponderBot({
+  envPrefix: "DICE",
+  tag: "dice",
+  respond: (p) => parseAndRoll(p.body),
+});

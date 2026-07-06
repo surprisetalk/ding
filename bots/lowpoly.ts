@@ -1,7 +1,5 @@
-import { botInit, getAnsweredCids, isFresh, MAX_AGE_MS, reply, resolveImageUrl, uploadToR2 } from "../bots.ts";
+import { imageMentionBot } from "../bots.ts";
 import sharp from "sharp";
-
-const { apiUrl, auth, botUsername } = botInit("LOWPOLY");
 
 function sampleColor(
   pixels: Uint8Array,
@@ -94,50 +92,11 @@ async function lowpoly(imageBytes: Uint8Array): Promise<string> {
   }\n</svg>`;
 }
 
-async function main() {
-  const answeredCids = await getAnsweredCids(auth, botUsername, apiUrl, { since: Date.now() - MAX_AGE_MS });
-  console.log(`Already answered ${answeredCids.size} posts in last 4h`);
-
-  const res = await fetch(`${apiUrl}/c?mention=${botUsername}&comments=1&sort=new&limit=20`, {
-    headers: { Accept: "application/json", Authorization: `Basic ${auth}` },
-  });
-  if (!res.ok) throw new Error(`Failed to fetch mentions: HTTP ${res.status}`);
-  const posts: {
-    cid: number;
-    parent_cid: number | null;
-    body: string;
-    created_by: string;
-    created_at: string;
-  }[] = await res.json();
-
-  const unanswered = posts.filter((p) =>
-    p.created_by !== botUsername && !answeredCids.has(p.cid) && isFresh(p.created_at)
-  );
-  console.log(`Found ${unanswered.length} unanswered mentions`);
-
-  for (const post of unanswered.slice(0, 5)) {
-    const imageUrl = await resolveImageUrl(auth, apiUrl, post);
-    if (!imageUrl) {
-      console.log(`cid=${post.cid}: no image found, skipping`);
-      continue;
-    }
-
-    console.log(`cid=${post.cid}: processing ${imageUrl}`);
-    const imgRes = await fetch(imageUrl);
-    if (!imgRes.ok) {
-      console.error(`Failed to fetch image: HTTP ${imgRes.status}`);
-      continue;
-    }
-    const imageBytes = new Uint8Array(await imgRes.arrayBuffer());
-
-    const svg = await lowpoly(imageBytes);
-    const svgBytes = new TextEncoder().encode(svg);
-    const filename = `lowpoly-${post.cid}-${Date.now()}.svg`;
-    const url = await uploadToR2(svgBytes, filename, "image/svg+xml");
-
-    console.log(`cid=${post.cid}: uploaded ${url}`);
-    await reply(auth, apiUrl, post.cid, url);
-  }
-}
-
-main();
+imageMentionBot({
+  envPrefix: "LOWPOLY",
+  transform: async (bytes) => ({
+    bytes: new TextEncoder().encode(await lowpoly(bytes)),
+    ext: "svg",
+    contentType: "image/svg+xml",
+  }),
+});

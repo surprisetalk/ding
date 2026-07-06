@@ -1,6 +1,4 @@
-import { botInit, getLastPostAge, post, seededRng, todaySeed, uploadToR2 } from "../bots.ts";
-
-const { apiUrl, auth, botUsername } = botInit("CLIPART");
+import { dailyPostBot, seededRng, todaySeed, uploadToR2 } from "../bots.ts";
 
 const TWEMOJI_CODEPOINTS = [
   "1f600",
@@ -112,31 +110,21 @@ function glitchSvg(svg: string, rng: () => number): string {
   return out;
 }
 
-async function main() {
-  const ageMs = await getLastPostAge(auth, botUsername, apiUrl);
-  if (ageMs / 3_600_000 < 20) {
-    console.log("Too soon, skipping");
-    return;
-  }
+dailyPostBot({
+  envPrefix: "CLIPART",
+  tags: "#art #glitch #bot",
+  make: async () => {
+    const seed = todaySeed();
+    const cp = TWEMOJI_CODEPOINTS[seed % TWEMOJI_CODEPOINTS.length];
+    const rng = seededRng(seed);
+    const url = `https://raw.githubusercontent.com/twitter/twemoji/master/assets/svg/${cp}.svg`;
+    const res = await fetch(url);
+    if (!res.ok) throw new Error(`Failed to fetch twemoji ${cp}: HTTP ${res.status}`);
 
-  const seed = todaySeed();
-  const cp = TWEMOJI_CODEPOINTS[seed % TWEMOJI_CODEPOINTS.length];
-  const rng = seededRng(seed);
-  const url = `https://raw.githubusercontent.com/twitter/twemoji/master/assets/svg/${cp}.svg`;
-  const res = await fetch(url);
-  if (!res.ok) throw new Error(`Failed to fetch twemoji ${cp}: HTTP ${res.status}`);
-  const svgText = await res.text();
-
-  const glitched = glitchSvg(svgText, rng);
-  const data = new TextEncoder().encode(glitched);
-  const date = new Date().toISOString().slice(0, 10);
-  const r2Url = await uploadToR2(data, `clipart-${date}.svg`, "image/svg+xml");
-
-  console.log(`Posting: ${r2Url}`);
-  const src = `https://github.com/twitter/twemoji/blob/master/assets/svg/${cp}.svg`;
-  const ok = await post(auth, apiUrl, `${r2Url}\n\nglitched clipart\n\nsource: ${src}`, "#art #glitch #bot");
-  if (!ok) Deno.exit(1);
-  console.log("Posted!");
-}
-
-main();
+    const glitched = glitchSvg(await res.text(), rng);
+    const date = new Date().toISOString().slice(0, 10);
+    const r2Url = await uploadToR2(new TextEncoder().encode(glitched), `clipart-${date}.svg`, "image/svg+xml");
+    const src = `https://github.com/twitter/twemoji/blob/master/assets/svg/${cp}.svg`;
+    return `${r2Url}\n\nglitched clipart\n\nsource: ${src}`;
+  },
+});

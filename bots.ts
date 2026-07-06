@@ -487,6 +487,104 @@ export async function personaBot(opts: {
   }
 }
 
+type BotCtx = { apiUrl: string; auth: string; botUsername: string };
+
+// Replies to fresh unanswered posts under #tag. respond returns the reply body,
+// or null to skip a post. Counts successful replies up to max.
+export async function tagResponderBot(opts: {
+  envPrefix: string;
+  tag: string;
+  max?: number;
+  respond: (post: Post, ctx: BotCtx) => string | null | Promise<string | null>;
+}) {
+  const ctx = botInit(opts.envPrefix);
+  const { apiUrl, auth, botUsername } = ctx;
+  const answered = await getAnsweredCids(auth, botUsername, apiUrl, { since: Date.now() - MAX_AGE_MS });
+  console.log(`Already answered ${answered.size} posts in last 4h`);
+  const posts = await getJson<Post[]>(`/c?tag=${opts.tag}&sort=new&limit=20`, auth, apiUrl);
+  const todo = posts.filter((p) => p.created_by !== botUsername && !answered.has(p.cid) && isFresh(p.created_at));
+  console.log(`Found ${todo.length} unanswered #${opts.tag} posts`);
+  let replies = 0;
+  for (const p of todo) {
+    if (replies >= (opts.max ?? 10)) break;
+    const body = await opts.respond(p, ctx);
+    if (!body) {
+      console.log(`cid=${p.cid}: nothing to say, skipping`);
+      continue;
+    }
+    console.log(`Replying to cid=${p.cid}`);
+    if (await reply(auth, apiUrl, p.cid, body)) replies++;
+  }
+  console.log(`Replied to ${replies} posts`);
+}
+
+// Answers @mentions that carry (or reply to) an image: fetch the image bytes, run
+// transform, reply with its text — or upload {bytes,ext,contentType} to R2 and reply
+// with the public URL.
+export async function imageMentionBot(opts: {
+  envPrefix: string;
+  max?: number;
+  transform: (
+    imageBytes: Uint8Array,
+    post: Post,
+  ) => Promise<string | { bytes: Uint8Array; ext: string; contentType: string }>;
+}) {
+  const { apiUrl, auth, botUsername } = botInit(opts.envPrefix);
+  const answered = await getAnsweredCids(auth, botUsername, apiUrl, { since: Date.now() - MAX_AGE_MS });
+  console.log(`Already answered ${answered.size} posts in last 4h`);
+  const posts = await getJson<Post[]>(`/c?mention=${botUsername}&comments=1&sort=new&limit=20`, auth, apiUrl);
+  const unanswered = posts.filter((p) => p.created_by !== botUsername && !answered.has(p.cid) && isFresh(p.created_at));
+  console.log(`Found ${unanswered.length} unanswered mentions`);
+  for (const post of unanswered.slice(0, opts.max ?? 5)) {
+    const imageUrl = await resolveImageUrl(auth, apiUrl, post);
+    if (!imageUrl) {
+      console.log(`cid=${post.cid}: no image found, skipping`);
+      continue;
+    }
+    console.log(`cid=${post.cid}: processing ${imageUrl}`);
+    const imgRes = await fetch(imageUrl);
+    if (!imgRes.ok) {
+      console.error(`Failed to fetch image: HTTP ${imgRes.status}`);
+      continue;
+    }
+    const out = await opts.transform(new Uint8Array(await imgRes.arrayBuffer()), post);
+    let body: string;
+    if (typeof out === "string") body = out;
+    else {
+      body = await uploadToR2(
+        out.bytes,
+        `${opts.envPrefix.toLowerCase()}-${post.cid}-${Date.now()}.${out.ext}`,
+        out.contentType,
+      );
+      console.log(`cid=${post.cid}: uploaded ${body}`);
+    }
+    await reply(auth, apiUrl, post.cid, body);
+  }
+}
+
+// One post per run, gated on time since the bot's last post. make returns the body
+// (or null to skip today); a failed post exits 1 so the runner records the failure.
+export async function dailyPostBot(opts: {
+  envPrefix: string;
+  tags: string;
+  minGapMs?: number;
+  make: (ctx: BotCtx) => string | null | Promise<string | null>;
+}) {
+  const ctx = botInit(opts.envPrefix);
+  const { apiUrl, auth, botUsername } = ctx;
+  const ageMs = await getLastPostAge(auth, botUsername, apiUrl);
+  console.log(`Last post was ${(ageMs / 3_600_000).toFixed(1)}h ago`);
+  if (ageMs < (opts.minGapMs ?? 72_000_000)) {
+    console.log("Too soon, skipping");
+    return;
+  }
+  const body = await opts.make(ctx);
+  if (body == null) return;
+  console.log(`Posting: ${body.split("\n")[0].slice(0, 80)}`);
+  if (!(await post(auth, apiUrl, body, opts.tags))) Deno.exit(1);
+  console.log("Posted!");
+}
+
 // ---- Claude ----
 
 const CLAUDE_MODEL = "claude-3-haiku-20240307";

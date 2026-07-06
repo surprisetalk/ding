@@ -1,6 +1,4 @@
-import { botInit, getLastPostAge, post } from "../bots.ts";
-
-const { apiUrl, auth, botUsername } = botInit("ALBUM");
+import { dailyPostBot } from "../bots.ts";
 
 const ALBUMS: { title: string; artist: string; year: number; mbid: string }[] = [
   { title: "OK Computer", artist: "Radiohead", year: 1997, mbid: "b1392450-e666-3926-a536-22c65f834433" },
@@ -129,26 +127,14 @@ const ALBUMS: { title: string; artist: string; year: number; mbid: string }[] = 
   { title: "Lemonade", artist: "Beyonce", year: 2016, mbid: "040a1df7-7e1d-4d3a-8d2a-9565baabd71c" },
 ];
 
-async function main() {
-  const ageMs = await getLastPostAge(auth, botUsername, apiUrl);
-  console.log(`Last post was ${(ageMs / 3_600_000).toFixed(1)}h ago`);
-  if (ageMs < 72_000_000) {
-    console.log("Too soon, skipping");
-    return;
-  }
-
-  const dayIndex = Math.floor(Date.now() / 86_400_000) % ALBUMS.length;
-  const album = ALBUMS[dayIndex];
-  const caaUrl = `https://coverartarchive.org/release-group/${album.mbid}/front-500`;
-  const r = await fetch(caaUrl, { redirect: "manual" });
-  const coverUrl = r.headers.get("location");
-  if (!coverUrl) throw new Error(`No cover art for ${album.title} (${album.mbid}): ${r.status}`);
-  const body = `${album.title} (${album.year})\n\n${album.artist}\n\n${coverUrl}`;
-
-  console.log(`Posting: ${album.title} by ${album.artist}`);
-  const ok = await post(auth, apiUrl, body, "#music #album #bot");
-  if (!ok) Deno.exit(1);
-  console.log("Posted!");
-}
-
-main();
+dailyPostBot({
+  envPrefix: "ALBUM",
+  tags: "#music #album #bot",
+  make: async () => {
+    const album = ALBUMS[Math.floor(Date.now() / 86_400_000) % ALBUMS.length];
+    const r = await fetch(`https://coverartarchive.org/release-group/${album.mbid}/front-500`, { redirect: "manual" });
+    const coverUrl = r.headers.get("location");
+    if (!coverUrl) throw new Error(`No cover art for ${album.title} (${album.mbid}): ${r.status}`);
+    return `${album.title} (${album.year})\n\n${album.artist}\n\n${coverUrl}`;
+  },
+});

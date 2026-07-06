@@ -1,6 +1,4 @@
-import { botInit, getLastPostAge, post, uploadToR2 } from "../bots.ts";
-
-const { apiUrl, auth, botUsername } = botInit("EMOJIGLITCH");
+import { dailyPostBot, uploadToR2 } from "../bots.ts";
 
 const EMOJI_MAP: [string, string][] = [
   ["1f600", "\u{1f600}"],
@@ -91,30 +89,20 @@ function glitchSvg(svg: string, rng: () => number): string {
   return out.slice(0, insertIdx) + extras + out.slice(insertIdx);
 }
 
-async function main() {
-  const ageMs = await getLastPostAge(auth, botUsername, apiUrl);
-  if (ageMs / 3_600_000 < 20) {
-    console.log("Too soon, skipping");
-    return;
-  }
+dailyPostBot({
+  envPrefix: "EMOJIGLITCH",
+  tags: "#emoji #glitch #bot",
+  make: async () => {
+    const rng = Math.random;
+    const [cp, emoji] = EMOJI_MAP[Math.floor(rng() * EMOJI_MAP.length)];
+    const url = `https://raw.githubusercontent.com/twitter/twemoji/master/assets/svg/${cp}.svg`;
+    const res = await fetch(url);
+    if (!res.ok) throw new Error(`Failed to fetch twemoji ${cp}: HTTP ${res.status}`);
 
-  const rng = Math.random;
-  const [cp, emoji] = EMOJI_MAP[Math.floor(rng() * EMOJI_MAP.length)];
-  const url = `https://raw.githubusercontent.com/twitter/twemoji/master/assets/svg/${cp}.svg`;
-  const res = await fetch(url);
-  if (!res.ok) throw new Error(`Failed to fetch twemoji ${cp}: HTTP ${res.status}`);
-  const svgText = await res.text();
-
-  const glitched = glitchSvg(svgText, rng);
-  const data = new TextEncoder().encode(glitched);
-  const date = new Date().toISOString().slice(0, 10);
-  const r2Url = await uploadToR2(data, `emojiglitch-${date}.svg`, "image/svg+xml");
-
-  console.log(`Posting: ${emoji} -> ${r2Url}`);
-  const src = `https://github.com/twitter/twemoji/blob/master/assets/svg/${cp}.svg`;
-  const ok = await post(auth, apiUrl, `${emoji}\n\n${r2Url}\n\nsource: ${src}`, "#emoji #glitch #bot");
-  if (!ok) Deno.exit(1);
-  console.log("Posted!");
-}
-
-main();
+    const glitched = glitchSvg(await res.text(), rng);
+    const date = new Date().toISOString().slice(0, 10);
+    const r2Url = await uploadToR2(new TextEncoder().encode(glitched), `emojiglitch-${date}.svg`, "image/svg+xml");
+    const src = `https://github.com/twitter/twemoji/blob/master/assets/svg/${cp}.svg`;
+    return `${emoji}\n\n${r2Url}\n\nsource: ${src}`;
+  },
+});

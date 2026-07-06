@@ -1,7 +1,5 @@
-import { botInit, getAnsweredCids, isFresh, MAX_AGE_MS, reply, resolveImageUrl } from "../bots.ts";
+import { imageMentionBot } from "../bots.ts";
 import sharp from "sharp";
-
-const { apiUrl, auth, botUsername } = botInit("DITHER");
 
 // Braille dot bit positions for 2x4 grid: (col, row) -> bit
 const BRAILLE_MAP = [
@@ -57,46 +55,11 @@ async function toBraille(imageBytes: Uint8Array): Promise<string> {
   return lines.join("\n");
 }
 
-async function main() {
-  const answeredCids = await getAnsweredCids(auth, botUsername, apiUrl, { since: Date.now() - MAX_AGE_MS });
-  console.log(`Already answered ${answeredCids.size} posts in last 4h`);
-
-  const res = await fetch(`${apiUrl}/c?mention=${botUsername}&comments=1&sort=new&limit=20`, {
-    headers: { Accept: "application/json", Authorization: `Basic ${auth}` },
-  });
-  if (!res.ok) throw new Error(`Failed to fetch mentions: HTTP ${res.status}`);
-  const posts: {
-    cid: number;
-    parent_cid: number | null;
-    body: string;
-    created_by: string;
-    created_at: string;
-  }[] = await res.json();
-
-  const unanswered = posts.filter((p) =>
-    p.created_by !== botUsername && !answeredCids.has(p.cid) && isFresh(p.created_at)
-  );
-  console.log(`Found ${unanswered.length} unanswered mentions`);
-
-  for (const post of unanswered.slice(0, 5)) {
-    const imageUrl = await resolveImageUrl(auth, apiUrl, post);
-    if (!imageUrl) {
-      console.log(`cid=${post.cid}: no image found, skipping`);
-      continue;
-    }
-
-    console.log(`cid=${post.cid}: processing ${imageUrl}`);
-    const imgRes = await fetch(imageUrl);
-    if (!imgRes.ok) {
-      console.error(`Failed to fetch image: HTTP ${imgRes.status}`);
-      continue;
-    }
-    const imageBytes = new Uint8Array(await imgRes.arrayBuffer());
-
-    const braille = await toBraille(imageBytes);
+imageMentionBot({
+  envPrefix: "DITHER",
+  transform: async (bytes, post) => {
+    const braille = await toBraille(bytes);
     console.log(`cid=${post.cid}: ${braille.length} chars`);
-    await reply(auth, apiUrl, post.cid, braille);
-  }
-}
-
-main();
+    return braille;
+  },
+});
