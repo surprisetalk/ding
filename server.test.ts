@@ -9,6 +9,7 @@ import {
   hex,
   idOf,
   importPriv,
+  nowSec,
   pubHexOf,
   type Row,
   signRow,
@@ -265,6 +266,8 @@ const pglite = (f: (sql: pg.Sql) => (t: Deno.TestContext) => Promise<void>) => a
 };
 
 //// TESTS /////////////////////////////////////////////////////////////////////
+
+const basic = (email: string, pass: string) => ({ Authorization: "Basic " + btoa(`${email}:${pass}`) });
 
 Deno.test(
   "routes",
@@ -556,7 +559,7 @@ Deno.test(
     await t.step("GET /u with valid credentials", async () => {
       const res = await app.request("/u", {
         headers: {
-          Authorization: "Basic " + btoa("john@example.com:password1!"),
+          ...basic("john@example.com", "password1!"),
         },
       });
       assertEquals(res.status, 200);
@@ -564,7 +567,7 @@ Deno.test(
 
     await t.step("GET /u with invalid credentials", async () => {
       const res = await app.request("/u", {
-        headers: { Authorization: "Basic " + btoa("john@example.com:wrong!") },
+        headers: basic("john@example.com", "wrong!"),
       });
       assertEquals(res.status, 401);
     });
@@ -705,7 +708,7 @@ Deno.test(
       const res = await app.request("/u/john_doe", {
         headers: {
           Accept: "application/json",
-          Authorization: "Basic " + btoa("john@example.com:password1!"),
+          ...basic("john@example.com", "password1!"),
         },
       });
       assertEquals(res.status, 200);
@@ -721,7 +724,7 @@ Deno.test(
       const res = await app.request("/u/john_doe", {
         headers: {
           Accept: "application/json",
-          Authorization: "Basic " + btoa("john@example.com:wrong!"),
+          ...basic("john@example.com", "wrong!"),
         },
       });
       assertEquals(res.status, 200);
@@ -739,7 +742,7 @@ Deno.test(
   "Org Management",
   pglite((sql) => async (t) => {
     const authHeaders = {
-      Authorization: "Basic " + btoa("john@example.com:password1!"),
+      ...basic("john@example.com", "password1!"),
     };
 
     await t.step("POST /o/new creates Checkout Session", async () => {
@@ -866,7 +869,7 @@ Deno.test(
     });
 
     await t.step("POST /o/:name/invite 403 for non-owner", async () => {
-      const janeAuth = { Authorization: "Basic " + btoa("jane@example.com:password1!") };
+      const janeAuth = basic("jane@example.com", "password1!");
       mStripe.__updateCalls.length = 0;
       const body = new FormData();
       body.append("email", "john@example.com");
@@ -901,7 +904,7 @@ Deno.test(
       const origRetrieve = mStripe.subscriptions.retrieve;
       mStripe.subscriptions.retrieve = () => Promise.resolve({ items: { data: [{ id: "si_123", quantity: 2 }] } });
 
-      const janeAuth = { Authorization: "Basic " + btoa("jane@example.com:password1!") };
+      const janeAuth = basic("jane@example.com", "password1!");
       const body = new FormData();
       body.append("name", "jane_doe");
       const res = await app.request("/o/TestOrg/remove", { method: "POST", body, headers: janeAuth });
@@ -932,7 +935,7 @@ Deno.test(
     await t.step("POST /o/:name/remove by non-owner targeting another member returns 403", async () => {
       await sql`update usr set orgs_r = array_append(orgs_r, 'TestOrg'), orgs_w = array_append(orgs_w, 'TestOrg') where name = 'jane_doe'`;
       mStripe.__updateCalls.length = 0;
-      const janeAuth = { Authorization: "Basic " + btoa("jane@example.com:password1!") };
+      const janeAuth = basic("jane@example.com", "password1!");
       const body = new FormData();
       body.append("name", "john_doe");
       const res = await app.request("/o/TestOrg/remove", { method: "POST", body, headers: janeAuth });
@@ -962,8 +965,8 @@ Deno.test(
 Deno.test(
   "write paths",
   pglite((sql) => async (t) => {
-    const jAuth = { Authorization: "Basic " + btoa("john@example.com:password1!") };
-    const janeAuth = { Authorization: "Basic " + btoa("jane@example.com:password1!") };
+    const jAuth = basic("john@example.com", "password1!");
+    const janeAuth = basic("jane@example.com", "password1!");
     const fd = (o: Record<string, string>) => {
       const f = new FormData();
       for (const [k, v] of Object.entries(o)) f.append(k, v);
@@ -1308,7 +1311,7 @@ Deno.test(
 
     await t.step("POST /c rate-limits after 10 posts per 60s", async () => {
       await sql`insert into usr (name, email, password, bio, invited_by, email_verified_at) values ('rate_tester', 'rate@example.com', 'hashed:rate!', 'bio', 'john_doe', now())`;
-      const auth = { Authorization: "Basic " + btoa("rate@example.com:rate!") };
+      const auth = basic("rate@example.com", "rate!");
       for (let i = 0; i < 10; i++) {
         const res = await app.request("/c", {
           method: "POST",
@@ -1464,9 +1467,9 @@ Deno.test(
     // Create a bot user
     await sql`insert into usr (name, email, password, bio, invited_by, email_verified_at)
       values ('bot_test', 'bot-test@ding.bar', 'hashed:botpass!', 'I am a test bot', 'john_doe', now())`;
-    const botAuth = { Authorization: "Basic " + btoa("bot-test@ding.bar:botpass!") };
-    const jAuth = { Authorization: "Basic " + btoa("john@example.com:password1!") };
-    const janeAuth = { Authorization: "Basic " + btoa("jane@example.com:password1!") };
+    const botAuth = basic("bot-test@ding.bar", "botpass!");
+    const jAuth = basic("john@example.com", "password1!");
+    const janeAuth = basic("jane@example.com", "password1!");
     const fd = (o: Record<string, string>) => {
       const f = new FormData();
       for (const [k, v] of Object.entries(o)) f.append(k, v);
@@ -1726,7 +1729,7 @@ Deno.test(
 Deno.test(
   "synthetic domain tags",
   pglite((sql) => async (t) => {
-    const jAuth = { Authorization: "Basic " + btoa("john@example.com:password1!") };
+    const jAuth = basic("john@example.com", "password1!");
     const fd = (o: Record<string, string>) => {
       const f = new FormData();
       for (const [k, v] of Object.entries(o)) f.append(k, v);
@@ -1802,8 +1805,8 @@ Deno.test(
 Deno.test(
   "notifications inbox",
   pglite((_sql) => async (t) => {
-    const jAuth = { Authorization: "Basic " + btoa("john@example.com:password1!") };
-    const janeAuth = { Authorization: "Basic " + btoa("jane@example.com:password1!") };
+    const jAuth = basic("john@example.com", "password1!");
+    const janeAuth = basic("jane@example.com", "password1!");
     const fd = (o: Record<string, string>) => {
       const f = new FormData();
       for (const [k, v] of Object.entries(o)) f.append(k, v);
@@ -1940,7 +1943,7 @@ Deno.test(
 Deno.test(
   "uploads",
   pglite((_sql) => async (t) => {
-    const jAuth = { Authorization: "Basic " + btoa("john@example.com:password1!") };
+    const jAuth = basic("john@example.com", "password1!");
     type Call = { filename: string; contentType: string; prefix: string; size: number };
     const calls: Call[] = [];
     const original = r2.uploadToR2;
@@ -2464,6 +2467,46 @@ const GOLDEN_CANON = '["msg","51aa1dc69e0b13b4b61b78e23eaaa425880ff724411f5bb965
 // tags in mixed case/order/dupes — buildMsg must lowercase, dedupe, sort to ["lol","nba"]
 const goldenPayload = () => buildMsg({ tags: ["Nba", "lol", "LOL"], body: "hello world https://nba.com" });
 
+// The trust root configured in test_env.ts (DING_ORG_PK/SK).
+const ORG = {
+  jwk: {
+    kty: "OKP",
+    crv: "Ed25519",
+    d: "NABeVHyPQWWdaQvpli3ixdKtUYox7vboFd4U83kF2fQ",
+    x: "dcfETT6D78jBMqb8X_kzT8JVnHh_Zgj-w0CrJaJwIhw",
+    key_ops: ["sign"],
+    ext: true,
+  } as JsonWebKey,
+  pub: "75c7c44d3e83efc8c132a6fc5ff9334fc2559c787f6608fec340ab25a270221c",
+};
+
+const mkKey = async () => {
+  const kp = await genKey();
+  const pub = await pubHexOf(kp);
+  return { kp, priv: kp.privateKey, pub, id: await idOf(pub) };
+};
+
+// Reset rate budgets per call so many same-IP test posts don't trip the limiter
+// (the dedicated rate-limit step exercises the per-pubkey drop explicitly).
+const postDb = (rows: Row[]) => {
+  dbIngestRate.ip.clear();
+  dbIngestRate.key.clear();
+  return app.request("http://db.ding.bar/", {
+    method: "POST",
+    headers: { "content-type": "application/x-ndjson" },
+    body: rows.map((r) => JSON.stringify(r)).join("\n"),
+  });
+};
+
+// Prove an identity to the drain: sign a fresh single-use challenge nonce.
+const authAs = async (kp: CryptoKeyPair, pub: string) => {
+  const { nonce } = await (await app.request("http://db.ding.bar/challenge")).json();
+  const sig = hex(
+    new Uint8Array(await crypto.subtle.sign({ name: "Ed25519" }, kp.privateKey, new TextEncoder().encode(nonce))),
+  );
+  return { Authorization: `Ding ${pub} ${nonce} ${sig}` };
+};
+
 Deno.test("dht golden vectors (canon/hash/sig frozen across server+CLI+node)", async () => {
   assertEquals(await idOf(ALICE.pub), ALICE.id);
   assertEquals(canon(["msg", ALICE.pub, GOLDEN_TS, goldenPayload()]), GOLDEN_CANON);
@@ -2498,18 +2541,6 @@ Deno.test(
       values ('carol', 'carol@x.com', 'hashed:carolpass', 'hi, i am carol', 'john_doe')`;
     const priv = await importPriv(ALICE.jwk);
     const golden = await signRow("msg", GOLDEN_TS, goldenPayload(), priv, ALICE.pub);
-    // reset rate budgets per call so these many same-IP test posts don't trip the limiter
-    // (the dedicated rate-limit step exercises the per-pubkey drop explicitly).
-    const postDb = (rows: Row[]) => {
-      dbIngestRate.ip.clear();
-      dbIngestRate.key.clear();
-      return app.request("http://db.ding.bar/", {
-        method: "POST",
-        headers: { "content-type": "application/x-ndjson" },
-        body: rows.map((r) => JSON.stringify(r)).join("\n"),
-      });
-    };
-
     await t.step("POST /db ingests a signed msg and projects into com", async () => {
       const res = await postDb([golden]);
       assertEquals(res.status, 200);
@@ -2562,7 +2593,7 @@ Deno.test(
     await t.step("far-future ts is dropped on skew (no com row created)", async () => {
       const future = await signRow(
         "msg",
-        Math.floor(Date.now() / 1000) + 99 * 365 * 86400,
+        nowSec() + 99 * 365 * 86400,
         buildMsg({ tags: ["future"], body: "from the year 9999" }),
         priv,
         ALICE.pub,
@@ -2581,7 +2612,7 @@ Deno.test(
       const res = await app.request("/c", {
         method: "POST",
         body: f,
-        headers: { Authorization: "Basic " + btoa("carol@x.com:carolpass") },
+        headers: basic("carol@x.com", "carolpass"),
       });
       assertEquals(res.status, 302);
       const cid = res.headers.get("location")!.match(/\/c\/(\d+)/)![1];
@@ -2599,7 +2630,7 @@ Deno.test(
       const res = await app.request("/c", {
         method: "POST",
         body: f,
-        headers: { Authorization: "Basic " + btoa("carol@x.com:carolpass") },
+        headers: basic("carol@x.com", "carolpass"),
       });
       assertEquals(res.status, 302);
       const cid = res.headers.get("location")!.match(/\/c\/(\d+)/)![1];
@@ -2614,7 +2645,7 @@ Deno.test(
     await t.step("/db ingest refuses a *org msg whose org is a name, not an id", async () => {
       const org = await signRow(
         "msg",
-        Math.floor(Date.now() / 1000),
+        nowSec(),
         { tags: [], orgs: ["secret"], usrs: [], body: "an org post trying to sneak in" },
         priv,
         ALICE.pub,
@@ -2627,15 +2658,9 @@ Deno.test(
     });
 
     await t.step("3 distinct flaggers suppress a post; one flagger ×3 does not", async () => {
-      const mk = async () => {
-        const kp = await genKey();
-        return { kp, pub: await pubHexOf(kp) };
-      };
-      const flag = async (f: { kp: CryptoKeyPair; pub: string }, dt = 0) =>
-        postDb([
-          await signRow("flag", Math.floor(Date.now() / 1000) + dt, { target: GOLDEN_K }, f.kp.privateKey, f.pub),
-        ]);
-      const [a, b, cc] = await Promise.all([mk(), mk(), mk()]);
+      const flag = async (f: { priv: CryptoKey; pub: string }, dt = 0) =>
+        postDb([await signRow("flag", nowSec() + dt, { target: GOLDEN_K }, f.priv, f.pub)]);
+      const [a, b, cc] = await Promise.all([mkKey(), mkKey(), mkKey()]);
 
       // one flagger flags 3× (distinct rows by ts) → still ONE distinct flagger
       await flag(a, 0), await flag(a, 1), await flag(a, 2);
@@ -2648,33 +2673,16 @@ Deno.test(
     });
 
     await t.step("only a valid, unexpired trust-root mark renders a ✓", async () => {
-      // ORG = the trust root configured in test_env.ts (DING_ORG_PK/SK)
-      const ORG_PK = "75c7c44d3e83efc8c132a6fc5ff9334fc2559c787f6608fec340ab25a270221c";
-      const orgPriv = await importPriv({
-        kty: "OKP",
-        crv: "Ed25519",
-        d: "NABeVHyPQWWdaQvpli3ixdKtUYox7vboFd4U83kF2fQ",
-        x: "dcfETT6D78jBMqb8X_kzT8JVnHh_Zgj-w0CrJaJwIhw",
-        key_ops: ["sign"],
-        ext: true,
-      });
-      const now = Math.floor(Date.now() / 1000);
+      const orgPriv = await importPriv(ORG.jwk);
+      const now = nowSec();
       const checked = async () => (await (await app.request("http://api.ding.bar/c?tag=lol")).json())[0].checked;
       const orgMark = async (exp: number) =>
-        postDb([await signRow("mark", now, buildMark(ALICE.id, "email", exp), orgPriv, ORG_PK)]);
+        postDb([await signRow("mark", now, buildMark(ALICE.id, "email", exp), orgPriv, ORG.pub)]);
 
       assertEquals(await checked(), false); // no mark yet
       // a mark from a NON-root key is ignored
-      const stranger = await genKey();
-      await postDb([
-        await signRow(
-          "mark",
-          now,
-          buildMark(ALICE.id, "email", now + YEAR),
-          stranger.privateKey,
-          await pubHexOf(stranger),
-        ),
-      ]);
+      const stranger = await mkKey();
+      await postDb([await signRow("mark", now, buildMark(ALICE.id, "email", now + YEAR), stranger.priv, stranger.pub)]);
       assertEquals(await checked(), false);
       // an EXPIRED trust-root mark is ignored
       await orgMark(now - 1);
@@ -2697,20 +2705,18 @@ Deno.test(
     });
 
     await t.step("a flag that arrives before its target msg still suppresses (out-of-order)", async () => {
-      const author = await genKey(), pub = await pubHexOf(author);
+      const author = await mkKey();
       const post = await signRow(
         "msg",
-        Math.floor(Date.now() / 1000),
+        nowSec(),
         buildMsg({ tags: ["ooo"], body: "early-flagged" }),
-        author.privateKey,
-        pub,
+        author.priv,
+        author.pub,
       );
       // 3 distinct flags land FIRST, before the post is ingested
       for (let i = 0; i < 3; i++) {
-        const f = await genKey();
-        await postDb([
-          await signRow("flag", Math.floor(Date.now() / 1000) + i, { target: post.k }, f.privateKey, await pubHexOf(f)),
-        ]);
+        const f = await mkKey();
+        await postDb([await signRow("flag", nowSec() + i, { target: post.k }, f.priv, f.pub)]);
       }
       assertEquals((await sql`select count(*)::int as n from com where hash = ${post.k}`)[0].n, 0); // not projected yet
       await postDb([post]); // now the msg arrives
@@ -2720,17 +2726,9 @@ Deno.test(
     });
 
     await t.step("the public $mark drain never exposes email addresses", async () => {
-      const orgPriv = await importPriv({
-        kty: "OKP",
-        crv: "Ed25519",
-        d: "NABeVHyPQWWdaQvpli3ixdKtUYox7vboFd4U83kF2fQ",
-        x: "dcfETT6D78jBMqb8X_kzT8JVnHh_Zgj-w0CrJaJwIhw",
-        key_ops: ["sign"],
-        ext: true,
-      });
-      const pk = "75c7c44d3e83efc8c132a6fc5ff9334fc2559c787f6608fec340ab25a270221c";
+      const orgPriv = await importPriv(ORG.jwk);
       await postDb([
-        await signRow("mark", Math.floor(Date.now() / 1000), buildMark(ALICE.id, "email", 9999999999), orgPriv, pk),
+        await signRow("mark", nowSec(), buildMark(ALICE.id, "email", 9999999999), orgPriv, ORG.pub),
       ]);
       const drained = await (await app.request("http://db.ding.bar/?q=$mark")).text();
       assertEquals(drained.includes("@"), false); // no address anywhere in the served marks
@@ -2741,12 +2739,10 @@ Deno.test(
       const saved = dbIngestRate.rowsPerKeyPerMin;
       dbIngestRate.rowsPerKeyPerMin = 2;
       try {
-        const kp = await genKey(), pub = await pubHexOf(kp);
-        const now = Math.floor(Date.now() / 1000);
+        const { priv, pub } = await mkKey();
+        const now = nowSec();
         const rows = await Promise.all(
-          [0, 1, 2].map((i) =>
-            signRow("msg", now + i, buildMsg({ tags: ["rl"], body: `rl ${i}` }), kp.privateKey, pub)
-          ),
+          [0, 1, 2].map((i) => signRow("msg", now + i, buildMsg({ tags: ["rl"], body: `rl ${i}` }), priv, pub)),
         );
         const res = await (await postDb(rows)).json(); // 3 rows, budget 2
         assertEquals(res.ok, 2);
@@ -2758,13 +2754,13 @@ Deno.test(
     });
 
     await t.step("/db refuses a mark with a non-integer exp (feed-cast safety)", async () => {
-      const kp = await genKey();
+      const { priv, pub } = await mkKey();
       const bad = await signRow(
         "mark",
-        Math.floor(Date.now() / 1000),
+        nowSec(),
         { subject: "a".repeat(64), mark: { v: "email", exp: "soon" } },
-        kp.privateKey,
-        await pubHexOf(kp),
+        priv,
+        pub,
       );
       const res = await (await postDb([bad])).json();
       assertEquals(res.ok, 0);
@@ -2772,12 +2768,12 @@ Deno.test(
     });
 
     await t.step("a usr register (name/bio/links) is stored and drainable", async () => {
-      const kp = await genKey(), pub = await pubHexOf(kp);
+      const { priv, pub } = await mkKey();
       const reg = await signRow(
         "usr",
-        Math.floor(Date.now() / 1000),
+        nowSec(),
         { name: "taylor_town", bio: "hi", links: ["taylor.town", "github.com/surprisetalk"] },
-        kp.privateKey,
+        priv,
         pub,
       );
       assertEquals((await (await postDb([reg])).json()).ok, 1);
@@ -2798,12 +2794,12 @@ Deno.test(
     });
 
     await t.step("replicate() pulls a bootstrap's rows and advances the cursor", async () => {
-      const kp = await genKey(), pub = await pubHexOf(kp);
+      const { priv, pub } = await mkKey();
       const row = await signRow(
         "msg",
-        Math.floor(Date.now() / 1000),
+        nowSec(),
         buildMsg({ tags: ["repl"], body: "replicated post, no links" }),
-        kp.privateKey,
+        priv,
         pub,
       );
       const orig = globalThis.fetch;
@@ -2829,52 +2825,45 @@ Deno.test(
 
     await t.step("a private @user DM is auth-gated: only the recipient can drain it", async () => {
       // dave is the recipient (custodial key + id); a sender DMs dave by id
-      const dave = await genKey(), davePub = await pubHexOf(dave), daveId = await idOf(davePub);
+      const dave = await mkKey();
       await sql`insert into usr (name, email, bio, invited_by, pubkey, id)
-        values ('dave', 'dave@x.com', 'hi', 'john_doe', ${davePub}, ${daveId})`;
-      const sender = await genKey(), senderPub = await pubHexOf(sender);
+        values ('dave', 'dave@x.com', 'hi', 'john_doe', ${dave.pub}, ${dave.id})`;
+      const sender = await mkKey();
       const dm = await signRow(
         "msg",
-        Math.floor(Date.now() / 1000),
-        buildMsg({ usrs: [daveId], body: "secret for dave" }),
-        sender.privateKey,
-        senderPub,
+        nowSec(),
+        buildMsg({ usrs: [dave.id], body: "secret for dave" }),
+        sender.priv,
+        sender.pub,
       );
       assertEquals((await (await postDb([dm])).json()).ok, 1);
       // dht keeps the id-scoped recipient; com projects it to dave's name
-      assertEquals((await sql`select usrs from dht where k = ${dm.k}`)[0].usrs, [daveId]);
+      assertEquals((await sql`select usrs from dht where k = ${dm.k}`)[0].usrs, [dave.id]);
       assertEquals((await sql`select usrs from com where hash = ${dm.k}`)[0].usrs, ["dave"]);
 
       const drainHas = async (headers: Record<string, string> = {}) =>
         (await (await app.request("http://db.ding.bar/?q=$msg", { headers })).text()).includes(dm.k);
-      const authAs = async (kp: CryptoKeyPair, pub: string) => {
-        const { nonce } = await (await app.request("http://db.ding.bar/challenge")).json();
-        const sig = hex(
-          new Uint8Array(await crypto.subtle.sign({ name: "Ed25519" }, kp.privateKey, new TextEncoder().encode(nonce))),
-        );
-        return { Authorization: `Ding ${pub} ${nonce} ${sig}` };
-      };
 
       assertEquals(await drainHas(), false); // UNAUTHENTICATED: must NOT see the DM
-      assertEquals(await drainHas(await authAs(dave, davePub)), true); // the recipient sees it
-      const stranger = await genKey();
-      assertEquals(await drainHas(await authAs(stranger, await pubHexOf(stranger))), false); // a third party does not
+      assertEquals(await drainHas(await authAs(dave.kp, dave.pub)), true); // the recipient sees it
+      const stranger = await mkKey();
+      assertEquals(await drainHas(await authAs(stranger.kp, stranger.pub)), false); // a third party does not
       // forge by FLIPPING the sig's last byte (always differs — appending a fixed "00"
       // collides with a real sig ending in 00 about 1 run in 256 and flaked)
-      const bad = (await authAs(dave, davePub)).Authorization;
+      const bad = (await authAs(dave.kp, dave.pub)).Authorization;
       const flipped = (parseInt(bad.slice(-2), 16) ^ 0xff).toString(16).padStart(2, "0");
       assertEquals(await drainHas({ Authorization: bad.slice(0, -2) + flipped }), false); // forged sig → no access
     });
 
     await t.step("a DM to a NON-local recipient never renders publicly in the web feed", async () => {
       const remoteId = "f".repeat(64); // an id with no local usr row
-      const sender = await genKey();
+      const sender = await mkKey();
       const dm = await signRow(
         "msg",
-        Math.floor(Date.now() / 1000),
+        nowSec(),
         buildMsg({ usrs: [remoteId], body: "offsite secret message" }),
-        sender.privateKey,
-        await pubHexOf(sender),
+        sender.priv,
+        sender.pub,
       );
       assertEquals((await (await postDb([dm])).json()).ok, 1);
       // com.usrs falls back to the raw id (non-empty) → never the public '{}' branch
@@ -2886,13 +2875,13 @@ Deno.test(
     });
 
     await t.step("/db refuses a private msg whose @recipient is a name, not an id", async () => {
-      const kp = await genKey();
+      const { priv, pub } = await mkKey();
       const bad = await signRow(
         "msg",
-        Math.floor(Date.now() / 1000),
+        nowSec(),
         buildMsg({ usrs: ["dave"], body: "name-scoped, not allowed" }),
-        kp.privateKey,
-        await pubHexOf(kp),
+        priv,
+        pub,
       );
       const res = await (await postDb([bad])).json();
       assertEquals(res.ok, 0);
@@ -2900,14 +2889,8 @@ Deno.test(
     });
 
     await t.step("peer rows ingest, drain via $peer, and discoverPeers parses them", async () => {
-      const kp = await genKey(), pub = await pubHexOf(kp);
-      const peer = await signRow(
-        "peer",
-        Math.floor(Date.now() / 1000),
-        { ips: ["https://node-b.example"], serves: ["$msg"] },
-        kp.privateKey,
-        pub,
-      );
+      const { priv, pub } = await mkKey();
+      const peer = await signRow("peer", nowSec(), { ips: ["https://node-b.example"], serves: ["$msg"] }, priv, pub);
       assertEquals((await (await postDb([peer])).json()).ok, 1);
       assertEquals((await sql`select kind from dht where k = ${peer.k}`)[0].kind, "peer");
       // discoverPeers reads them from a node's $peer drain
@@ -2923,7 +2906,7 @@ Deno.test(
     });
 
     await t.step("publishPeer signs and POSTs a verifiable peer row", async () => {
-      const kp = await genKey(), pub = await pubHexOf(kp);
+      const { priv, pub } = await mkKey();
       const orig = globalThis.fetch;
       let posted = "";
       try {
@@ -2931,7 +2914,7 @@ Deno.test(
           posted = init.body;
           return Promise.resolve(new Response("{}", { status: 200 }));
         }) as unknown as typeof fetch;
-        await publishPeer("http://boot.example", ["https://me.example"], ["$msg"], kp.privateKey, pub);
+        await publishPeer("http://boot.example", ["https://me.example"], ["$msg"], priv, pub);
       } finally {
         globalThis.fetch = orig;
       }
@@ -2941,67 +2924,44 @@ Deno.test(
     });
 
     await t.step("a *org msg is auth-gated by the org's signed member lease", async () => {
-      const org = await genKey(), orgPub = await pubHexOf(org), orgId = await idOf(orgPub);
-      const member = await genKey(), memberPub = await pubHexOf(member), memberId = await idOf(memberPub);
+      const org = await mkKey(), member = await mkKey();
       await postDb([
-        await signRow(
-          "org",
-          Math.floor(Date.now() / 1000),
-          { name: "nba", bio: "", links: [], members: [memberId] },
-          org.privateKey,
-          orgPub,
-        ),
+        await signRow("org", nowSec(), { name: "nba", bio: "", links: [], members: [member.id] }, org.priv, org.pub),
       ]);
-      assertEquals((await sql`select members from dht where pubkey = ${orgPub} and kind = 'org'`)[0].members, [
-        memberId,
+      assertEquals((await sql`select members from dht where pubkey = ${org.pub} and kind = 'org'`)[0].members, [
+        member.id,
       ]);
-      const sender = await genKey();
+      const sender = await mkKey();
       const post = await signRow(
         "msg",
-        Math.floor(Date.now() / 1000),
-        buildMsg({ orgs: [orgId], body: "team-only secret" }),
-        sender.privateKey,
-        await pubHexOf(sender),
+        nowSec(),
+        buildMsg({ orgs: [org.id], body: "team-only secret" }),
+        sender.priv,
+        sender.pub,
       );
       assertEquals((await (await postDb([post])).json()).ok, 1);
-      assertEquals((await sql`select orgs from dht where k = ${post.k}`)[0].orgs, [orgId]);
+      assertEquals((await sql`select orgs from dht where k = ${post.k}`)[0].orgs, [org.id]);
       assertEquals((await sql`select count(*)::int as n from com where hash = ${post.k}`)[0].n, 0); // dht-only
 
       const drainHas = async (headers: Record<string, string> = {}) =>
         (await (await app.request("http://db.ding.bar/?q=$msg", { headers })).text()).includes(post.k);
-      const authAs = async (kp: CryptoKeyPair, pub: string) => {
-        const { nonce } = await (await app.request("http://db.ding.bar/challenge")).json();
-        const sig = hex(
-          new Uint8Array(await crypto.subtle.sign({ name: "Ed25519" }, kp.privateKey, new TextEncoder().encode(nonce))),
-        );
-        return { Authorization: `Ding ${pub} ${nonce} ${sig}` };
-      };
       assertEquals(await drainHas(), false); // unauthenticated → no org content
-      assertEquals(await drainHas(await authAs(member, memberPub)), true); // a member sees it
-      const outsider = await genKey();
-      assertEquals(await drainHas(await authAs(outsider, await pubHexOf(outsider))), false); // a non-member does not
+      assertEquals(await drainHas(await authAs(member.kp, member.pub)), true); // a member sees it
+      const outsider = await mkKey();
+      assertEquals(await drainHas(await authAs(outsider.kp, outsider.pub)), false); // a non-member does not
     });
 
     await t.step("resolveName ranks contested @names by trust-root marks, then first-seen", async () => {
-      const now = Math.floor(Date.now() / 1000);
-      const a = await genKey(), aPub = await pubHexOf(a), aId = await idOf(aPub);
-      const b = await genKey(), bPub = await pubHexOf(b), bId = await idOf(bPub);
-      await postDb([await signRow("usr", now, { name: "gwern", bio: "", links: [] }, a.privateKey, aPub)]);
-      await postDb([await signRow("usr", now + 1, { name: "gwern", bio: "", links: [] }, b.privateKey, bPub)]);
-      assertEquals(await resolveName("gwern"), aId); // no marks → first-seen wins
+      const now = nowSec();
+      const a = await mkKey(), b = await mkKey();
+      await postDb([await signRow("usr", now, { name: "gwern", bio: "", links: [] }, a.priv, a.pub)]);
+      await postDb([await signRow("usr", now + 1, { name: "gwern", bio: "", links: [] }, b.priv, b.pub)]);
+      assertEquals(await resolveName("gwern"), a.id); // no marks → first-seen wins
       assertEquals(await resolveName("nobody-has-this-name"), null);
       // a trust-root mark on b flips the ranking
-      const orgPriv = await importPriv({
-        kty: "OKP",
-        crv: "Ed25519",
-        d: "NABeVHyPQWWdaQvpli3ixdKtUYox7vboFd4U83kF2fQ",
-        x: "dcfETT6D78jBMqb8X_kzT8JVnHh_Zgj-w0CrJaJwIhw",
-        key_ops: ["sign"],
-        ext: true,
-      });
-      const ORG_PK = "75c7c44d3e83efc8c132a6fc5ff9334fc2559c787f6608fec340ab25a270221c";
-      await postDb([await signRow("mark", now, buildMark(bId, "email", now + YEAR), orgPriv, ORG_PK)]);
-      assertEquals(await resolveName("gwern"), bId);
+      const orgPriv = await importPriv(ORG.jwk);
+      await postDb([await signRow("mark", now, buildMark(b.id, "email", now + YEAR), orgPriv, ORG.pub)]);
+      assertEquals(await resolveName("gwern"), b.id);
     });
   }),
 );
