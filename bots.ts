@@ -81,6 +81,165 @@ export const firstMatch = (re: RegExp, s: string) => s.match(re)?.[1] || "";
 
 export const slugTag = (s: string) => s.toLowerCase().replace(/[^a-z0-9]+/g, "_").replace(/^_+|_+$/g, "").slice(0, 40);
 
+export const pick = <T>(arr: T[]): T => arr[Math.floor(Math.random() * arr.length)];
+
+export const shuffle = <T>(arr: T[]): T[] => { // in-place Fisher-Yates; returns arr
+  for (let i = arr.length - 1; i > 0; i--) {
+    const j = Math.floor(Math.random() * (i + 1));
+    [arr[i], arr[j]] = [arr[j], arr[i]];
+  }
+  return arr;
+};
+
+export const stripUrlsMentions = (b: string) => b.replace(/https?:\/\/\S+/g, "").replace(/@\S+/g, "").trim();
+
+export const dayNumber = () => Math.floor(Date.now() / 86_400_000) - 20818; // daily-challenge day counter
+
+// null on timeout/network error, so feed sweeps can skip dead feeds.
+export const fetchTimeout = async (
+  url: string,
+  ms: number,
+  headers: Record<string, string>,
+): Promise<Response | null> => {
+  try {
+    return await fetch(url, { signal: AbortSignal.timeout(ms), headers, redirect: "follow" });
+  } catch {
+    return null;
+  }
+};
+
+// Worker-pool sweep over many feeds: fetch each concurrently (bounded), keep each
+// feed's newest item inside the freshness window.
+export async function sweepFeeds<F, T>(
+  sample: F[],
+  concurrency: number,
+  fetchOne: (f: F) => Promise<T[]>,
+  ts: (item: T) => number,
+  cutoff: number,
+): Promise<T[]> {
+  let idx = 0;
+  const newest: T[] = [];
+  await Promise.all(
+    Array.from({ length: concurrency }, async () => {
+      while (idx < sample.length) {
+        const fresh = (await fetchOne(sample[idx++])).filter((i) => ts(i) > cutoff);
+        fresh.sort((a, b) => ts(b) - ts(a));
+        if (fresh[0]) newest.push(fresh[0]);
+      }
+    }),
+  );
+  return newest;
+}
+
+// Atom <entry>: title (CDATA or plain) + the non-rel=self link href.
+export const atomTitleLink = (entry: string) => ({
+  title: (firstMatch(/<title[^>]*>\s*<!\[CDATA\[([\s\S]*?)\]\]>\s*<\/title>/, entry) ||
+    firstMatch(/<title[^>]*>([\s\S]*?)<\/title>/, entry)).trim(),
+  link: firstMatch(
+    /href=["']([^"']+)["']/,
+    [...entry.matchAll(/<link\s+([^>]*?)\/?>/g)].map((x) => x[1])
+      .find((a) => !/rel=["']self["']/i.test(a) && /href=/.test(a)) ?? "",
+  ),
+});
+
+// RSS <item>: title (CDATA or plain) + <link> + <comments>.
+export const parseTitleLinkComments = (itemXml: string) => ({
+  title: firstMatch(/<title><!\[CDATA\[(.*?)\]\]><\/title>/, itemXml) || firstMatch(/<title>(.*?)<\/title>/, itemXml),
+  link: firstMatch(/<link>(.*?)<\/link>/, itemXml),
+  comments: firstMatch(/<comments>(.*?)<\/comments>/, itemXml),
+});
+
+// ---- SVG glitch (clipart / emojiglitch) ----
+
+type GlitchSvgOpts = {
+  pathProb: number;
+  pathAmp: number;
+  hexProb: number;
+  hexShift: number;
+  decorate: (out: string, rng: () => number) => string; // extra elements injected before </svg>
+};
+
+// Jitter path coordinates + scramble hex colors, then append the caller's decorations.
+// RNG call order is stable, so seeded (per-day deterministic) output stays reproducible.
+export function glitchSvg(svg: string, rng: () => number, o: GlitchSvgOpts): string {
+  let out = svg.replace(
+    /\bd="([^"]+)"/g,
+    (_m, d: string) =>
+      `d="${
+        d.replace(/-?\d+\.?\d*/g, (n) => rng() < o.pathProb ? String(parseFloat(n) + (rng() - 0.5) * o.pathAmp) : n)
+      }"`,
+  );
+  out = out.replace(
+    /#([0-9a-fA-F]{6})/g,
+    (_m, hex: string) =>
+      rng() < o.hexProb
+        ? "#" +
+          hex.split("").map((c) => ((parseInt(c, 16) + Math.floor(rng() * o.hexShift)) % 16).toString(16)).join("")
+        : `#${hex}`,
+  );
+  const i = out.lastIndexOf("</svg>");
+  return i === -1 ? out : out.slice(0, i) + o.decorate(out, rng) + out.slice(i);
+}
+
+// Fetch a twemoji SVG, glitch it, upload to R2; returns the public URL + source link.
+export async function glitchTwemojiToR2(cp: string, rng: () => number, prefix: string, o: GlitchSvgOpts) {
+  const res = await fetch(`https://raw.githubusercontent.com/twitter/twemoji/master/assets/svg/${cp}.svg`);
+  if (!res.ok) throw new Error(`Failed to fetch twemoji ${cp}: HTTP ${res.status}`);
+  const glitched = glitchSvg(await res.text(), rng, o);
+  const date = new Date().toISOString().slice(0, 10);
+  const r2Url = await uploadToR2(new TextEncoder().encode(glitched), `${prefix}-${date}.svg`, "image/svg+xml");
+  return { r2Url, src: `https://github.com/twitter/twemoji/blob/master/assets/svg/${cp}.svg` };
+}
+
+// ---- Reddit ----
+
+export const unescXml = (s: string) =>
+  s.replace(/&lt;/g, "<").replace(/&gt;/g, ">").replace(/&amp;/g, "&").replace(/&quot;/g, '"');
+
+// Reddit throttles aggressively; descriptive UA + single retry on 429 is polite enough.
+export async function redditFetch(url: string, timeoutMs = 15_000): Promise<Response> {
+  for (let attempt = 0; attempt < 2; attempt++) {
+    const res = await fetch(url, {
+      signal: AbortSignal.timeout(timeoutMs),
+      headers: {
+        "User-Agent": "ding-bot/1.0 (+https://ding.bar; contact: taylor@ding.bar)",
+        "Accept": "application/rss+xml, application/xml, text/xml, */*",
+      },
+    });
+    if (res.status !== 429 || attempt === 1) return res;
+    const retryAfter = parseInt(res.headers.get("retry-after") || "5", 10);
+    console.warn(`Reddit 429, sleeping ${retryAfter}s then retrying`);
+    await new Promise((r) => setTimeout(r, Math.min(retryAfter, 30) * 1000));
+  }
+  throw new Error("unreachable");
+}
+
+export const extractRedditImage = (html: string): string | null => {
+  const u = unescXml(html);
+  const raw = u.match(/https:\/\/i\.redd\.it\/[^\s"'<>]+/)?.[0] ??
+    u.match(/https:\/\/i\.imgur\.com\/[^\s"'<>]+/)?.[0] ??
+    u.match(/<img[^>]+src="([^"]+)"/)?.[1] ??
+    null;
+  return raw ? unescXml(raw) : null;
+};
+
+export type RedditItem = { title: string; link: string; imageUrl: string | null; author: string; published: number };
+
+export const parseRedditEntries = (xml: string): RedditItem[] => {
+  const items: RedditItem[] = [];
+  for (const entry of xml.match(/<entry>[\s\S]*?<\/entry>/g) || []) {
+    const title = unescXml(entry.match(/<title>([\s\S]*?)<\/title>/)?.[1] ?? "").trim();
+    const link = entry.match(/<link[^>]+href="([^"]+)"/)?.[1] || "";
+    const content = entry.match(/<content[^>]*>([\s\S]*?)<\/content>/)?.[1] || "";
+    const author = entry.match(/<author>[\s\S]*?<name>([^<]+)<\/name>/)?.[1]?.trim() || "";
+    const pubStr = entry.match(/<published>([^<]+)<\/published>/)?.[1] ??
+      entry.match(/<updated>([^<]+)<\/updated>/)?.[1] ?? "";
+    const published = pubStr ? +new Date(pubStr) : 0;
+    if (title && link) items.push({ title, link, imageUrl: extractRedditImage(content), author, published });
+  }
+  return items;
+};
+
 // ---- API helpers ----
 
 export async function getAnsweredCids(
@@ -189,7 +348,7 @@ export const reply = (auth: string, apiUrl: string, parentCid: number, body: str
 
 export type Post = { cid: number; parent_cid: number | null; body: string; created_by: string; created_at: string };
 
-export async function fetchPost(
+async function fetchPost(
   auth: string,
   apiUrl: string,
   cid: number,
@@ -419,7 +578,21 @@ export function todaySeed(): number {
 
 // ---- Candidate picking ----
 
-export type Candidate = {
+// Latest top-level posts + comments, merged and deduped by cid.
+export async function fetchFreshPosts<T extends { cid: number } = Post>(
+  auth: string,
+  apiUrl: string,
+  limit = 50,
+): Promise<T[]> {
+  const [top, comments] = await Promise.all([
+    getJson<T[]>(`/c?sort=new&limit=${limit}`, auth, apiUrl),
+    getJson<T[]>(`/c?sort=new&comments=1&limit=${limit}`, auth, apiUrl),
+  ]);
+  const seen = new Set<number>();
+  return [...top, ...comments].filter((p) => !seen.has(p.cid) && !!seen.add(p.cid));
+}
+
+type Candidate = {
   cid: number;
   parent_cid: number | null;
   body: string;
@@ -430,26 +603,16 @@ export type Candidate = {
 
 // Fetches top-level posts + comments, filters bot's own posts + already-answered + stale,
 // ranks: prefer posts with fewer replies (spreads bots across threads), random tiebreak.
-export async function pickCandidates(
+async function pickCandidates(
   auth: string,
   apiUrl: string,
   botUsername: string,
   answered: Set<number>,
   opts: { pool?: number; minBodyLen?: number; excludeLinkPosts?: boolean } = {},
 ): Promise<Candidate[]> {
-  const pool = opts.pool ?? 50;
   const minBodyLen = opts.minBodyLen ?? 30;
   const excludeLinkPosts = opts.excludeLinkPosts ?? true;
-  const [top, comments] = await Promise.all([
-    getJson<Candidate[]>(`/c?sort=new&limit=${pool}`, auth, apiUrl).catch(() => [] as Candidate[]),
-    getJson<Candidate[]>(`/c?sort=new&comments=1&limit=${pool}`, auth, apiUrl).catch(() => [] as Candidate[]),
-  ]);
-  const seen = new Set<number>();
-  const all = [...top, ...comments].filter((p) => {
-    if (seen.has(p.cid)) return false;
-    seen.add(p.cid);
-    return true;
-  });
+  const all = await fetchFreshPosts<Candidate>(auth, apiUrl, opts.pool ?? 50);
   return all
     .filter((p) =>
       p.created_by !== botUsername &&

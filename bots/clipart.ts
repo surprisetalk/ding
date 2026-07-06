@@ -1,4 +1,4 @@
-import { dailyPostBot, seededRng, todaySeed, uploadToR2 } from "../bots.ts";
+import { dailyPostBot, glitchTwemojiToR2, seededRng, todaySeed } from "../bots.ts";
 
 const TWEMOJI_CODEPOINTS = [
   "1f600",
@@ -53,78 +53,47 @@ const TWEMOJI_CODEPOINTS = [
   "1f3fa",
 ];
 
-function glitchSvg(svg: string, rng: () => number): string {
-  let out = svg;
-
-  out = out.replace(/\bd="([^"]+)"/g, (_match, d: string) => {
-    const glitched = d.replace(/-?\d+\.?\d*/g, (n: string) => {
-      if (rng() < 0.05) return String(parseFloat(n) + (rng() - 0.5) * 4);
-      return n;
-    });
-    return `d="${glitched}"`;
-  });
-
-  out = out.replace(/#([0-9a-fA-F]{6})/g, (_match, hex: string) => {
-    if (rng() < 0.1) {
-      const scrambled = hex.split("").map((c: string) => {
-        const v = (parseInt(c, 16) + Math.floor(rng() * 4)) % 16;
-        return v.toString(16);
-      }).join("");
-      return `#${scrambled}`;
-    }
-    return `#${hex}`;
-  });
-
-  const closingTag = "</svg>";
-  const insertIdx = out.lastIndexOf(closingTag);
-  if (insertIdx !== -1) {
-    let extras = "";
-    const dupeCount = Math.floor(rng() * 2);
-    for (let i = 0; i < dupeCount; i++) {
-      const tx = (rng() - 0.5) * 6;
-      const ty = (rng() - 0.5) * 6;
-      const rot = Math.floor(rng() * 10 - 5);
-      extras += `<g transform="translate(${tx.toFixed(1)},${ty.toFixed(1)}) rotate(${rot})" opacity="${
-        (0.1 + rng() * 0.2).toFixed(2)
-      }">`;
-      const pathMatch = out.match(/<path[^>]*\/>/);
-      if (pathMatch) extras += pathMatch[0];
-      extras += `</g>`;
-    }
-    const rectCount = Math.floor(rng() * 2);
-    for (let i = 0; i < rectCount; i++) {
-      const x = Math.floor(rng() * 36);
-      const y = Math.floor(rng() * 36);
-      const w = 2 + Math.floor(rng() * 8);
-      const h = 1 + Math.floor(rng() * 2);
-      const r = Math.floor(rng() * 256);
-      const g = Math.floor(rng() * 256);
-      const b = Math.floor(rng() * 256);
-      extras += `<rect x="${x}" y="${y}" width="${w}" height="${h}" fill="rgb(${r},${g},${b})" opacity="${
-        (0.05 + rng() * 0.15).toFixed(2)
-      }"/>`;
-    }
-    out = out.slice(0, insertIdx) + extras + out.slice(insertIdx);
-  }
-
-  return out;
-}
-
 dailyPostBot({
   envPrefix: "CLIPART",
   tags: "#art #glitch #bot",
   make: async () => {
     const seed = todaySeed();
     const cp = TWEMOJI_CODEPOINTS[seed % TWEMOJI_CODEPOINTS.length];
-    const rng = seededRng(seed);
-    const url = `https://raw.githubusercontent.com/twitter/twemoji/master/assets/svg/${cp}.svg`;
-    const res = await fetch(url);
-    if (!res.ok) throw new Error(`Failed to fetch twemoji ${cp}: HTTP ${res.status}`);
-
-    const glitched = glitchSvg(await res.text(), rng);
-    const date = new Date().toISOString().slice(0, 10);
-    const r2Url = await uploadToR2(new TextEncoder().encode(glitched), `clipart-${date}.svg`, "image/svg+xml");
-    const src = `https://github.com/twitter/twemoji/blob/master/assets/svg/${cp}.svg`;
+    const { r2Url, src } = await glitchTwemojiToR2(cp, seededRng(seed), "clipart", {
+      pathProb: 0.05,
+      pathAmp: 4,
+      hexProb: 0.1,
+      hexShift: 4,
+      decorate: (out, rng) => {
+        let extras = "";
+        const dupeCount = Math.floor(rng() * 2);
+        for (let i = 0; i < dupeCount; i++) {
+          const tx = (rng() - 0.5) * 6;
+          const ty = (rng() - 0.5) * 6;
+          const rot = Math.floor(rng() * 10 - 5);
+          extras += `<g transform="translate(${tx.toFixed(1)},${ty.toFixed(1)}) rotate(${rot})" opacity="${
+            (0.1 + rng() * 0.2).toFixed(2)
+          }">`;
+          const pathMatch = out.match(/<path[^>]*\/>/);
+          if (pathMatch) extras += pathMatch[0];
+          extras += `</g>`;
+        }
+        const rectCount = Math.floor(rng() * 2);
+        for (let i = 0; i < rectCount; i++) {
+          const x = Math.floor(rng() * 36);
+          const y = Math.floor(rng() * 36);
+          const w = 2 + Math.floor(rng() * 8);
+          const h = 1 + Math.floor(rng() * 2);
+          const r = Math.floor(rng() * 256);
+          const g = Math.floor(rng() * 256);
+          const b = Math.floor(rng() * 256);
+          extras += `<rect x="${x}" y="${y}" width="${w}" height="${h}" fill="rgb(${r},${g},${b})" opacity="${
+            (0.05 + rng() * 0.15).toFixed(2)
+          }"/>`;
+        }
+        return extras;
+      },
+    });
     return `${r2Url}\n\nglitched clipart\n\nsource: ${src}`;
   },
 });

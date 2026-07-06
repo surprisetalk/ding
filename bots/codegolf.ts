@@ -1,6 +1,6 @@
 // Daily code golf bot — posts one programming challenge per day from a hardcoded bank.
 
-import { dailyPostBot } from "../bots.ts";
+import { dailyPostBot, dayNumber } from "../bots.ts";
 
 const PROBLEMS = [
   {
@@ -303,7 +303,7 @@ dailyPostBot({
   tags: "#codegolf #game #bot",
   make: () => {
     const problem = PROBLEMS[Math.floor(Date.now() / 86_400_000) % PROBLEMS.length];
-    const dayNum = Math.floor(Date.now() / 86_400_000) - 20818;
+    const dayNum = dayNumber();
     return `Day ${dayNum}: ${problem.title} [${problem.difficulty}]\n\n${problem.body}\n\nReply with your solution in any language. Shortest wins!`;
   },
 });

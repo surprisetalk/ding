@@ -1,4 +1,4 @@
-import { botInit, claude, getAnsweredCids, getJson, isFresh, isLinkPost, MAX_AGE_MS, reply } from "../bots.ts";
+import { botInit, claude, fetchFreshPosts, getAnsweredCids, isFresh, isLinkPost, MAX_AGE_MS, reply } from "../bots.ts";
 
 const SYSTEM = "You are a discerning quality critic for a small social feed. " +
   'For each post, rate it: "up" if it\'s genuinely interesting, funny, thoughtful, or well-crafted; ' +
@@ -10,24 +10,11 @@ const SYSTEM = "You are a discerning quality critic for a small social feed. " +
 
 const MAX_RATE_PER_RUN = 10;
 
-type Post = { cid: number; created_by: string; body: string; created_at: string };
-
 async function main() {
   const { apiUrl, auth, botUsername } = botInit("CRITIC");
   const answered = await getAnsweredCids(auth, botUsername, apiUrl, { since: Date.now() - MAX_AGE_MS });
 
-  const [topLevel, comments] = await Promise.all([
-    getJson<Post[]>(`/c?sort=new&limit=40`, auth, apiUrl),
-    getJson<Post[]>(`/c?sort=new&comments=1&limit=40`, auth, apiUrl),
-  ]);
-
-  const seen = new Set<number>();
-  const all = [...topLevel, ...comments].filter((p) => {
-    if (seen.has(p.cid)) return false;
-    seen.add(p.cid);
-    return true;
-  });
-
+  const all = await fetchFreshPosts(auth, apiUrl, 40);
   const candidates = all.filter((p) =>
     p.created_by !== botUsername &&
     !answered.has(p.cid) &&

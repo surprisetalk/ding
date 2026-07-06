@@ -2,9 +2,9 @@ import {
   botInit,
   extractArticle,
   extractImageUrl,
+  fetchFreshPosts,
   firstLink,
   getAnsweredCids,
-  getJson,
   isFresh,
   MAX_AGE_MS,
   reply,
@@ -46,14 +46,7 @@ async function main() {
   const { apiUrl, auth, botUsername } = botInit("READER");
   const answered = await getAnsweredCids(auth, botUsername, apiUrl, { since: Date.now() - MAX_AGE_MS });
 
-  type PostLite = { cid: number; body: string; created_by: string; created_at: string };
-  const [top, comments] = await Promise.all([
-    getJson<PostLite[]>(`/c?sort=new&limit=50`, auth, apiUrl).catch(() => [] as PostLite[]),
-    getJson<PostLite[]>(`/c?sort=new&comments=1&limit=50`, auth, apiUrl).catch(() => [] as PostLite[]),
-  ]);
-  const seen = new Set<number>();
-  const posts = [...top, ...comments]
-    .filter((p) => !seen.has(p.cid) && !!seen.add(p.cid));
+  const posts = await fetchFreshPosts(auth, apiUrl);
 
   const candidates = posts.filter((p) => {
     if (p.created_by === botUsername || answered.has(p.cid) || !isFresh(p.created_at)) return false;

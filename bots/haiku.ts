@@ -1,8 +1,15 @@
-import { botInit, countSyllables, getAnsweredCids, getJson, isFresh, MAX_AGE_MS, reply } from "../bots.ts";
+import {
+  botInit,
+  countSyllables,
+  getAnsweredCids,
+  getJson,
+  isFresh,
+  MAX_AGE_MS,
+  reply,
+  stripUrlsMentions,
+} from "../bots.ts";
 
 const { apiUrl, auth, botUsername } = botInit("HAIKU");
-
-const clean = (b: string) => b.replace(/https?:\/\/\S+/g, "").replace(/@\S+/g, "").trim();
 
 function findHaiku(text: string): [string, string, string] | null {
   const words = text.split(/\s+/).filter(Boolean);
@@ -38,7 +45,7 @@ async function main() {
   for (const post of posts) {
     if (replies >= 3) break;
     if (post.created_by.startsWith("bot_") || answered.has(post.cid) || !isFresh(post.created_at)) continue;
-    const haiku = findHaiku(clean(post.body));
+    const haiku = findHaiku(stripUrlsMentions(post.body));
     if (!haiku) continue;
     const body = `a haiku, perhaps?\n\n${haiku[0]}\n${haiku[1]}\n${haiku[2]}`;
     console.log(`Replying to cid=${post.cid}: ${haiku.join(" / ")}`);

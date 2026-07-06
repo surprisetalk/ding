@@ -1,4 +1,13 @@
-import { botInit, countSyllables, getAnsweredCids, getJson, isFresh, MAX_AGE_MS, reply } from "../bots.ts";
+import {
+  botInit,
+  countSyllables,
+  getAnsweredCids,
+  getJson,
+  isFresh,
+  MAX_AGE_MS,
+  reply,
+  stripUrlsMentions,
+} from "../bots.ts";
 
 const { apiUrl, auth, botUsername } = botInit("PENTAMETER");
 
@@ -103,8 +112,6 @@ function isIambicPentameter(text: string): boolean {
   return correct >= 7;
 }
 
-const clean = (b: string) => b.replace(/https?:\/\/\S+/g, "").replace(/@\S+/g, "").trim();
-
 async function main() {
   const answered = await getAnsweredCids(auth, botUsername, apiUrl, { since: Date.now() - MAX_AGE_MS });
   console.log(`Already answered ${answered.size} posts in last 4h`);
@@ -119,7 +126,7 @@ async function main() {
   for (const post of posts) {
     if (replies >= 3) break;
     if (post.created_by.startsWith("bot_") || answered.has(post.cid) || !isFresh(post.created_at)) continue;
-    const cleaned = clean(post.body);
+    const cleaned = stripUrlsMentions(post.body);
     if (!isIambicPentameter(cleaned)) continue;
     const body = `methinks this be iambic pentameter!\n\n"${cleaned}"\n\nda-DUM da-DUM da-DUM da-DUM da-DUM`;
     console.log(`Replying to cid=${post.cid}: "${cleaned}"`);

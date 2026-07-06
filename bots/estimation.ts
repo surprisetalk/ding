@@ -1,6 +1,6 @@
 // Daily Fermi estimation bot — posts a question, reveals answer next day with closest guesser.
 
-import { botInit, getJson, post, reply } from "../bots.ts";
+import { botInit, dayNumber, getJson, post, reply } from "../bots.ts";
 
 const { apiUrl, auth, botUsername } = botInit("ESTIMATION");
 
@@ -130,7 +130,7 @@ async function main() {
   if (!revealed && lastAgeHours >= 20) {
     const dayIndex = Math.floor(Date.now() / 86_400_000) % QUESTIONS.length;
     const question = QUESTIONS[dayIndex];
-    const dayNum = Math.floor(Date.now() / 86_400_000) - 20818;
+    const dayNum = dayNumber();
     const body = `Estimation #${dayNum}\n\n${question.q}\n\nReply with your best guess (just a number)!`;
     console.log(`Posting: Estimation #${dayNum}`);
     if (!await post(auth, apiUrl, body, "#estimation #game #bot")) Deno.exit(1);

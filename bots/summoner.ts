@@ -1,4 +1,4 @@
-import { botInit, extractImageUrl, getAnsweredCids, getJson, isFresh, MAX_AGE_MS, reply } from "../bots.ts";
+import { botInit, extractImageUrl, getAnsweredCids, getJson, isFresh, MAX_AGE_MS, pick, reply } from "../bots.ts";
 
 const { apiUrl, auth, botUsername } = botInit("SUMMONER");
 
@@ -15,8 +15,6 @@ type Post = {
 
 const hasBotMention = (p: Post) =>
   p.child_comments.some((c) => c.created_by.startsWith("bot_") || /@bot_\w+/.test(c.body));
-
-const pick = <T>(arr: T[]): T => arr[Math.floor(Math.random() * arr.length)];
 
 async function main() {
   const recent = await getJson<{ created_at: string }[]>(
