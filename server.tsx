@@ -537,6 +537,13 @@ const wsSubs = new Set<WsSub>();
 // byte-identical rows (subscribers dedup by k across both paths).
 const wireRow = (r: Pick<DhtFull, "k" | "kind" | "pubkey" | "ts" | "sig" | "val">) =>
   JSON.stringify({ k: r.k, kind: r.kind, pubkey: r.pubkey, ts: Number(r.ts), sig: r.sig, ...r.val });
+
+// One page of the PUBLIC live-tail drain (WS history sweep + post-subscribe catch-up).
+const drainPage = (after: bigint, qs: ReturnType<typeof parseQ>[]) =>
+  sql`
+    select k, seq, kind, pubkey, ts, sig, val, tags, orgs, usrs from dht
+    where seq > ${after} and orgs = '{}' and usrs = '{}' and (${dhtWhere(qs)})
+    order by seq asc limit 1000` as unknown as Promise<DhtFull[]>;
 const supersetOf = (have: string[], need: string[]) => need.every((n) => have.includes(n));
 export const matchesQ = (r: Pick<DhtFull, "kind" | "tags" | "orgs" | "usrs">, qs: WsSub["qs"]) =>
   qs.length === 0 ||
@@ -1479,41 +1486,25 @@ app.use("*", async (c, next) => {
     let closed = false;
     return upgradeWebSocket(() => ({
       async onOpen(_e: Event, ws: { send: (s: string) => void }) {
+        const push = (r: DhtFull) => {
+          ws.send(wireRow(r));
+          after = BigInt(r.seq);
+        };
         for (;;) { // drain public history oldest→newest
           if (closed) return;
-          const rows = await sql`
-            select k, seq, kind, pubkey, ts, sig, val, tags, orgs, usrs from dht
-            where seq > ${after} and orgs = '{}' and usrs = '{}' and (${dhtWhere(qs)})
-            order by seq asc limit 1000` as unknown as DhtFull[];
+          const rows = await drainPage(after, qs);
           if (!rows.length) break;
-          for (const r of rows) {
-            ws.send(wireRow(r));
-            after = BigInt(r.seq);
-          }
+          rows.forEach(push);
         }
         if (closed) return;
         ws.send(JSON.stringify({ hb: String(after) }));
         // register with the shared per-isolate listener (no per-subscriber DB connection)
-        mySub = {
-          qs,
-          onRow: (r) => {
-            ws.send(wireRow(r));
-            after = BigInt(r.seq);
-          },
-        };
+        mySub = { qs, onRow: push };
         wsSubs.add(mySub);
         await startDhtListener();
         // catch-up: any rows ingested between the history drain and registration (client
         // dedups by k, so a row caught by both the sweep and the live listener is harmless).
-        for (
-          const r of await sql`
-            select k, seq, kind, pubkey, ts, sig, val, tags, orgs, usrs from dht
-            where seq > ${after} and orgs = '{}' and usrs = '{}' and (${dhtWhere(qs)})
-            order by seq asc limit 1000` as unknown as DhtFull[]
-        ) {
-          ws.send(wireRow(r));
-          after = BigInt(r.seq);
-        }
+        (await drainPage(after, qs)).forEach(push);
         hb = setInterval(() => ws.send(JSON.stringify({ hb: String(after) })), 60_000);
       },
       async onClose() {
