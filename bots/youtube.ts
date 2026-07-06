@@ -61,7 +61,11 @@ const fetchFeed = async (ch: Channel): Promise<Item[]> => {
     accept: "application/atom+xml, application/xml;q=0.9, */*;q=0.5",
   });
   if (!res?.ok) return [];
-  return parseEntries(await res.text(), ch);
+  try {
+    return parseEntries(await res.text(), ch); // a body that stalls mid-read skips this feed, not the sweep
+  } catch {
+    return [];
+  }
 };
 
 // Real shorts return 200 at /shorts/{id}; regular videos return 303 to /watch?v=...

@@ -61,7 +61,11 @@ const fetchFeed = async (b: Blog): Promise<Item[]> => {
     accept: "application/rss+xml, application/atom+xml, application/xml;q=0.9, */*;q=0.5",
   });
   if (!res?.ok) return [];
-  return parseItems(await res.text(), b);
+  try {
+    return parseItems(await res.text(), b); // a body that stalls mid-read skips this feed, not the sweep
+  } catch {
+    return [];
+  }
 };
 
 const cutoff = Date.now() - FRESHNESS_MS;
