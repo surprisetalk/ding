@@ -26,6 +26,7 @@ import "./test_env.ts"; // sets env BEFORE server.tsx module evaluation (ES impo
 import dbSql from "./db.sql" with { type: "text" };
 
 import app, {
+  badSignupEmail,
   dbIngestRate,
   decodeLabels,
   discoverPeers,
@@ -45,6 +46,7 @@ import app, {
   resend,
   resolveName,
   setSql,
+  signupRate,
   stripe,
   verified,
 } from "./server.tsx";
@@ -190,6 +192,17 @@ select refresh_score(array(select cid from com));
 
 //// PGLITE WRAPPER ////////////////////////////////////////////////////////////
 
+// Signup's MX check calls Deno.resolveDns; stub it so tests never touch the network. Real-looking
+// domains "resolve"; `.invalid` (RFC 2606, never resolves) throws NotFound to exercise the reject
+// path. The fail-open step swaps in its own thrower and restores this.
+const fakeResolveDns =
+  ((domain: string, recordType: "MX" | "A") =>
+    domain.endsWith(".invalid")
+      ? Promise.reject(new Deno.errors.NotFound(`no ${recordType} for ${domain}`))
+      : Promise.resolve(
+        recordType === "MX" ? [{ preference: 10, exchange: "mx.test" }] : ["1.2.3.4"],
+      )) as typeof Deno.resolveDns;
+
 const pglite = (f: (sql: pg.Sql) => (t: Deno.TestContext) => Promise<void>) => async (t: Deno.TestContext) => {
   const listener = Deno.listen({ hostname: "127.0.0.1", port: 0 }); // OS-assigned free port (no random collisions)
   const port = (listener.addr as Deno.NetAddr).port;
@@ -258,6 +271,9 @@ const pglite = (f: (sql: pg.Sql) => (t: Deno.TestContext) => Promise<void>) => a
   postRate.clear();
   dbIngestRate.ip.clear();
   dbIngestRate.key.clear();
+  signupRate.ip.clear();
+  signupRate.perHour = 10_000; // don't throttle the general suite; a dedicated step tests it low
+  Deno.resolveDns = fakeResolveDns; // hermetic MX check (no live DNS)
   await f(testSql)(t);
 
   await testSql.end();
@@ -504,6 +520,94 @@ Deno.test(
         res.headers.get("location"),
         `/signup?error=conflict&email=${encodeURIComponent("nobody@example.com")}`,
       );
+    });
+
+    await t.step("POST /signup honeypot filled → silent ?ok, no account created", async () => {
+      const body = new FormData();
+      body.append("name", "hp_bot_user");
+      body.append("email", "hpbot@example.com");
+      body.append("url", "http://spam.example"); // bots fill the hidden field
+      const res = await app.request("/signup", { method: "POST", body });
+      assertEquals(res.status, 302);
+      assertEquals(res.headers.get("location"), "/signup?ok");
+      const [{ count }] = await sql`select count(*)::int as count from usr where name = 'hp_bot_user'`;
+      assertEquals(count, 0);
+    });
+
+    await t.step("POST /signup disposable domain → ?error=bad_email, no account created", async () => {
+      const body = new FormData();
+      body.append("name", "disposable_user");
+      body.append("email", "throwaway@mailinator.com");
+      const res = await app.request("/signup", { method: "POST", body });
+      assertEquals(res.status, 302);
+      assertEquals(
+        res.headers.get("location"),
+        `/signup?error=bad_email&email=${encodeURIComponent("throwaway@mailinator.com")}`,
+      );
+      const [{ count }] = await sql`select count(*)::int as count from usr where name = 'disposable_user'`;
+      assertEquals(count, 0);
+    });
+
+    await t.step("POST /signup domain with no MX/A → ?error=bad_email, no account created", async () => {
+      const body = new FormData();
+      body.append("name", "nomx_user");
+      body.append("email", "someone@nxdomain.invalid"); // fakeResolveDns throws NotFound for .invalid
+      const res = await app.request("/signup", { method: "POST", body });
+      assertEquals(res.status, 302);
+      assertStringIncludes(res.headers.get("location") ?? "", "/signup?error=bad_email");
+      const [{ count }] = await sql`select count(*)::int as count from usr where name = 'nomx_user'`;
+      assertEquals(count, 0);
+    });
+
+    await t.step("badSignupEmail fails OPEN on a transient resolver error", async () => {
+      Deno.resolveDns = (() => Promise.reject(new Error("resolver timeout"))) as typeof Deno.resolveDns;
+      try {
+        // Non-disposable domain, resolver errors non-NotFound → must NOT be rejected.
+        assertEquals(await badSignupEmail("real@some-legit-domain.com"), null);
+      } finally {
+        Deno.resolveDns = fakeResolveDns;
+      }
+    });
+
+    await t.step("POST /signup per-IP throttle → Nth+1 attempt from same IP is 429", async () => {
+      const saved = signupRate.perHour;
+      signupRate.perHour = 3;
+      signupRate.ip.clear();
+      const ip = "203.0.113.7";
+      try {
+        for (let i = 0; i < 3; i++) {
+          const body = new FormData();
+          body.append("name", `ratelimited_${i}`);
+          body.append("email", `rl${i}@example.com`);
+          const res = await app.request("/signup", {
+            method: "POST",
+            body,
+            headers: { "cf-connecting-ip": ip },
+          });
+          assertEquals(res.status, 302, `attempt ${i} should pass`);
+        }
+        const body = new FormData();
+        body.append("name", "ratelimited_over");
+        body.append("email", "rlover@example.com");
+        const res = await app.request("/signup", {
+          method: "POST",
+          body,
+          headers: { "cf-connecting-ip": ip },
+        });
+        assertEquals(res.status, 429);
+      } finally {
+        signupRate.perHour = saved;
+        signupRate.ip.clear();
+      }
+    });
+
+    await t.step("GET /us lists verified accounts and excludes unverified", async () => {
+      // john_doe is verified (john@example.com); fresh_user was created unverified earlier.
+      const res = await app.request("/us");
+      assertEquals(res.status, 200);
+      const names = ((await res.json()) as { name: string }[]).map((u) => u.name);
+      assertEquals(names.includes("john_doe"), true);
+      assertEquals(names.includes("fresh_user"), false);
     });
 
     await t.step(

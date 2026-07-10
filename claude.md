@@ -183,6 +183,26 @@ Routes return different formats based on subdomain or Accept header:
 - `authed` middleware protects private routes
 - `some()` combinator allows either auth method
 
+## Signup anti-spam
+
+The signup door layers cheap, dependency-free defenses (no CAPTCHA) in `POST /signup`, checked in order (cheapest/silent
+first):
+
+- **Honeypot** — a hidden `url` input (`.hp` in `style.css`, off-screen); if a POST fills it, the handler pretends
+  success (`redirect /signup?ok`) but creates/sends nothing, so bots can't learn it.
+- **Per-IP throttle** — `signupRate` (in-memory sliding window, `perHour`/`windowMs` tunable on the object like
+  `dbIngestRate`), keyed by `clientIp(c)` (`cf-connecting-ip` → first `x-forwarded-for` hop → `"unknown"`).
+  `signupThrottle(c)` → 429. Also guards `/signup/resend` and `/forgot` (mailbomb vectors sharing `sendVerify`).
+- **`badSignupEmail(email)`** — rejects known throwaway domains (`disposableDomains`, loaded from the vendored
+  `disposable-domains.txt`) and domains with no MX/A record (`hasMailExchange` via `Deno.resolveDns`; **fails open** on
+  non-`NotFound` resolver errors so a flaky DNS never blocks real signups). Rejection →
+  `redirect /signup?error=bad_email`.
+
+Note: posting already effectively requires a verified email (you can't authenticate until the emailed token sets a
+password), so these gates are the primary account-abuse defense. `GET /us` lists **verified** accounts only, and a daily
+`Deno.cron` (`ding-prune-unverified`, Deploy-only) deletes stale unverified self-signups (`invited_by = name`, >7 days).
+Tests stub `Deno.resolveDns` (`fakeResolveDns`) and raise `signupRate.perHour` so the suite stays hermetic.
+
 ## Key Patterns
 
 SQL queries use postgres.js tagged templates:

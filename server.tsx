@@ -701,6 +701,37 @@ const sendVerify = async (email: string) => {
   }
 };
 
+// Known throwaway/temp-mail domains, vendored (deploys with the code; readable on Deno Deploy).
+export const disposableDomains = new Set(
+  Deno.readTextFileSync(new URL("./disposable-domains.txt", import.meta.url))
+    .split("\n").map((l) => l.trim().toLowerCase())
+    .filter((l) => l && !l.startsWith("#")),
+);
+
+// A domain can receive mail if it has an MX record, or (SMTP fallback) an A record. Deno throws
+// NotFound for both NXDOMAIN and "exists but no such record"; any OTHER error is transient → fail
+// open so a flaky resolver never blocks real signups.
+const hasMailExchange = async (domain: string): Promise<boolean> => {
+  for (const kind of ["MX", "A"] as const) {
+    try {
+      if ((await Deno.resolveDns(domain, kind)).length > 0) return true;
+    } catch (e) {
+      if (!(e instanceof Deno.errors.NotFound)) return true;
+    }
+  }
+  return false;
+};
+
+// Signup email gate: reject known disposable domains and domains that can't receive mail.
+// Returns a user-facing reason when the email should be rejected, else null.
+export const badSignupEmail = async (email: string): Promise<string | null> => {
+  const domain = email.split("@")[1]?.toLowerCase();
+  if (!domain) return "that email address looks malformed.";
+  if (disposableDomains.has(domain)) return "please sign up with a different email provider.";
+  if (!(await hasMailExchange(domain))) return "that email domain can't receive mail.";
+  return null;
+};
+
 //// STRIPE ////////////////////////////////////////////////////////////////////
 
 const stripeKey = Deno.env.get("STRIPE_SECRET_KEY") ?? "";
@@ -1383,6 +1414,32 @@ app.use("*", async (c, next) => {
   });
 });
 
+// Trusted-ish client IP: Cloudflare's CF-Connecting-IP first (unspoofable behind CF), else the
+// first x-forwarded-for hop, else a shared "unknown" bucket. Used by every per-IP rate limiter.
+export const clientIp = (c: Context): string =>
+  c.req.header("cf-connecting-ip")?.trim() ||
+  (c.req.header("x-forwarded-for") ?? "").split(",")[0].trim() ||
+  "unknown";
+
+// Sliding-window limiter over a Map of timestamps. Returns false when `k` is already at `max`
+// within `windowMs` (caller rejects); otherwise records the hit and returns true.
+const rateHit = (m: Map<string, number[]>, k: string, max: number, windowMs: number): boolean => {
+  const now = Date.now();
+  const fresh = (m.get(k) ?? []).filter((t) => now - t < windowMs);
+  m.set(k, fresh);
+  if (fresh.length >= max) return false;
+  fresh.push(now);
+  return true;
+};
+
+// Per-IP signup/verify-email throttle (in-memory, per-isolate like postRate). Caps how many
+// accounts a single source can mint and how hard it can drive our outbound mail (mailbomb vector).
+export const signupRate = { ip: new Map<string, number[]>(), perHour: 5, windowMs: 3_600_000 };
+const signupThrottle = (c: Context) => {
+  if (!rateHit(signupRate.ip, clientIp(c), signupRate.perHour, signupRate.windowMs))
+    throw new HTTPException(429, { message: "too many attempts — try again later." });
+};
+
 // Public POST /db ingest rate limits (in-memory, per-isolate like postRate — tune for prod).
 // `ip` bounds a single source (incl. sybil key-minting + verify-CPU); `key` bounds per-identity
 // DHT bloat. Per-pubkey alone is sybil-bypassable (keys are free) — a future "require a checkmark
@@ -1394,21 +1451,15 @@ export const dbIngestRate = {
   rowsPerKeyPerMin: 120,
   windowMs: 60_000,
 };
-const rateBump = (m: Map<string, number[]>, k: string, max: number): boolean => {
-  const now = Date.now();
-  const fresh = (m.get(k) ?? []).filter((t) => now - t < dbIngestRate.windowMs);
-  m.set(k, fresh);
-  if (fresh.length >= max) return false;
-  fresh.push(now);
-  return true;
-};
+const rateBump = (m: Map<string, number[]>, k: string, max: number): boolean =>
+  rateHit(m, k, max, dbIngestRate.windowMs);
 
 // db.ding.bar node endpoint: POST ingests signed rows (per-row verify + rate-limit, drop bad);
 // GET drains the dht log oldest->newest by local seen_at, filtered by q=.
 app.use("*", async (c, next) => {
   if (host(c) !== "db") return next();
   if (c.req.method === "POST") {
-    const ip = (c.req.header("x-forwarded-for") ?? "").split(",")[0].trim() || "unknown";
+    const ip = clientIp(c);
     if (!rateBump(dbIngestRate.ip, ip, dbIngestRate.reqPerMin))
       throw new HTTPException(429, { message: "ingest rate limit — slow down." });
     if (+(c.req.header("content-length") ?? 0) > 8_000_000)
@@ -1977,6 +2028,7 @@ app.get("/forgot", (c) =>
     { title: "forgot" },
   ));
 app.post("/forgot", async (c) => {
+  signupThrottle(c);
   const { email } = await form(c),
     [u] = await sql`select email from usr where email = ${email}`;
   if (u) {
@@ -2081,6 +2133,7 @@ app.get("/signup", (c) => {
     ),
     conflict: <p>Username or email already taken.</p>,
     email_not_found: <p>No account with that email — sign up below.</p>,
+    bad_email: <p>please sign up with a different email address.</p>,
   };
   return c.render(
     <section>
@@ -2102,6 +2155,7 @@ app.get("/signup", (c) => {
           email
           <input type="email" name="email" value={prefillEmail} required />
         </label>
+        <input type="text" name="url" tabindex={-1} autocomplete="off" class="hp" aria-hidden="true" />
         <button type="submit">create account</button>
       </form>
       {(err === "email_failed" || err === "conflict") && prefillEmail && (
@@ -2120,6 +2174,12 @@ app.post("/signup", async (c) => {
   const email = formData.email,
     name = formData.name;
   const qs = `&email=${encodeURIComponent(email)}`;
+
+  // Honeypot: real users never see/fill the hidden `url` field. Bots do — pretend success so
+  // they can't learn the trap, but create nothing and send nothing.
+  if (formData.url) return c.redirect("/signup?ok");
+  signupThrottle(c);
+  if (await badSignupEmail(email)) return c.redirect(`/signup?error=bad_email${qs}`);
 
   const [existingByEmail] = await sql`select name, email_verified_at from usr where email = ${email}`;
   if (existingByEmail) {
@@ -2160,6 +2220,7 @@ app.post("/signup", async (c) => {
 });
 
 app.post("/signup/resend", async (c) => {
+  signupThrottle(c);
   const { email } = await form(c);
   const qs = `&email=${encodeURIComponent(email)}`;
   const [u] = await sql`select email, email_verified_at from usr where email = ${email}`;
@@ -2358,7 +2419,11 @@ app.get("/u/:name", async (c) => {
 
 app.get("/us", async (c) => {
   const limit = Math.min(+(c.req.query("limit") || 100), 500);
-  const us = await sql`select name, created_at from usr order by created_at desc limit ${limit}`;
+  const us = await sql`
+    select name, created_at from usr
+    where email_verified_at is not null
+    order by created_at desc limit ${limit}
+  `;
   return c.json(us, 200);
 });
 
@@ -3215,6 +3280,22 @@ if (Deno.env.get("DENO_DEPLOYMENT_ID")) {
       });
     } catch (e) {
       console.error(`checkmark cron failed: ${e instanceof Error ? e.message : e}`);
+    }
+  });
+
+  // Daily: prune stale unverified self-signups. They have no password → no posts → no com rows,
+  // so deletion is safe; `invited_by = name` limits it to self-signups (pending real invites kept).
+  Deno.cron("ding-prune-unverified", "17 3 * * *", async () => {
+    try {
+      const gone = await sql`
+        delete from usr
+        where email_verified_at is null and invited_by = name
+          and created_at < now() - interval '7 days'
+        returning name
+      `;
+      if (gone.length) console.log(`pruned ${gone.length} stale unverified signups`);
+    } catch (e) {
+      console.error(`prune cron failed: ${e instanceof Error ? e.message : e}`);
     }
   });
 }

@@ -830,3 +830,13 @@ body.dropping::after {
   cursor: crosshair;
   touch-action: none;
 }
+
+/* Honeypot: off-screen decoy input; humans never see or fill it, bots do. */
+.hp {
+  position: absolute;
+  left: -9999px;
+  width: 1px;
+  height: 1px;
+  opacity: 0;
+  pointer-events: none;
+}
