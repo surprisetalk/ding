@@ -19,3 +19,4 @@
 - [ ] figure out how to do calls and clubhouse-style audio rooms. maybe they only apply for orgs, and direct mentions?
       they get pinned to top of feed?
 - [ ] add user follows to ding to prioritize content and add them to quick contacts. show mutuals too
+- [ ] use ding to embed static website comments?
