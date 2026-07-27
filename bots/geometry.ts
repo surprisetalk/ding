@@ -1,4 +1,4 @@
-import { dailyPostBot, seededRng, todaySeed, uploadToR2 } from "../bots.ts";
+import { type Api, dailyPostBot, seededRng, todaySeed, uploadToR2 } from "../bots.ts";
 
 const W = 256, H = 256;
 const PALETTE_SIZE = 16;
@@ -222,21 +222,21 @@ function encodeGif(frames: Uint8Array[], palette: number[][], delayCs: number): 
   return new Uint8Array(parts);
 }
 
-dailyPostBot({
-  envPrefix: "GEOMETRY",
-  tags: "#art #geometry #bot",
-  make: async () => {
-    const seed = todaySeed();
-    const rng = seededRng(seed);
-    const patternFn = PATTERNS[seed % PATTERNS.length];
-    const palette = makePalette(rng);
-    const frameCount = 8 + Math.floor(rng() * 9);
+export default (api: Api) =>
+  dailyPostBot(api, {
+    tags: "#art #geometry #bot",
+    make: async () => {
+      const seed = todaySeed();
+      const rng = seededRng(seed);
+      const patternFn = PATTERNS[seed % PATTERNS.length];
+      const palette = makePalette(rng);
+      const frameCount = 8 + Math.floor(rng() * 9);
 
-    const frames: Uint8Array[] = [];
-    for (let f = 0; f < frameCount; f++) frames.push(patternFn(f, frameCount, seededRng(seed)));
+      const frames: Uint8Array[] = [];
+      for (let f = 0; f < frameCount; f++) frames.push(patternFn(f, frameCount, seededRng(seed)));
 
-    const gif = encodeGif(frames, palette, 10);
-    const date = new Date().toISOString().slice(0, 10);
-    return await uploadToR2(gif, `geometry-${date}.gif`, "image/gif");
-  },
-});
+      const gif = encodeGif(frames, palette, 10);
+      const date = new Date().toISOString().slice(0, 10);
+      return await uploadToR2(gif, `geometry-${date}.gif`, "image/gif");
+    },
+  });

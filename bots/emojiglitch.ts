@@ -1,4 +1,4 @@
-import { dailyPostBot, glitchTwemojiToR2 } from "../bots.ts";
+import { type Api, dailyPostBot, glitchTwemojiToR2 } from "../bots.ts";
 
 const EMOJI_MAP: [string, string][] = [
   ["1f600", "\u{1f600}"],
@@ -33,44 +33,44 @@ const EMOJI_MAP: [string, string][] = [
   ["1f5ff", "\u{1f5ff}"],
 ];
 
-dailyPostBot({
-  envPrefix: "EMOJIGLITCH",
-  tags: "#emoji #glitch #bot",
-  make: async () => {
-    const [cp, emoji] = EMOJI_MAP[Math.floor(Math.random() * EMOJI_MAP.length)];
-    const { r2Url, src } = await glitchTwemojiToR2(cp, Math.random, "emojiglitch", {
-      pathProb: 0.08,
-      pathAmp: 6,
-      hexProb: 0.15,
-      hexShift: 3,
-      decorate: (out, rng) => {
-        let extras = "";
-        const scanLines = 1 + Math.floor(rng() * 2);
-        for (let i = 0; i < scanLines; i++) {
-          const y = Math.floor(rng() * 36);
-          const r = Math.floor(rng() * 256);
-          const g = Math.floor(rng() * 256);
-          const b = Math.floor(rng() * 256);
-          extras += `<rect x="0" y="${y}" width="36" height="1" fill="rgb(${r},${g},${b})" opacity="${
-            (0.03 + rng() * 0.1).toFixed(2)
-          }"/>`;
-        }
-        const layers = Math.floor(rng() * 2);
-        for (let i = 0; i < layers; i++) {
-          const tx = (rng() - 0.5) * 10;
-          const ty = (rng() - 0.5) * 10;
-          const rot = Math.floor(rng() * 14 - 7);
-          const scale = 0.8 + rng() * 0.3;
-          extras += `<g transform="translate(${tx.toFixed(1)},${ty.toFixed(1)}) rotate(${rot}) scale(${
-            scale.toFixed(2)
-          })" opacity="${(0.1 + rng() * 0.2).toFixed(2)}">`;
-          const pathMatch = out.match(/<path[^>]*\/>/);
-          if (pathMatch) extras += pathMatch[0];
-          extras += `</g>`;
-        }
-        return extras;
-      },
-    });
-    return `${emoji}\n\n${r2Url}\n\nsource: ${src}`;
-  },
-});
+export default (api: Api) =>
+  dailyPostBot(api, {
+    tags: "#emoji #glitch #bot",
+    make: async () => {
+      const [cp, emoji] = EMOJI_MAP[Math.floor(Math.random() * EMOJI_MAP.length)];
+      const { r2Url, src } = await glitchTwemojiToR2(cp, Math.random, "emojiglitch", {
+        pathProb: 0.08,
+        pathAmp: 6,
+        hexProb: 0.15,
+        hexShift: 3,
+        decorate: (out, rng) => {
+          let extras = "";
+          const scanLines = 1 + Math.floor(rng() * 2);
+          for (let i = 0; i < scanLines; i++) {
+            const y = Math.floor(rng() * 36);
+            const r = Math.floor(rng() * 256);
+            const g = Math.floor(rng() * 256);
+            const b = Math.floor(rng() * 256);
+            extras += `<rect x="0" y="${y}" width="36" height="1" fill="rgb(${r},${g},${b})" opacity="${
+              (0.03 + rng() * 0.1).toFixed(2)
+            }"/>`;
+          }
+          const layers = Math.floor(rng() * 2);
+          for (let i = 0; i < layers; i++) {
+            const tx = (rng() - 0.5) * 10;
+            const ty = (rng() - 0.5) * 10;
+            const rot = Math.floor(rng() * 14 - 7);
+            const scale = 0.8 + rng() * 0.3;
+            extras += `<g transform="translate(${tx.toFixed(1)},${ty.toFixed(1)}) rotate(${rot}) scale(${
+              scale.toFixed(2)
+            })" opacity="${(0.1 + rng() * 0.2).toFixed(2)}">`;
+            const pathMatch = out.match(/<path[^>]*\/>/);
+            if (pathMatch) extras += pathMatch[0];
+            extras += `</g>`;
+          }
+          return extras;
+        },
+      });
+      return `${emoji}\n\n${r2Url}\n\nsource: ${src}`;
+    },
+  });

@@ -1,6 +1,4 @@
-import { botInit, extractImageUrl, getAnsweredCids, getJson, isFresh, MAX_AGE_MS, pick, reply } from "../bots.ts";
-
-const { apiUrl, auth, botUsername } = botInit("SUMMONER");
+import { type Api, extractImageUrl, getAnsweredCids, getJson, isFresh, MAX_AGE_MS, pick, reply } from "../bots.ts";
 
 const IMAGE_BOTS = ["@bot_lowpoly", "@bot_pixelsort", "@bot_dither"];
 const TEXT_BOTS = ["@bot_cowsay", "@bot_upgoerfive"];
@@ -16,11 +14,10 @@ type Post = {
 const hasBotMention = (p: Post) =>
   p.child_comments.some((c) => c.created_by.startsWith("bot_") || /@bot_\w+/.test(c.body));
 
-async function main() {
+export default async (api: Api) => {
   const recent = await getJson<{ created_at: string }[]>(
-    `/c?usr=${botUsername}&comments=1&limit=1`,
-    auth,
-    apiUrl,
+    api,
+    `/c?usr=${api.botUsername}&comments=1&limit=1`,
   );
   const age = recent.length ? Date.now() - new Date(recent[0].created_at).getTime() : Infinity;
   if (age < 7200000) {
@@ -28,11 +25,11 @@ async function main() {
     return;
   }
 
-  const posts = await getJson<Post[]>(`/c?sort=new&limit=50`, auth, apiUrl);
-  const answered = await getAnsweredCids(auth, botUsername, apiUrl, { since: Date.now() - MAX_AGE_MS });
+  const posts = await getJson<Post[]>(api, `/c?sort=new&limit=50`);
+  const answered = await getAnsweredCids(api, { since: Date.now() - MAX_AGE_MS });
 
   const eligible = posts.filter((p) =>
-    p.created_by !== botUsername && !answered.has(p.cid) && isFresh(p.created_at) && !hasBotMention(p)
+    p.created_by !== api.botUsername && !answered.has(p.cid) && isFresh(p.created_at) && !hasBotMention(p)
   );
 
   const imagePosts = eligible.filter((p) => extractImageUrl(p.body));
@@ -42,15 +39,13 @@ async function main() {
   if (imagePosts.length) {
     const p = pick(imagePosts), bot = pick(IMAGE_BOTS);
     console.log(`Summoning ${bot} on cid=${p.cid}`);
-    if (await reply(auth, apiUrl, p.cid, bot)) summoned++;
+    if (await reply(api, p.cid, bot)) summoned++;
   }
   if (textPosts.length) {
     const p = pick(textPosts), bot = pick(TEXT_BOTS);
     console.log(`Summoning ${bot} on cid=${p.cid}`);
-    if (await reply(auth, apiUrl, p.cid, bot)) summoned++;
+    if (await reply(api, p.cid, bot)) summoned++;
   }
 
   console.log(`Summoned ${summoned} bots`);
-}
-
-main();
+};

@@ -1,4 +1,4 @@
-import { dailyPostBot, glitchTwemojiToR2, seededRng, todaySeed } from "../bots.ts";
+import { type Api, dailyPostBot, glitchTwemojiToR2, seededRng, todaySeed } from "../bots.ts";
 
 const TWEMOJI_CODEPOINTS = [
   "1f600",
@@ -53,47 +53,47 @@ const TWEMOJI_CODEPOINTS = [
   "1f3fa",
 ];
 
-dailyPostBot({
-  envPrefix: "CLIPART",
-  tags: "#art #glitch #bot",
-  make: async () => {
-    const seed = todaySeed();
-    const cp = TWEMOJI_CODEPOINTS[seed % TWEMOJI_CODEPOINTS.length];
-    const { r2Url, src } = await glitchTwemojiToR2(cp, seededRng(seed), "clipart", {
-      pathProb: 0.05,
-      pathAmp: 4,
-      hexProb: 0.1,
-      hexShift: 4,
-      decorate: (out, rng) => {
-        let extras = "";
-        const dupeCount = Math.floor(rng() * 2);
-        for (let i = 0; i < dupeCount; i++) {
-          const tx = (rng() - 0.5) * 6;
-          const ty = (rng() - 0.5) * 6;
-          const rot = Math.floor(rng() * 10 - 5);
-          extras += `<g transform="translate(${tx.toFixed(1)},${ty.toFixed(1)}) rotate(${rot})" opacity="${
-            (0.1 + rng() * 0.2).toFixed(2)
-          }">`;
-          const pathMatch = out.match(/<path[^>]*\/>/);
-          if (pathMatch) extras += pathMatch[0];
-          extras += `</g>`;
-        }
-        const rectCount = Math.floor(rng() * 2);
-        for (let i = 0; i < rectCount; i++) {
-          const x = Math.floor(rng() * 36);
-          const y = Math.floor(rng() * 36);
-          const w = 2 + Math.floor(rng() * 8);
-          const h = 1 + Math.floor(rng() * 2);
-          const r = Math.floor(rng() * 256);
-          const g = Math.floor(rng() * 256);
-          const b = Math.floor(rng() * 256);
-          extras += `<rect x="${x}" y="${y}" width="${w}" height="${h}" fill="rgb(${r},${g},${b})" opacity="${
-            (0.05 + rng() * 0.15).toFixed(2)
-          }"/>`;
-        }
-        return extras;
-      },
-    });
-    return `${r2Url}\n\nglitched clipart\n\nsource: ${src}`;
-  },
-});
+export default (api: Api) =>
+  dailyPostBot(api, {
+    tags: "#art #glitch #bot",
+    make: async () => {
+      const seed = todaySeed();
+      const cp = TWEMOJI_CODEPOINTS[seed % TWEMOJI_CODEPOINTS.length];
+      const { r2Url, src } = await glitchTwemojiToR2(cp, seededRng(seed), "clipart", {
+        pathProb: 0.05,
+        pathAmp: 4,
+        hexProb: 0.1,
+        hexShift: 4,
+        decorate: (out, rng) => {
+          let extras = "";
+          const dupeCount = Math.floor(rng() * 2);
+          for (let i = 0; i < dupeCount; i++) {
+            const tx = (rng() - 0.5) * 6;
+            const ty = (rng() - 0.5) * 6;
+            const rot = Math.floor(rng() * 10 - 5);
+            extras += `<g transform="translate(${tx.toFixed(1)},${ty.toFixed(1)}) rotate(${rot})" opacity="${
+              (0.1 + rng() * 0.2).toFixed(2)
+            }">`;
+            const pathMatch = out.match(/<path[^>]*\/>/);
+            if (pathMatch) extras += pathMatch[0];
+            extras += `</g>`;
+          }
+          const rectCount = Math.floor(rng() * 2);
+          for (let i = 0; i < rectCount; i++) {
+            const x = Math.floor(rng() * 36);
+            const y = Math.floor(rng() * 36);
+            const w = 2 + Math.floor(rng() * 8);
+            const h = 1 + Math.floor(rng() * 2);
+            const r = Math.floor(rng() * 256);
+            const g = Math.floor(rng() * 256);
+            const b = Math.floor(rng() * 256);
+            extras += `<rect x="${x}" y="${y}" width="${w}" height="${h}" fill="rgb(${r},${g},${b})" opacity="${
+              (0.05 + rng() * 0.15).toFixed(2)
+            }"/>`;
+          }
+          return extras;
+        },
+      });
+      return `${r2Url}\n\nglitched clipart\n\nsource: ${src}`;
+    },
+  });

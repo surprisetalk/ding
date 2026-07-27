@@ -1,6 +1,5 @@
-import { botInit, extractPubDate, getJson, isFresh, post } from "../bots.ts";
+import { type Api, extractPubDate, getJson, isFresh, post } from "../bots.ts";
 
-const { auth, botUsername, apiUrl } = botInit("ARXIV");
 const CATEGORIES = ["cs"];
 
 interface ArxivItem {
@@ -42,11 +41,10 @@ async function fetchArxivFeed(category: string): Promise<ArxivItem[]> {
 
 const categoryToTag = (c: string) => "#" + c.toLowerCase().replace(/\./g, "-");
 
-async function hasDigestForToday(category: string): Promise<boolean> {
+async function hasDigestForToday(api: Api, category: string): Promise<boolean> {
   const posts = await getJson<{ body: string; created_at: string }[]>(
-    `/c?usr=${botUsername}&limit=10`,
-    auth,
-    apiUrl,
+    api,
+    `/c?usr=${api.botUsername}&limit=10`,
   ).catch(() => []);
   const today = new Date().toISOString().slice(0, 10);
   return posts.some((p) => p.body.startsWith(`arXiv ${category}`) && p.created_at?.slice(0, 10) === today);
@@ -72,9 +70,9 @@ function buildDigest(category: string, items: ArxivItem[]): { body: string; incl
 
 const MAX_SUBCAT_TAGS = 8;
 
-async function main() {
+export default async (api: Api) => {
   for (const category of CATEGORIES) {
-    if (await hasDigestForToday(category)) {
+    if (await hasDigestForToday(api, category)) {
       console.log(`Digest already posted for ${category} today`);
       continue;
     }
@@ -90,9 +88,7 @@ async function main() {
       .map(([c]) => categoryToTag(c))
       .join(" ");
     const tags = `${catTags} #arxiv #bot`.replace(/\s+/g, " ").trim();
-    if (await post(auth, apiUrl, body, tags)) console.log(`Posted digest for ${category}`);
+    if (await post(api, body, tags)) console.log(`Posted digest for ${category}`);
     else console.error(`Failed to post digest for ${category}`);
   }
-}
-
-main();
+};

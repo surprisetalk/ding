@@ -1,4 +1,4 @@
-import { imageMentionBot } from "../bots.ts";
+import { type Api, imageMentionBot } from "../bots.ts";
 import sharp from "sharp";
 
 // Braille dot bit positions for 2x4 grid: (col, row) -> bit
@@ -55,11 +55,11 @@ async function toBraille(imageBytes: Uint8Array): Promise<string> {
   return lines.join("\n");
 }
 
-imageMentionBot({
-  envPrefix: "DITHER",
-  transform: async (bytes, post) => {
-    const braille = await toBraille(bytes);
-    console.log(`cid=${post.cid}: ${braille.length} chars`);
-    return braille;
-  },
-});
+export default (api: Api) =>
+  imageMentionBot(api, {
+    transform: async (bytes, post) => {
+      const braille = await toBraille(bytes);
+      console.log(`cid=${post.cid}: ${braille.length} chars`);
+      return braille;
+    },
+  });

@@ -2,5 +2,5 @@
 set -e
 echo "→ deno fmt --check"; deno fmt --check
 echo "→ deno lint";        deno lint
-echo "→ deno check";       deno check server.tsx bots.ts bots/*.ts
+echo "→ deno check";       deno check server.tsx bots.ts bot.ts bots/*.ts
 echo "→ deno test";        deno test -A

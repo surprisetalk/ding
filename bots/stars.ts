@@ -1,4 +1,4 @@
-import { dailyPostBot, seededRng, todaySeed } from "../bots.ts";
+import { type Api, dailyPostBot, seededRng, todaySeed } from "../bots.ts";
 
 const STAR_CHARS = ["✦", "✧", "⋆", "˚", "∘", "·", "★", "☆", "✶", "✸"];
 const SYLLABLES = ["or", "us", "ium", "ax", "en", "al", "is", "ar", "el", "on", "um", "ix", "an", "os", "ur"];
@@ -21,13 +21,13 @@ function generate(): { name: string; grid: string } {
   return { name: capitalized, grid: cells.map((r) => r.join("")).join("\n").replace(/\s+$/gm, "").replace(/\n+$/, "") };
 }
 
-dailyPostBot({
-  envPrefix: "STARS",
-  tags: "#stars #unicode #bot",
-  make: () => {
-    const { name, grid } = generate();
-    const body = `${name}\n\n${grid}`;
-    console.log(body);
-    return body;
-  },
-});
+export default (api: Api) =>
+  dailyPostBot(api, {
+    tags: "#stars #unicode #bot",
+    make: () => {
+      const { name, grid } = generate();
+      const body = `${name}\n\n${grid}`;
+      console.log(body);
+      return body;
+    },
+  });

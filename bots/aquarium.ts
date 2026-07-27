@@ -1,4 +1,4 @@
-import { dailyPostBot, seededRng, todaySeed } from "../bots.ts";
+import { type Api, dailyPostBot, seededRng, todaySeed } from "../bots.ts";
 
 const SWIMMERS = ["🐟", "🐠", "🐡", "🦈", "🦑", "🐡"];
 const BOTTOM_DWELLERS = ["🐌", "🦀", "🐙"];
@@ -31,12 +31,12 @@ function generateAquarium(): string {
   return grid.map((row) => row.join("")).join("\n");
 }
 
-dailyPostBot({
-  envPrefix: "AQUARIUM",
-  tags: "#emoji #aquarium #bot",
-  make: () => {
-    const scene = generateAquarium();
-    console.log(scene);
-    return scene;
-  },
-});
+export default (api: Api) =>
+  dailyPostBot(api, {
+    tags: "#emoji #aquarium #bot",
+    make: () => {
+      const scene = generateAquarium();
+      console.log(scene);
+      return scene;
+    },
+  });

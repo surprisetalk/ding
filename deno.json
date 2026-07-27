@@ -29,6 +29,7 @@
   "tasks": {
     "deploy": "deno run -A jsr:@deno/deployctl deploy --prod --project=dong server.tsx",
     "ding": "deno run -A ding.ts",
+    "bot": "deno run -A bot.ts",
     "node": "deno serve -A node.tsx",
     "checkmark": "deno run -A bots/checkmark.ts",
     "backfill": "deno run -A backfill.ts",

@@ -1,4 +1,4 @@
-import { imageMentionBot } from "../bots.ts";
+import { type Api, imageMentionBot } from "../bots.ts";
 import sharp from "sharp";
 
 const THRESHOLD = 60;
@@ -53,7 +53,7 @@ async function pixelsort(imageBytes: Uint8Array): Promise<Uint8Array> {
   return new Uint8Array(await sharp(sorted, { raw: { width: w, height: h, channels: 3 } }).png().toBuffer());
 }
 
-imageMentionBot({
-  envPrefix: "PIXELSORT",
-  transform: async (bytes) => ({ bytes: await pixelsort(bytes), ext: "png", contentType: "image/png" }),
-});
+export default (api: Api) =>
+  imageMentionBot(api, {
+    transform: async (bytes) => ({ bytes: await pixelsort(bytes), ext: "png", contentType: "image/png" }),
+  });

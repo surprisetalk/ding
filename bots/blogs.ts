@@ -1,6 +1,6 @@
 import {
+  type Api,
   atomTitleLink,
-  botInit,
   fetchTimeout,
   firstMatch as m,
   getPostedUrls,
@@ -20,15 +20,7 @@ const FETCH_TIMEOUT_MS = 8_000;
 const MAX_POSTS = 5;
 const FRESHNESS_MS = 24 * 60 * 60 * 1000;
 const UA = "Mozilla/5.0 ding-blogs-bot";
-
-const { apiUrl, auth, botUsername } = botInit("BLOGS");
-
-const blogsRes = await fetch(BLOGS_URL, { headers: { "user-agent": UA } });
-if (!blogsRes.ok) throw new Error(`blogs.json fetch failed: HTTP ${blogsRes.status}`);
-const all: Blog[] = await blogsRes.json();
-const pool = shuffle(all.filter((b) => b.feed));
-const sample = pool.slice(0, SAMPLE);
-console.log(`Sampling ${sample.length} of ${pool.length} feeds`);
+const LOW_SIGNAL_TITLE = /^(mastodon post|note|micropost|untitled)\b|^\d{4}-\d{2}-\d{2}$/i;
 
 const parseItems = (xml: string, b: Blog): Item[] => {
   const out: Item[] = [];
@@ -68,23 +60,30 @@ const fetchFeed = async (b: Blog): Promise<Item[]> => {
   }
 };
 
-const cutoff = Date.now() - FRESHNESS_MS;
-const newestPerFeed = await sweepFeeds(sample, CONCURRENCY, fetchFeed, (i) => +i.pubDate, cutoff);
-console.log(`Found ${newestPerFeed.length} recent items across sampled feeds`);
+export default async (api: Api) => {
+  const blogsRes = await fetch(BLOGS_URL, { headers: { "user-agent": UA } });
+  if (!blogsRes.ok) throw new Error(`blogs.json fetch failed: HTTP ${blogsRes.status}`);
+  const all: Blog[] = await blogsRes.json();
+  const pool = shuffle(all.filter((b) => b.feed));
+  const sample = pool.slice(0, SAMPLE);
+  console.log(`Sampling ${sample.length} of ${pool.length} feeds`);
 
-const LOW_SIGNAL_TITLE = /^(mastodon post|note|micropost|untitled)\b|^\d{4}-\d{2}-\d{2}$/i;
+  const cutoff = Date.now() - FRESHNESS_MS;
+  const newestPerFeed = await sweepFeeds(sample, CONCURRENCY, fetchFeed, (i) => +i.pubDate, cutoff);
+  console.log(`Found ${newestPerFeed.length} recent items across sampled feeds`);
 
-const posted = await getPostedUrls(auth, apiUrl, botUsername);
-const todo = newestPerFeed
-  .filter((i) => !posted.has(i.link))
-  .filter((i) => !LOW_SIGNAL_TITLE.test(i.title.trim()))
-  .sort((a, b) => +b.pubDate - +a.pubDate);
-console.log(`${todo.length} items after dedup; posting up to ${MAX_POSTS}`);
+  const posted = await getPostedUrls(api);
+  const todo = newestPerFeed
+    .filter((i) => !posted.has(i.link))
+    .filter((i) => !LOW_SIGNAL_TITLE.test(i.title.trim()))
+    .sort((a, b) => +b.pubDate - +a.pubDate);
+  console.log(`${todo.length} items after dedup; posting up to ${MAX_POSTS}`);
 
-for (const it of todo.slice(0, MAX_POSTS)) {
-  const body = `${it.title}\n\n${it.link}\n\nvia ${it.blogTitle}`;
-  const blogTag = slugTag(it.blogTitle);
-  const tags = `#blog #bot${blogTag ? ` #${blogTag}` : ""}`;
-  console.log(`Posting: ${body.slice(0, 80)}`);
-  await post(auth, apiUrl, body, tags);
-}
+  for (const it of todo.slice(0, MAX_POSTS)) {
+    const body = `${it.title}\n\n${it.link}\n\nvia ${it.blogTitle}`;
+    const blogTag = slugTag(it.blogTitle);
+    const tags = `#blog #bot${blogTag ? ` #${blogTag}` : ""}`;
+    console.log(`Posting: ${body.slice(0, 80)}`);
+    await post(api, body, tags);
+  }
+};

@@ -16,6 +16,7 @@ import {
   verifyRow,
 } from "./dht.ts";
 import { backfill } from "./backfill.ts";
+import { type Api, getPostedUrls, post } from "./bots.ts";
 import { jsx } from "@hono/hono/jsx";
 import pg from "postgres";
 import { PGlite } from "@electric-sql/pglite";
@@ -27,6 +28,7 @@ import dbSql from "./db.sql" with { type: "text" };
 
 import app, {
   badSignupEmail,
+  botFetch,
   dbIngestRate,
   decodeLabels,
   discoverPeers,
@@ -3096,6 +3098,35 @@ Deno.test(
       // resumable / idempotent: re-running signs nothing new
       const { signed: again } = await backfill(sql, { concurrency: 1 });
       assertEquals(again, 0);
+    });
+  }),
+);
+
+// The bot fleet's cron path never touches the network: helpers dispatch through app.request.
+// This pins that seam — Basic Auth, form POST, and JSON GET all have to work in-process,
+// because a Deno Deploy isolate cannot fetch its own origin.
+Deno.test(
+  "bot fleet in-process transport (app.request)",
+  pglite(() => async (t) => {
+    const api: Api = {
+      apiUrl: "",
+      auth: btoa("john@example.com:password1!"),
+      botUsername: "john_doe",
+      fetch: (input, init) => botFetch(input, init),
+    };
+
+    await t.step("post() writes through app.request with Basic Auth", async () => {
+      assertEquals(await post(api, "transport check https://example.com/xyz", "#bot"), true);
+    });
+
+    await t.step("getPostedUrls() reads the same row back", async () => {
+      assertEquals((await getPostedUrls(api)).has("https://example.com/xyz"), true);
+    });
+
+    await t.step("bad credentials cannot post", async () => {
+      const bad = { ...api, auth: btoa("john@example.com:wrong!") };
+      assertEquals(await post(bad, "should never land https://example.com/nope", "#bot"), false);
+      assertEquals((await getPostedUrls(api)).has("https://example.com/nope"), false);
     });
   }),
 );

@@ -1,7 +1,7 @@
 // Multi-subreddit Reddit bot — samples from a list, posts freshest unseen items.
 
 import {
-  botInit,
+  type Api,
   getPostedUrls,
   parseRedditEntries,
   post,
@@ -60,8 +60,6 @@ const FETCH_TIMEOUT_MS = 15_000;
 const FRESHNESS_MS = 24 * 60 * 60 * 1000;
 const UA = "ding-bot/1.0 (+https://ding.bar; contact: taylor@ding.bar)";
 
-const { apiUrl, auth, botUsername } = botInit("REDDIT");
-
 type Item = RedditItem & { sub: string };
 
 const fetchSelftext = async (link: string): Promise<string> => {
@@ -96,27 +94,29 @@ const fetchSub = async (sub: string): Promise<Item[]> => {
   }
 };
 
-const sample = shuffle([...SUBREDDITS]).slice(0, SAMPLE);
-console.log(`Sampling ${sample.length} of ${SUBREDDITS.length} subreddits: ${sample.join(", ")}`);
+export default async (api: Api) => {
+  const sample = shuffle([...SUBREDDITS]).slice(0, SAMPLE);
+  console.log(`Sampling ${sample.length} of ${SUBREDDITS.length} subreddits: ${sample.join(", ")}`);
 
-const cutoff = Date.now() - FRESHNESS_MS;
-const newestPerSub = await sweepFeeds(sample, CONCURRENCY, fetchSub, (i) => i.published, cutoff);
-console.log(`Fetched ${newestPerSub.length} newest entries`);
+  const cutoff = Date.now() - FRESHNESS_MS;
+  const newestPerSub = await sweepFeeds(sample, CONCURRENCY, fetchSub, (i) => i.published, cutoff);
+  console.log(`Fetched ${newestPerSub.length} newest entries`);
 
-const posted = await getPostedUrls(auth, apiUrl, botUsername);
-const todo = newestPerSub
-  .filter((i) => !posted.has(i.link))
-  .sort((a, b) => b.published - a.published);
-console.log(`${todo.length} new items after dedup; posting up to ${MAX_POSTS}`);
+  const posted = await getPostedUrls(api);
+  const todo = newestPerSub
+    .filter((i) => !posted.has(i.link))
+    .sort((a, b) => b.published - a.published);
+  console.log(`${todo.length} new items after dedup; posting up to ${MAX_POSTS}`);
 
-for (const it of todo.slice(0, MAX_POSTS)) {
-  const selftext = await fetchSelftext(it.link);
-  const lines = [it.title];
-  if (selftext) lines.push("", selftext);
-  lines.push("", it.link);
-  if (it.imageUrl) lines.push("", it.imageUrl);
-  lines.push("", `via ${it.author} on r/${it.sub}`);
-  const tags = `#reddit #${slugTag(it.sub)} #bot`;
-  console.log(`Posting: ${it.title.slice(0, 60)}... (r/${it.sub})`);
-  await post(auth, apiUrl, lines.join("\n"), tags);
-}
+  for (const it of todo.slice(0, MAX_POSTS)) {
+    const selftext = await fetchSelftext(it.link);
+    const lines = [it.title];
+    if (selftext) lines.push("", selftext);
+    lines.push("", it.link);
+    if (it.imageUrl) lines.push("", it.imageUrl);
+    lines.push("", `via ${it.author} on r/${it.sub}`);
+    const tags = `#reddit #${slugTag(it.sub)} #bot`;
+    console.log(`Posting: ${it.title.slice(0, 60)}... (r/${it.sub})`);
+    await post(api, lines.join("\n"), tags);
+  }
+};

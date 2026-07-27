@@ -1,4 +1,4 @@
-import { firstMatch as m, rssBot } from "../bots.ts";
+import { type Api, firstMatch as m, rssBot } from "../bots.ts";
 
 const CATEGORY_HREF = /href="https:\/\/ooh\.directory\/blogs\/([a-z0-9-]+(?:\/[a-z0-9-]+)*)\/?"/g;
 
@@ -9,18 +9,18 @@ const extractCategoryTags = (item: string): string[] => {
   return [...slugs];
 };
 
-rssBot({
-  envPrefix: "OOH",
-  feedUrl: "https://ooh.directory/feeds/recently-added.xml",
-  parseItem: (x) => {
-    const title = (m(/<title><!\[CDATA\[([\s\S]*?)\]\]><\/title>/, x) ||
-      m(/<title>([\s\S]*?)<\/title>/, x)).trim();
-    const link = m(/<link>([\s\S]*?)<\/link>/, x).trim();
-    if (!title || !link) return null;
-    const tagline = m(/<q>([\s\S]*?)<\/q>/, x).replace(/\s+/g, " ").trim();
-    const body = tagline ? `${title}\n\n${link}\n\n“${tagline}”` : `${title}\n\n${link}`;
-    const cats = extractCategoryTags(x).map((s) => `#${s}`).join(" ");
-    return { link, body, tags: `#blog #ooh ${cats} #bot`.replace(/\s+/g, " ").trim() };
-  },
-  max: 5,
-});
+export default (api: Api) =>
+  rssBot(api, {
+    feedUrl: "https://ooh.directory/feeds/recently-added.xml",
+    parseItem: (x) => {
+      const title = (m(/<title><!\[CDATA\[([\s\S]*?)\]\]><\/title>/, x) ||
+        m(/<title>([\s\S]*?)<\/title>/, x)).trim();
+      const link = m(/<link>([\s\S]*?)<\/link>/, x).trim();
+      if (!title || !link) return null;
+      const tagline = m(/<q>([\s\S]*?)<\/q>/, x).replace(/\s+/g, " ").trim();
+      const body = tagline ? `${title}\n\n${link}\n\n“${tagline}”` : `${title}\n\n${link}`;
+      const cats = extractCategoryTags(x).map((s) => `#${s}`).join(" ");
+      return { link, body, tags: `#blog #ooh ${cats} #bot`.replace(/\s+/g, " ").trim() };
+    },
+    max: 5,
+  });

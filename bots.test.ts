@@ -1,5 +1,5 @@
 import { assertEquals, assertRejects, assertThrows } from "@std/assert";
-import { extractPubDate, isFresh, isLinkPost, MAX_AGE_MS, paginate } from "./bots.ts";
+import { type Api, decodeEntities, extractPubDate, isFresh, isLinkPost, MAX_AGE_MS, paginate } from "./bots.ts";
 
 Deno.test("isLinkPost: bare url → true", () => {
   assertEquals(isLinkPost("https://example.com/foo"), true);
@@ -74,89 +74,88 @@ Deno.test("extractPubDate: missing → null", () => {
   assertEquals(extractPubDate("<item><title>x</title></item>"), null);
 });
 
+// ---- decodeEntities ----
+
+Deno.test("decodeEntities: named", () => {
+  assertEquals(decodeEntities("Style &amp; Emacs"), "Style & Emacs");
+});
+
+Deno.test("decodeEntities: decimal", () => {
+  assertEquals(decodeEntities("Diel&#39;s daydreams"), "Diel's daydreams");
+});
+
+Deno.test("decodeEntities: hex", () => {
+  assertEquals(decodeEntities("Diel&#x27;s daydreams"), "Diel's daydreams");
+});
+
+Deno.test("decodeEntities: double-encoded", () => {
+  assertEquals(decodeEntities("don&amp;#39;t"), "don't");
+});
+
+Deno.test("decodeEntities: unknown entity left intact", () => {
+  assertEquals(decodeEntities("a &bogus; b"), "a &bogus; b");
+});
+
+Deno.test("decodeEntities: plain string unchanged", () => {
+  assertEquals(decodeEntities("Bird Stories"), "Bird Stories");
+});
+
 // ---- paginate ----
 
-const mockFetch = (pages: unknown[][]) => {
-  const original = globalThis.fetch;
+// The Api context carries its own fetch, so pagination is testable without
+// monkey-patching the global.
+const fakeApi = (pages: unknown[][]): Api => {
   let i = 0;
-  globalThis.fetch = (() =>
-    Promise.resolve(
-      new Response(JSON.stringify(pages[i++] ?? []), {
-        status: 200,
-        headers: { "content-type": "application/json" },
-      }),
-    )) as typeof fetch;
-  return () => (globalThis.fetch = original);
+  return {
+    apiUrl: "http://x",
+    auth: "auth",
+    botUsername: "bot_test",
+    fetch: () =>
+      Promise.resolve(
+        new Response(JSON.stringify(pages[i++] ?? []), {
+          status: 200,
+          headers: { "content-type": "application/json" },
+        }),
+      ),
+  };
 };
 
 Deno.test("paginate: stops on short page", async () => {
-  const restore = mockFetch([
-    Array(100).fill({ x: 1 }),
-    Array(50).fill({ x: 2 }),
-  ]);
-  try {
-    const out = await paginate<{ x: number }>(
-      (p) => `/c?p=${p}`,
-      "auth",
-      "http://x",
-      { pageSize: 100 },
-    );
-    assertEquals(out.length, 150);
-  } finally {
-    restore();
-  }
+  const out = await paginate<{ x: number }>(
+    fakeApi([Array(100).fill({ x: 1 }), Array(50).fill({ x: 2 })]),
+    (p) => `/c?p=${p}`,
+    { pageSize: 100 },
+  );
+  assertEquals(out.length, 150);
 });
 
 Deno.test("paginate: stops on empty page", async () => {
-  const restore = mockFetch([
-    Array(100).fill({ x: 1 }),
-    [],
-  ]);
-  try {
-    const out = await paginate<{ x: number }>(
-      (p) => `/c?p=${p}`,
-      "auth",
-      "http://x",
-      { pageSize: 100 },
-    );
-    assertEquals(out.length, 100);
-  } finally {
-    restore();
-  }
+  const out = await paginate<{ x: number }>(
+    fakeApi([Array(100).fill({ x: 1 }), []]),
+    (p) => `/c?p=${p}`,
+    { pageSize: 100 },
+  );
+  assertEquals(out.length, 100);
 });
 
 Deno.test("paginate: until() short-circuits mid-page", async () => {
-  const restore = mockFetch([
-    [{ id: 5 }, { id: 4 }, { id: 3 }, { id: 2 }, { id: 1 }],
-  ]);
-  try {
-    const out = await paginate<{ id: number }>(
-      (p) => `/c?p=${p}`,
-      "auth",
-      "http://x",
-      { pageSize: 5, until: (it) => it.id < 3 },
-    );
-    assertEquals(out.map((x) => x.id), [5, 4, 3]);
-  } finally {
-    restore();
-  }
+  const out = await paginate<{ id: number }>(
+    fakeApi([[{ id: 5 }, { id: 4 }, { id: 3 }, { id: 2 }, { id: 1 }]]),
+    (p) => `/c?p=${p}`,
+    { pageSize: 5, until: (it) => it.id < 3 },
+  );
+  assertEquals(out.map((x) => x.id), [5, 4, 3]);
 });
 
 Deno.test("paginate: throws past maxPages", async () => {
-  const restore = mockFetch(Array(10).fill(Array(100).fill({ x: 1 })));
-  try {
-    await assertRejects(
-      () =>
-        paginate(
-          (p) => `/c?p=${p}`,
-          "auth",
-          "http://x",
-          { pageSize: 100, maxPages: 3 },
-        ),
-      Error,
-      "maxPages=3",
-    );
-  } finally {
-    restore();
-  }
+  await assertRejects(
+    () =>
+      paginate(
+        fakeApi(Array(10).fill(Array(100).fill({ x: 1 }))),
+        (p) => `/c?p=${p}`,
+        { pageSize: 100, maxPages: 3 },
+      ),
+    Error,
+    "maxPages=3",
+  );
 });

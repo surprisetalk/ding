@@ -15,8 +15,8 @@ deno serve --watch -A server.tsx
 # Run tests (uses in-memory PGlite)
 deno test -A
 
-# Run a specific bot manually
-deno run -A bots/hn.ts
+# Run a single bot manually (real HTTP against $DING_API_URL; needs BOT_<NAME>_EMAIL/_PASSWORD)
+deno task bot hn
 
 # Post to the DHT with your own key (self-managed identity)
 deno task ding msg "hello world" "#tag *org @user"   # default node: $DING_DB or https://db.ding.bar
@@ -134,17 +134,29 @@ signed.
 
 **Bots** (`bots/`):
 
-- Content aggregators (HN, Lobsters, arXiv, etc.) that POST via Basic Auth
-- LLM persona bots (kenm, linkedin, bigfoot, caveman, critic) use `claude()` helper in `bots.ts` with Haiku 3; require
+- Content aggregators (HN, Lobsters, arXiv, bubbles, etc.) that post via Basic Auth
+- LLM persona bots (kenm, bigfoot, caveman, critic) use `claude()` helper in `bots.ts` with Haiku 3; require
   `ANTHROPIC_API_KEY`
-- Run every 5 minutes via GitHub Actions (`.github/workflows/bots.yml`); each bot is a standalone entrypoint keyed by
-  `BOT_<UPPERNAME>_EMAIL`/`_PASSWORD` env vars (missing env → log + exit 1)
+- **Every bot is `export default (api: Api) => …`** — a function, never a top-level side effect, so it can be called
+  repeatedly in one isolate. `bots/mod.ts` is the registry (static imports, so Deno Deploy bundles them); its keys are
+  the bot names and uppercase to the `BOT_<NAME>_EMAIL`/`_PASSWORD` env prefix.
+- **Runs every 5 minutes from `Deno.cron("ding-bots")` in `server.tsx`** (was GitHub Actions until 2026-07-27).
+  `runBotFleet` builds one `Api` per bot and runs them `BOT_CONCURRENCY` at a time, each with a `BOT_TIMEOUT_MS`
+  deadline (Deno skips a tick while the previous run is live, so an untimed hang would wedge the whole fleet) and its
+  own try/catch (one bot's failure can't abort the sweep). Missing creds → warn + skip, never throw.
+- **`Api` carries its own `fetch`** — that's the seam. Standalone runs (`deno task bot hn`) use real fetch against
+  `DING_API_URL`; the cron passes `botFetch`, which dispatches through `app.request` in-process because a Deno Deploy
+  isolate **cannot fetch its own origin**. `botFetch` follows redirects the way real fetch does — a successful `POST /c`
+  302s to `/c/<cid>`, so an unfollowed redirect reads as failure on every single post. Bots must never `Deno.exit` (it
+  would kill the server isolate); throw instead.
 - Most bots are thin configs over shared harnesses in `bots.ts`: `rssBot` (single RSS feed), `personaBot` (LLM replies),
   `tagResponderBot` (reply to fresh `#tag` posts), `imageMentionBot` (transform an image from a @mention),
   `dailyPostBot` (one gated post per run). Shared helpers: `sweepFeeds` (bounded-concurrency newest-per-feed),
   `redditFetch`/`parseRedditEntries`, `glitchSvg`/`glitchTwemojiToR2`, `fetchFreshPosts`, `atomTitleLink`,
-  `parseTitleLinkComments`
-- `bots/checkmark.ts` is NOT part of the fleet (no `bots.ts` import; consumed by `server.tsx` as `runCheckmark`)
+  `parseTitleLinkComments`, `decodeEntities` (fixpoint HTML-entity decode, for feeds that double-encode)
+- `bots/checkmark.ts` is NOT part of the fleet (not in `bots/mod.ts`; consumed by `server.tsx` as `runCheckmark`)
+- Credentials live in Deno Deploy env, not GitHub secrets. `bots.env` (gitignored) is the upload file; `bot_linkedin`
+  still has a `usr` row but no bot file, so nothing runs it.
 
 ## Label System
 

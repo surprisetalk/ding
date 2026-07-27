@@ -1,8 +1,6 @@
 // Reddit r/hmmm image bot — posts images from the r/hmmm subreddit.
 
-import { botInit, getPostedUrls, isFresh, parseRedditEntries, post, redditFetch, type RedditItem } from "../bots.ts";
-
-const { apiUrl, auth, botUsername } = botInit("HMMM");
+import { type Api, getPostedUrls, isFresh, parseRedditEntries, post, redditFetch, type RedditItem } from "../bots.ts";
 
 const FEED_URL = "https://www.reddit.com/r/hmmm/.rss";
 async function fetchRedditFeed(): Promise<RedditItem[]> {
@@ -14,8 +12,8 @@ async function fetchRedditFeed(): Promise<RedditItem[]> {
   return parseRedditEntries(await res.text());
 }
 
-async function main() {
-  const postedUrls = await getPostedUrls(auth, apiUrl, botUsername);
+export default async (api: Api) => {
+  const postedUrls = await getPostedUrls(api);
   console.log(`Found ${postedUrls.size} previously posted URLs`);
 
   const items = await fetchRedditFeed();
@@ -31,12 +29,7 @@ async function main() {
     if (item.imageUrl) lines.push("", item.imageUrl);
     lines.push("", `via ${item.author} on r/hmmm`);
     console.log(`Posting: ${item.title.slice(0, 60)}...`);
-    if (!await post(auth, apiUrl, lines.join("\n"), "#hmmm #reddit #bot"))
+    if (!await post(api, lines.join("\n"), "#hmmm #reddit #bot"))
       console.error(`Failed to post: ${item.title}`);
   }
-}
-
-main().catch((err) => {
-  console.error(`hmmm bot failed gracefully: ${err?.message || err}`);
-  Deno.exit(0);
-});
+};

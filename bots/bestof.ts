@@ -1,8 +1,6 @@
 // Daily/weekly/monthly/yearly digests + monthly prediction threads
 
-import { botInit, getJson, postForm } from "../bots.ts";
-
-const { apiUrl, auth, botUsername } = botInit("BESTOF");
+import { type Api, getJson, postForm } from "../bots.ts";
 
 type Post = {
   cid: number;
@@ -15,14 +13,11 @@ type Post = {
 
 const DAY = 86_400_000;
 const isBot = (name: string) => /^bot[-_]/.test(name);
-const g = <T>(path: string) => getJson<T>(path, auth, apiUrl);
-const p = (path: string, fields: Record<string, string>) => postForm(path, fields, auth, apiUrl);
-
-async function fetchRecent(windowMs: number, maxPages: number): Promise<Post[]> {
+async function fetchRecent(api: Api, windowMs: number, maxPages: number): Promise<Post[]> {
   const cutoff = Date.now() - windowMs;
   const out: Post[] = [];
   for (let page = 0; page < maxPages; page++) {
-    const items = await g<Post[]>(`/c?sort=new&limit=100&p=${page}`);
+    const items = await getJson<Post[]>(api, `/c?sort=new&limit=100&p=${page}`);
     if (!items.length) return out;
     for (const item of items) {
       if (new Date(item.created_at).getTime() < cutoff) return out;
@@ -89,15 +84,15 @@ function topBy(posts: Post[], key: (p: Post) => string[], filter: (v: string) =>
     .slice(0, n);
 }
 
-async function digest(period: Period) {
-  const prior = await g<Post[]>(`/c?usr=${botUsername}&tag=${period.tag}&limit=1`);
+async function digest(api: Api, period: Period) {
+  const prior = await getJson<Post[]>(api, `/c?usr=${api.botUsername}&tag=${period.tag}&limit=1`);
   const lastAge = prior[0] ? Date.now() - new Date(prior[0].created_at).getTime() : Infinity;
   if (lastAge < period.minGapMs) {
     console.log(`[${period.tag}] last was ${(lastAge / DAY).toFixed(1)}d ago, skipping`);
     return;
   }
 
-  const posts = (await fetchRecent(period.windowMs, period.maxPages)).filter((p) => !isBot(p.created_by));
+  const posts = (await fetchRecent(api, period.windowMs, period.maxPages)).filter((p) => !isBot(p.created_by));
   if (posts.length < 3) {
     console.log(`[${period.tag}] only ${posts.length} human posts in window, skipping`);
     return;
@@ -128,14 +123,14 @@ async function digest(period: Period) {
 
   const body = `BestOf — ${period.label(new Date())}\n\n${sections.join("\n\n")}`;
   console.log(`[${period.tag}] posting digest (${posts.length} posts in window)`);
-  await p("/c", { body, tags: `#bestof #bot #${period.tag}` });
+  await postForm(api, "/c", { body, tags: `#bestof #bot #${period.tag}` });
 }
 
-async function monthlyPredictions() {
+async function monthlyPredictions(api: Api) {
   const now = new Date();
   if (now.getDate() > 3) return;
 
-  const posts = await g<Post[]>(`/c?usr=${botUsername}&tag=predictions&limit=5`);
+  const posts = await getJson<Post[]>(api, `/c?usr=${api.botUsername}&tag=predictions&limit=5`);
   const ym = (d: Date) => `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}`;
   const currentMonth = ym(now);
 
@@ -149,7 +144,7 @@ async function monthlyPredictions() {
     const lastMonth = new Date(last.created_at);
     if (lastMonth.getMonth() === (now.getMonth() - 1 + 12) % 12) {
       console.log(`Following up on last month's predictions (cid=${last.cid})`);
-      await p(`/c/${last.cid}`, {
+      await postForm(api, `/c/${last.cid}`, {
         body: `Time's up! How did we do?\n\nReply to your original prediction with how it turned out.`,
       });
     }
@@ -161,12 +156,10 @@ async function monthlyPredictions() {
   if (last) body += `\n\nLast month's predictions: /c/${last.cid}`;
 
   console.log(`Posting predictions thread for ${monthName}`);
-  await p("/c", { body, tags: "#predictions #bot" });
+  await postForm(api, "/c", { body, tags: "#predictions #bot" });
 }
 
-async function main() {
-  for (const period of PERIODS) await digest(period);
-  await monthlyPredictions();
-}
-
-main();
+export default async (api: Api) => {
+  for (const period of PERIODS) await digest(api, period);
+  await monthlyPredictions(api);
+};

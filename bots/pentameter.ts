@@ -1,5 +1,5 @@
 import {
-  botInit,
+  type Api,
   countSyllables,
   getAnsweredCids,
   getJson,
@@ -8,8 +8,6 @@ import {
   reply,
   stripUrlsMentions,
 } from "../bots.ts";
-
-const { apiUrl, auth, botUsername } = botInit("PENTAMETER");
 
 const UNSTRESSED = new Set([
   "a",
@@ -112,14 +110,13 @@ function isIambicPentameter(text: string): boolean {
   return correct >= 7;
 }
 
-async function main() {
-  const answered = await getAnsweredCids(auth, botUsername, apiUrl, { since: Date.now() - MAX_AGE_MS });
+export default async (api: Api) => {
+  const answered = await getAnsweredCids(api, { since: Date.now() - MAX_AGE_MS });
   console.log(`Already answered ${answered.size} posts in last 4h`);
 
   const posts = await getJson<{ cid: number; created_by: string; body: string; created_at: string }[]>(
+    api,
     `/c?sort=new&limit=50`,
-    auth,
-    apiUrl,
   );
 
   let replies = 0;
@@ -130,10 +127,8 @@ async function main() {
     if (!isIambicPentameter(cleaned)) continue;
     const body = `methinks this be iambic pentameter!\n\n"${cleaned}"\n\nda-DUM da-DUM da-DUM da-DUM da-DUM`;
     console.log(`Replying to cid=${post.cid}: "${cleaned}"`);
-    if (await reply(auth, apiUrl, post.cid, body)) replies++;
+    if (await reply(api, post.cid, body)) replies++;
   }
 
   console.log(`Replied to ${replies} posts`);
-}
-
-main();
+};

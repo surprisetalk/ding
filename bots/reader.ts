@@ -1,5 +1,5 @@
 import {
-  botInit,
+  type Api,
   extractArticle,
   extractImageUrl,
   fetchFreshPosts,
@@ -42,14 +42,13 @@ const smartTruncate = (text: string, max: number) => {
   return slice.replace(/\s+\S*$/, "").trimEnd() + "…";
 };
 
-async function main() {
-  const { apiUrl, auth, botUsername } = botInit("READER");
-  const answered = await getAnsweredCids(auth, botUsername, apiUrl, { since: Date.now() - MAX_AGE_MS });
+export default async (api: Api) => {
+  const answered = await getAnsweredCids(api, { since: Date.now() - MAX_AGE_MS });
 
-  const posts = await fetchFreshPosts(auth, apiUrl);
+  const posts = await fetchFreshPosts(api);
 
   const candidates = posts.filter((p) => {
-    if (p.created_by === botUsername || answered.has(p.cid) || !isFresh(p.created_at)) return false;
+    if (p.created_by === api.botUsername || answered.has(p.cid) || !isFresh(p.created_at)) return false;
     const url = firstLink(p.body);
     if (!url) return false;
     try {
@@ -86,9 +85,7 @@ async function main() {
     const truncated = smartTruncate(text, MAX_CHARS);
     const header = article.title ? `# [${article.title}](${url})\n\n` : `[${url}](${url})\n\n`;
     const body = (header + truncated).split("\n").map((l) => l ? `> ${l}` : ">").join("\n");
-    await reply(auth, apiUrl, p.cid, body);
+    await reply(api, p.cid, body);
     console.log(`Replied to cid=${p.cid} (${url})`);
   }
-}
-
-main();
+};

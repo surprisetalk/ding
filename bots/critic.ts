@@ -1,4 +1,4 @@
-import { botInit, claude, fetchFreshPosts, getAnsweredCids, isFresh, isLinkPost, MAX_AGE_MS, reply } from "../bots.ts";
+import { type Api, claude, fetchFreshPosts, getAnsweredCids, isFresh, isLinkPost, MAX_AGE_MS, reply } from "../bots.ts";
 
 const SYSTEM = "You are a discerning quality critic for a small social feed. " +
   'For each post, rate it: "up" if it\'s genuinely interesting, funny, thoughtful, or well-crafted; ' +
@@ -10,13 +10,12 @@ const SYSTEM = "You are a discerning quality critic for a small social feed. " +
 
 const MAX_RATE_PER_RUN = 10;
 
-async function main() {
-  const { apiUrl, auth, botUsername } = botInit("CRITIC");
-  const answered = await getAnsweredCids(auth, botUsername, apiUrl, { since: Date.now() - MAX_AGE_MS });
+export default async (api: Api) => {
+  const answered = await getAnsweredCids(api, { since: Date.now() - MAX_AGE_MS });
 
-  const all = await fetchFreshPosts(auth, apiUrl, 40);
+  const all = await fetchFreshPosts(api, 40);
   const candidates = all.filter((p) =>
-    p.created_by !== botUsername &&
+    p.created_by !== api.botUsername &&
     !answered.has(p.cid) &&
     isFresh(p.created_at) &&
     p.body.length > 1 &&
@@ -37,9 +36,7 @@ async function main() {
   for (const v of verdicts) {
     if (v.verdict === "skip") continue;
     const symbol = v.verdict === "up" ? "▲" : "▼";
-    await reply(auth, apiUrl, v.cid, symbol);
+    await reply(api, v.cid, symbol);
     console.log(`Voted ${symbol} on cid=${v.cid}`);
   }
-}
-
-main();
+};

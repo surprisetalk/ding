@@ -1,9 +1,7 @@
 // Responds to posts tagged #remind with time-delayed reminders.
 // Usage: tag a post #remind with body like "2h check the deploy".
 
-import { botInit, getJson, isFresh, reply } from "../bots.ts";
-
-const { apiUrl, auth, botUsername } = botInit("REMIND");
+import { type Api, getJson, isFresh, reply } from "../bots.ts";
 
 const DURATION_RE = /(\d+)\s*(m|min|h|hr|hour|d|day|w|week)s?\b/i;
 const MAX_MS = 7 * 86_400_000;
@@ -27,11 +25,10 @@ function parseDuration(body: string): { ms: number; message: string; label: stri
   };
 }
 
-async function main() {
+export default async (api: Api) => {
   const replies = await getJson<{ parent_cid: number; body: string }[]>(
-    `/c?usr=${botUsername}&comments=1&limit=100`,
-    auth,
-    apiUrl,
+    api,
+    `/c?usr=${api.botUsername}&comments=1&limit=100`,
   );
   const byParent = new Map<number, string[]>();
   for (const r of replies) {
@@ -42,16 +39,15 @@ async function main() {
   console.log(`Tracking ${byParent.size} previously replied posts`);
 
   const posts = await getJson<{ cid: number; created_by: string; body: string; created_at: string }[]>(
+    api,
     `/c?tag=remind&sort=new&limit=30`,
-    auth,
-    apiUrl,
   );
 
   const now = Date.now();
   let acks = 0, deliveries = 0;
 
   for (const post of posts) {
-    if (post.created_by === botUsername) continue;
+    if (post.created_by === api.botUsername) continue;
     const parsed = parseDuration(post.body);
     if (!parsed) continue;
 
@@ -66,17 +62,15 @@ async function main() {
         continue;
       }
       console.log(`Acking cid=${post.cid}: ${parsed.label}`);
-      if (await reply(auth, apiUrl, post.cid, `Got it, I'll remind you in ${parsed.label}.`)) acks++;
+      if (await reply(api, post.cid, `Got it, I'll remind you in ${parsed.label}.`)) acks++;
       continue;
     }
 
     if (!hasReminder && elapsed >= parsed.ms) {
       console.log(`Delivering reminder for cid=${post.cid}`);
-      if (await reply(auth, apiUrl, post.cid, `@${post.created_by} Reminder: ${parsed.message}`)) deliveries++;
+      if (await reply(api, post.cid, `@${post.created_by} Reminder: ${parsed.message}`)) deliveries++;
     }
   }
 
   console.log(`Acked ${acks}, delivered ${deliveries} reminders`);
-}
-
-main();
+};

@@ -1,6 +1,6 @@
 // Dice roller bot — responds to posts tagged #dice. Supports NdS, NdSkhX, coin, pick X Y Z.
 
-import { tagResponderBot } from "../bots.ts";
+import { type Api, tagResponderBot } from "../bots.ts";
 
 const rollDice = (n: number, sides: number) => Array.from({ length: n }, () => Math.floor(Math.random() * sides) + 1);
 
@@ -42,8 +42,8 @@ function parseAndRoll(body: string): string | null {
   return lines.length ? lines.join("\n") : null;
 }
 
-tagResponderBot({
-  envPrefix: "DICE",
-  tag: "dice",
-  respond: (p) => parseAndRoll(p.body),
-});
+export default (api: Api) =>
+  tagResponderBot(api, {
+    tag: "dice",
+    respond: (p) => parseAndRoll(p.body),
+  });

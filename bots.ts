@@ -5,7 +5,17 @@ import { Readability } from "@mozilla/readability";
 
 // ---- Bot init ----
 
-export function botInit(envPrefix: string) {
+// Every request a bot makes goes through `fetch` here. Standalone runs get the real
+// global fetch; the in-server Deno.cron passes `app.request`, which dispatches in-process
+// (Deno Deploy forbids a deployment fetching its own origin — see server.tsx's cron).
+export type Api = {
+  apiUrl: string;
+  auth: string;
+  botUsername: string;
+  fetch: (input: string, init?: RequestInit) => Promise<Response>;
+};
+
+export function botInit(envPrefix: string): Api {
   const apiUrl = Deno.env.get("DING_API_URL") || "https://ding.bar";
   const email = Deno.env.get(`BOT_${envPrefix}_EMAIL`) || "";
   const password = Deno.env.get(`BOT_${envPrefix}_PASSWORD`) || "";
@@ -13,9 +23,12 @@ export function botInit(envPrefix: string) {
     console.error(`Missing BOT_${envPrefix}_EMAIL or BOT_${envPrefix}_PASSWORD`);
     Deno.exit(1);
   }
-  const auth = btoa(`${email}:${password}`);
-  const botUsername = email.split("@")[0].replace(/-/g, "_");
-  return { apiUrl, auth, botUsername };
+  return {
+    apiUrl,
+    auth: btoa(`${email}:${password}`),
+    botUsername: email.split("@")[0].replace(/-/g, "_"),
+    fetch: (input, init) => fetch(input, init),
+  };
 }
 
 // ---- Freshness cutoff ----
@@ -31,25 +44,24 @@ export const isFresh = (ts: string | number | Date, max = MAX_AGE_MS) => {
 
 // ---- HTTP helpers ----
 
-export async function getJson<T = unknown>(path: string, auth: string, apiUrl: string): Promise<T> {
-  const res = await fetch(`${apiUrl}${path}`, {
-    headers: { Accept: "application/json", Authorization: `Basic ${auth}` },
+export async function getJson<T = unknown>(api: Api, path: string): Promise<T> {
+  const res = await api.fetch(`${api.apiUrl}${path}`, {
+    headers: { Accept: "application/json", Authorization: `Basic ${api.auth}` },
   });
   if (!res.ok) throw new Error(`GET ${path} → ${res.status}: ${await res.text()}`);
   return res.json();
 }
 
 export async function paginate<T>(
+  api: Api,
   pathFor: (p: number) => string,
-  auth: string,
-  apiUrl: string,
   opts: { until?: (item: T) => boolean; pageSize?: number; maxPages?: number } = {},
 ): Promise<T[]> {
   const pageSize = opts.pageSize ?? 100;
   const maxPages = opts.maxPages ?? 50;
   const out: T[] = [];
   for (let p = 0; p < maxPages; p++) {
-    const items = await getJson<T[]>(pathFor(p), auth, apiUrl);
+    const items = await getJson<T[]>(api, pathFor(p));
     if (!items.length) return out;
     for (const it of items) {
       if (opts.until?.(it)) return out;
@@ -61,16 +73,15 @@ export async function paginate<T>(
 }
 
 export async function postForm(
+  api: Api,
   path: string,
   fields: Record<string, string>,
-  auth: string,
-  apiUrl: string,
 ): Promise<boolean> {
   const body = new FormData();
   for (const [k, v] of Object.entries(fields)) body.append(k, v);
-  const res = await fetch(`${apiUrl}${path}`, {
+  const res = await api.fetch(`${api.apiUrl}${path}`, {
     method: "POST",
-    headers: { Authorization: `Basic ${auth}` },
+    headers: { Authorization: `Basic ${api.auth}` },
     body,
   });
   if (!res.ok) console.error(`POST ${path} → ${res.status} ${await res.text()}`);
@@ -141,6 +152,20 @@ export const atomTitleLink = (entry: string) => ({
       .find((a) => !/rel=["']self["']/i.test(a) && /href=/.test(a)) ?? "",
   ),
 });
+
+// Feeds double-encode (&amp;#39;), so decode to a fixpoint rather than once.
+const ENTITIES: Record<string, string> = { amp: "&", lt: "<", gt: ">", quot: '"', apos: "'", nbsp: " " };
+export const decodeEntities = (s: string) => {
+  for (let i = 0; i < 3; i++) {
+    const next = s
+      .replace(/&#x([0-9a-fA-F]+);/g, (_, h) => String.fromCodePoint(parseInt(h, 16)))
+      .replace(/&#(\d+);/g, (_, d) => String.fromCodePoint(parseInt(d, 10)))
+      .replace(/&([a-zA-Z]+);/g, (m, n) => ENTITIES[n] ?? m);
+    if (next === s) return s;
+    s = next;
+  }
+  return s;
+};
 
 // RSS <item>: title (CDATA or plain) + <link> + <comments>.
 export const parseTitleLinkComments = (itemXml: string) => ({
@@ -242,47 +267,26 @@ export const parseRedditEntries = (xml: string): RedditItem[] => {
 
 // ---- API helpers ----
 
-export async function getAnsweredCids(
-  auth: string,
-  botUsername: string,
-  apiUrl: string,
-  opts: { since?: number } = {},
-): Promise<Set<number>> {
+export async function getAnsweredCids(api: Api, opts: { since?: number } = {}): Promise<Set<number>> {
   const replies = await paginate<{ parent_cid: number; created_at: string }>(
-    (p) => `/c?usr=${botUsername}&comments=1&sort=new&limit=100&p=${p}`,
-    auth,
-    apiUrl,
+    api,
+    (p) => `/c?usr=${api.botUsername}&comments=1&sort=new&limit=100&p=${p}`,
     opts.since !== undefined ? { until: (r) => new Date(r.created_at).getTime() < opts.since! } : {},
   );
   return new Set(replies.map((r) => r.parent_cid));
 }
 
-export async function getLastPostAge(
-  auth: string,
-  botUsername: string,
-  apiUrl: string,
-  opts: { replies?: boolean } = {},
-): Promise<number> {
+export async function getLastPostAge(api: Api, opts: { replies?: boolean } = {}): Promise<number> {
   const qs = opts.replies ? "&comments=1" : "";
-  const posts = await getJson<{ created_at: string }[]>(
-    `/c?usr=${botUsername}&limit=1${qs}`,
-    auth,
-    apiUrl,
-  );
+  const posts = await getJson<{ created_at: string }[]>(api, `/c?usr=${api.botUsername}&limit=1${qs}`);
   if (!posts.length) return Infinity;
   return Date.now() - new Date(posts[0].created_at).getTime();
 }
 
-export async function getPostedUrls(
-  auth: string,
-  apiUrl: string,
-  botUsername: string,
-  opts: { since?: number } = {},
-): Promise<Set<string>> {
+export async function getPostedUrls(api: Api, opts: { since?: number } = {}): Promise<Set<string>> {
   const posts = await paginate<{ body: string; created_at: string }>(
-    (p) => `/c?usr=${botUsername}&sort=new&limit=100&p=${p}`,
-    auth,
-    apiUrl,
+    api,
+    (p) => `/c?usr=${api.botUsername}&sort=new&limit=100&p=${p}`,
     opts.since !== undefined ? { until: (r) => new Date(r.created_at).getTime() < opts.since! } : {},
   );
   const urls = new Set<string>();
@@ -299,18 +303,16 @@ export const extractPubDate = (itemXml: string): string | null => {
   return m ? m[1].trim() : null;
 };
 
-export async function rssBot(opts: {
-  envPrefix: string;
+export async function rssBot(api: Api, opts: {
   feedUrl: string;
   itemRe?: RegExp;
   parseItem: (xml: string) => FeedItem | null;
   max?: number;
 }) {
-  const { apiUrl, auth, botUsername } = botInit(opts.envPrefix);
   // Dedup spans full bot history (paginated). Feed-item 4h cutoff is the safety net
   // against runaway re-posts, but a stale URL can still resurface with a fresh pubDate
   // (HN front-page churn, etc.) so dedup must be wider than the cutoff.
-  const posted = await getPostedUrls(auth, apiUrl, botUsername);
+  const posted = await getPostedUrls(api);
   console.log(`Found ${posted.size} previously posted URLs`);
   const res = await fetch(opts.feedUrl);
   if (!res.ok) throw new Error(`Feed fetch failed: HTTP ${res.status}`);
@@ -336,24 +338,18 @@ export async function rssBot(opts: {
   console.log(`Found ${todo.length} new items to post`);
   for (const it of todo.slice(0, opts.max ?? 10)) {
     console.log(`Posting: ${it.body.slice(0, 60)}`);
-    await post(auth, apiUrl, it.body, it.tags);
+    await post(api, it.body, it.tags);
   }
 }
 
-export const post = (auth: string, apiUrl: string, body: string, tags: string) =>
-  postForm(`/c`, { body, tags }, auth, apiUrl);
+export const post = (api: Api, body: string, tags: string) => postForm(api, `/c`, { body, tags });
 
-export const reply = (auth: string, apiUrl: string, parentCid: number, body: string) =>
-  postForm(`/c/${parentCid}`, { body }, auth, apiUrl);
+export const reply = (api: Api, parentCid: number, body: string) => postForm(api, `/c/${parentCid}`, { body });
 
 export type Post = { cid: number; parent_cid: number | null; body: string; created_by: string; created_at: string };
 
-async function fetchPost(
-  auth: string,
-  apiUrl: string,
-  cid: number,
-): Promise<Post | null> {
-  const items = await getJson<Post[]>(`/c/${cid}`, auth, apiUrl).catch(() => [] as Post[]);
+async function fetchPost(api: Api, cid: number): Promise<Post | null> {
+  const items = await getJson<Post[]>(api, `/c/${cid}`).catch(() => [] as Post[]);
   return items[0] || null;
 }
 
@@ -400,28 +396,26 @@ export function extractImageUrl(body: string): string | null {
 }
 
 export async function resolveImageUrl(
-  auth: string,
-  apiUrl: string,
+  api: Api,
   comment: { cid: number; parent_cid: number | null; body: string },
 ): Promise<string | null> {
   const url = extractImageUrl(comment.body);
   if (url) return url;
   if (comment.parent_cid) {
-    const parent = await fetchPost(auth, apiUrl, comment.parent_cid);
+    const parent = await fetchPost(api, comment.parent_cid);
     if (parent) return extractImageUrl(parent.body);
   }
   return null;
 }
 
 export async function resolveTextContent(
-  auth: string,
-  apiUrl: string,
+  api: Api,
   comment: { cid: number; parent_cid: number | null; body: string },
 ): Promise<string> {
   const cleaned = comment.body.replace(/@\S+/g, "").trim();
   if (cleaned.length > 5) return cleaned;
   if (comment.parent_cid) {
-    const parent = await fetchPost(auth, apiUrl, comment.parent_cid);
+    const parent = await fetchPost(api, comment.parent_cid);
     if (parent) return parent.body;
   }
   return comment.body;
@@ -579,14 +573,10 @@ export function todaySeed(): number {
 // ---- Candidate picking ----
 
 // Latest top-level posts + comments, merged and deduped by cid.
-export async function fetchFreshPosts<T extends { cid: number } = Post>(
-  auth: string,
-  apiUrl: string,
-  limit = 50,
-): Promise<T[]> {
+export async function fetchFreshPosts<T extends { cid: number } = Post>(api: Api, limit = 50): Promise<T[]> {
   const [top, comments] = await Promise.all([
-    getJson<T[]>(`/c?sort=new&limit=${limit}`, auth, apiUrl),
-    getJson<T[]>(`/c?sort=new&comments=1&limit=${limit}`, auth, apiUrl),
+    getJson<T[]>(api, `/c?sort=new&limit=${limit}`),
+    getJson<T[]>(api, `/c?sort=new&comments=1&limit=${limit}`),
   ]);
   const seen = new Set<number>();
   return [...top, ...comments].filter((p) => !seen.has(p.cid) && !!seen.add(p.cid));
@@ -604,18 +594,16 @@ type Candidate = {
 // Fetches top-level posts + comments, filters bot's own posts + already-answered + stale,
 // ranks: prefer posts with fewer replies (spreads bots across threads), random tiebreak.
 async function pickCandidates(
-  auth: string,
-  apiUrl: string,
-  botUsername: string,
+  api: Api,
   answered: Set<number>,
   opts: { pool?: number; minBodyLen?: number; excludeLinkPosts?: boolean } = {},
 ): Promise<Candidate[]> {
   const minBodyLen = opts.minBodyLen ?? 30;
   const excludeLinkPosts = opts.excludeLinkPosts ?? true;
-  const all = await fetchFreshPosts<Candidate>(auth, apiUrl, opts.pool ?? 50);
+  const all = await fetchFreshPosts<Candidate>(api, opts.pool ?? 50);
   return all
     .filter((p) =>
-      p.created_by !== botUsername &&
+      p.created_by !== api.botUsername &&
       !answered.has(p.cid) &&
       isFresh(p.created_at) &&
       p.body.length > 1 &&
@@ -627,56 +615,49 @@ async function pickCandidates(
     .map(({ p }) => p);
 }
 
-export async function personaBot(opts: {
-  envPrefix: string;
+export async function personaBot(api: Api, opts: {
   system: string;
   maxTokens?: number;
   minGapMin?: number;
   maxReplies?: number;
 }) {
-  const { apiUrl, auth, botUsername } = botInit(opts.envPrefix);
-  const ageMin = (await getLastPostAge(auth, botUsername, apiUrl, { replies: true })) / 60_000;
+  const ageMin = (await getLastPostAge(api, { replies: true })) / 60_000;
   if (ageMin < (opts.minGapMin ?? 240)) {
     console.log(`Last reply ${Math.round(ageMin)}min ago, skipping`);
     return;
   }
-  const answered = await getAnsweredCids(auth, botUsername, apiUrl);
-  const candidates = await pickCandidates(auth, apiUrl, botUsername, answered);
+  const answered = await getAnsweredCids(api);
+  const candidates = await pickCandidates(api, answered);
   console.log(`Found ${candidates.length} candidates`);
   for (const p of candidates.slice(0, opts.maxReplies ?? 1)) {
     const text = await claude(p.body, { system: opts.system, maxTokens: opts.maxTokens ?? 50 });
-    await reply(auth, apiUrl, p.cid, text);
+    await reply(api, p.cid, text);
     console.log(`Replied to cid=${p.cid}: ${text.slice(0, 60)}...`);
   }
 }
 
-type BotCtx = { apiUrl: string; auth: string; botUsername: string };
-
 // Replies to fresh unanswered posts under #tag. respond returns the reply body,
 // or null to skip a post. Counts successful replies up to max.
-export async function tagResponderBot(opts: {
-  envPrefix: string;
+export async function tagResponderBot(api: Api, opts: {
   tag: string;
   max?: number;
-  respond: (post: Post, ctx: BotCtx) => string | null | Promise<string | null>;
+  respond: (post: Post, ctx: Api) => string | null | Promise<string | null>;
 }) {
-  const ctx = botInit(opts.envPrefix);
-  const { apiUrl, auth, botUsername } = ctx;
-  const answered = await getAnsweredCids(auth, botUsername, apiUrl, { since: Date.now() - MAX_AGE_MS });
+  const answered = await getAnsweredCids(api, { since: Date.now() - MAX_AGE_MS });
   console.log(`Already answered ${answered.size} posts in last 4h`);
-  const posts = await getJson<Post[]>(`/c?tag=${opts.tag}&sort=new&limit=20`, auth, apiUrl);
-  const todo = posts.filter((p) => p.created_by !== botUsername && !answered.has(p.cid) && isFresh(p.created_at));
+  const posts = await getJson<Post[]>(api, `/c?tag=${opts.tag}&sort=new&limit=20`);
+  const todo = posts.filter((p) => p.created_by !== api.botUsername && !answered.has(p.cid) && isFresh(p.created_at));
   console.log(`Found ${todo.length} unanswered #${opts.tag} posts`);
   let replies = 0;
   for (const p of todo) {
     if (replies >= (opts.max ?? 10)) break;
-    const body = await opts.respond(p, ctx);
+    const body = await opts.respond(p, api);
     if (!body) {
       console.log(`cid=${p.cid}: nothing to say, skipping`);
       continue;
     }
     console.log(`Replying to cid=${p.cid}`);
-    if (await reply(auth, apiUrl, p.cid, body)) replies++;
+    if (await reply(api, p.cid, body)) replies++;
   }
   console.log(`Replied to ${replies} posts`);
 }
@@ -684,22 +665,22 @@ export async function tagResponderBot(opts: {
 // Answers @mentions that carry (or reply to) an image: fetch the image bytes, run
 // transform, reply with its text — or upload {bytes,ext,contentType} to R2 and reply
 // with the public URL.
-export async function imageMentionBot(opts: {
-  envPrefix: string;
+export async function imageMentionBot(api: Api, opts: {
   max?: number;
   transform: (
     imageBytes: Uint8Array,
     post: Post,
   ) => Promise<string | { bytes: Uint8Array; ext: string; contentType: string }>;
 }) {
-  const { apiUrl, auth, botUsername } = botInit(opts.envPrefix);
-  const answered = await getAnsweredCids(auth, botUsername, apiUrl, { since: Date.now() - MAX_AGE_MS });
+  const answered = await getAnsweredCids(api, { since: Date.now() - MAX_AGE_MS });
   console.log(`Already answered ${answered.size} posts in last 4h`);
-  const posts = await getJson<Post[]>(`/c?mention=${botUsername}&comments=1&sort=new&limit=20`, auth, apiUrl);
-  const unanswered = posts.filter((p) => p.created_by !== botUsername && !answered.has(p.cid) && isFresh(p.created_at));
+  const posts = await getJson<Post[]>(api, `/c?mention=${api.botUsername}&comments=1&sort=new&limit=20`);
+  const unanswered = posts.filter((p) =>
+    p.created_by !== api.botUsername && !answered.has(p.cid) && isFresh(p.created_at)
+  );
   console.log(`Found ${unanswered.length} unanswered mentions`);
   for (const post of unanswered.slice(0, opts.max ?? 5)) {
-    const imageUrl = await resolveImageUrl(auth, apiUrl, post);
+    const imageUrl = await resolveImageUrl(api, post);
     if (!imageUrl) {
       console.log(`cid=${post.cid}: no image found, skipping`);
       continue;
@@ -716,35 +697,33 @@ export async function imageMentionBot(opts: {
     else {
       body = await uploadToR2(
         out.bytes,
-        `${opts.envPrefix.toLowerCase()}-${post.cid}-${Date.now()}.${out.ext}`,
+        `${api.botUsername}-${post.cid}-${Date.now()}.${out.ext}`,
         out.contentType,
       );
       console.log(`cid=${post.cid}: uploaded ${body}`);
     }
-    await reply(auth, apiUrl, post.cid, body);
+    await reply(api, post.cid, body);
   }
 }
 
 // One post per run, gated on time since the bot's last post. make returns the body
-// (or null to skip today); a failed post exits 1 so the runner records the failure.
-export async function dailyPostBot(opts: {
-  envPrefix: string;
+// (or null to skip today); a failed post throws so the runner records the failure.
+export async function dailyPostBot(api: Api, opts: {
   tags: string;
   minGapMs?: number;
-  make: (ctx: BotCtx) => string | null | Promise<string | null>;
+  make: (ctx: Api) => string | null | Promise<string | null>;
 }) {
-  const ctx = botInit(opts.envPrefix);
-  const { apiUrl, auth, botUsername } = ctx;
-  const ageMs = await getLastPostAge(auth, botUsername, apiUrl);
+  const ageMs = await getLastPostAge(api);
   console.log(`Last post was ${(ageMs / 3_600_000).toFixed(1)}h ago`);
   if (ageMs < (opts.minGapMs ?? 72_000_000)) {
     console.log("Too soon, skipping");
     return;
   }
-  const body = await opts.make(ctx);
+  const body = await opts.make(api);
   if (body == null) return;
   console.log(`Posting: ${body.split("\n")[0].slice(0, 80)}`);
-  if (!(await post(auth, apiUrl, body, opts.tags))) Deno.exit(1);
+  // Throw, never Deno.exit — under the in-server cron an exit would kill the whole isolate.
+  if (!(await post(api, body, opts.tags))) throw new Error(`${api.botUsername}: POST /c rejected the post`);
   console.log("Posted!");
 }
 

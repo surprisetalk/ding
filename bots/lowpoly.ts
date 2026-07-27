@@ -1,4 +1,4 @@
-import { imageMentionBot } from "../bots.ts";
+import { type Api, imageMentionBot } from "../bots.ts";
 import sharp from "sharp";
 
 function sampleColor(
@@ -92,11 +92,11 @@ async function lowpoly(imageBytes: Uint8Array): Promise<string> {
   }\n</svg>`;
 }
 
-imageMentionBot({
-  envPrefix: "LOWPOLY",
-  transform: async (bytes) => ({
-    bytes: new TextEncoder().encode(await lowpoly(bytes)),
-    ext: "svg",
-    contentType: "image/svg+xml",
-  }),
-});
+export default (api: Api) =>
+  imageMentionBot(api, {
+    transform: async (bytes) => ({
+      bytes: new TextEncoder().encode(await lowpoly(bytes)),
+      ext: "svg",
+      contentType: "image/svg+xml",
+    }),
+  });

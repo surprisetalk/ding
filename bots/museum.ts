@@ -1,4 +1,4 @@
-import { dailyPostBot } from "../bots.ts";
+import { type Api, dailyPostBot } from "../bots.ts";
 
 async function fetchArtwork(): Promise<{ title: string; creator: string; imageUrl: string; url: string } | null> {
   for (let attempt = 0; attempt < 2; attempt++) {
@@ -20,16 +20,16 @@ async function fetchArtwork(): Promise<{ title: string; creator: string; imageUr
   return null;
 }
 
-dailyPostBot({
-  envPrefix: "MUSEUM",
-  tags: "#art #museum #bot",
-  minGapMs: 14_400_000,
-  make: async () => {
-    const artwork = await fetchArtwork();
-    if (!artwork) {
-      console.error("Failed to fetch artwork after retries");
-      Deno.exit(1);
-    }
-    return `${artwork.title}\n\n${artwork.creator}\n\n${artwork.imageUrl}\n\n${artwork.url}`;
-  },
-});
+export default (api: Api) =>
+  dailyPostBot(api, {
+    tags: "#art #museum #bot",
+    minGapMs: 14_400_000,
+    make: async () => {
+      const artwork = await fetchArtwork();
+      if (!artwork) {
+        console.error("Failed to fetch artwork after retries");
+        Deno.exit(1);
+      }
+      return `${artwork.title}\n\n${artwork.creator}\n\n${artwork.imageUrl}\n\n${artwork.url}`;
+    },
+  });

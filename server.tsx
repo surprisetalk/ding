@@ -15,7 +15,8 @@ import pg from "postgres";
 import { Resend } from "resend";
 export const resend = new Resend(Deno.env.get("RESEND_API_KEY") ?? "");
 import Stripe from "stripe";
-import { uploadToR2 } from "./bots.ts";
+import { type Api, uploadToR2 } from "./bots.ts";
+import { BOTS } from "./bots/mod.ts";
 export const r2 = { uploadToR2 };
 import { runCheckmark } from "./bots/checkmark.ts";
 import {
@@ -3256,6 +3257,74 @@ app.post("/i", authed, async (c) => {
 
 app.use("/*", serveStatic({ root: "./public" }));
 
+//// BOT FLEET ////
+
+// Bots used to run as a GitHub Actions matrix, one process per bot, POSTing to https://ding.bar.
+// They now run in-process on a Deno.cron tick. Requests go through `app.request` rather than the
+// network: a Deno Deploy isolate cannot fetch its own origin (the same trap documented on the
+// checkmark cron below), and in-process dispatch keeps the exact middleware/ACL/auth semantics
+// the HTTP path had — Basic Auth included, so each bot still posts as its own `usr`.
+const BOT_CONCURRENCY = 4;
+const BOT_TIMEOUT_MS = 90_000;
+
+// `app.request` returns redirects instead of following them, but the bot helpers were written
+// against real fetch, which follows. A successful POST /c 302s to /c/<cid>, so leaving the
+// redirect unfollowed reports every successful post as a failure (and a failed auth 302s to
+// /u, which then 401s — exactly the distinction the helpers rely on). Follow like fetch does:
+// 303/302 after a POST become GET, and the Authorization header is preserved (same origin).
+export const botFetch = async (input: string, init?: RequestInit): Promise<Response> => {
+  let res = await app.request(input, init);
+  for (let hop = 0; hop < 5 && res.status >= 300 && res.status < 400; hop++) {
+    const location = res.headers.get("location");
+    if (!location) break;
+    res = await app.request(location, { headers: init?.headers });
+  }
+  return res;
+};
+
+export async function runBotFleet(names: string[] = Object.keys(BOTS)) {
+  const queue = [...names];
+  let ok = 0, failed = 0, skipped = 0;
+  const worker = async () => {
+    for (let name = queue.shift(); name; name = queue.shift()) {
+      const env = name.toUpperCase();
+      const email = Deno.env.get(`BOT_${env}_EMAIL`),
+        password = Deno.env.get(`BOT_${env}_PASSWORD`);
+      if (!email || !password) {
+        skipped++;
+        console.warn(`bot ${name}: no BOT_${env}_EMAIL/_PASSWORD, skipping`);
+        continue;
+      }
+      // apiUrl is "" so helpers build bare paths ("/c?…") — app.request takes a path directly.
+      const api: Api = {
+        apiUrl: "",
+        auth: btoa(`${email}:${password}`),
+        botUsername: email.split("@")[0].replace(/-/g, "_"),
+        fetch: (input, init) => botFetch(input, init),
+      };
+      // One wedged bot must not hold the slot forever: Deno.cron skips a tick while the previous
+      // run is still going, so an un-timed-out hang would silently stop the whole fleet.
+      let timer: ReturnType<typeof setTimeout> | undefined;
+      try {
+        await Promise.race([
+          BOTS[name](api),
+          new Promise((_, rej) => {
+            timer = setTimeout(() => rej(new Error(`timed out after ${BOT_TIMEOUT_MS}ms`)), BOT_TIMEOUT_MS);
+          }),
+        ]);
+        ok++;
+      } catch (e) {
+        failed++;
+        console.error(`bot ${name} failed: ${e instanceof Error ? e.message : e}`);
+      } finally {
+        clearTimeout(timer);
+      }
+    }
+  };
+  await Promise.all(Array.from({ length: BOT_CONCURRENCY }, worker));
+  console.log(`bot fleet: ${ok} ok, ${failed} failed, ${skipped} skipped`);
+}
+
 // Hourly checkmark cron via Deno.cron — registered ONLY on Deno Deploy (DENO_DEPLOYMENT_ID
 // is unset locally/in tests, so this never fires there or trips the test sanitizer).
 // SIMPLE path for now: DING_ORG_SK lives on the main server. Harden later by moving the cron
@@ -3298,6 +3367,8 @@ if (Deno.env.get("DENO_DEPLOYMENT_ID")) {
       console.error(`prune cron failed: ${e instanceof Error ? e.message : e}`);
     }
   });
+
+  Deno.cron("ding-bots", "*/5 * * * *", () => runBotFleet());
 }
 
 export default app;

@@ -1,12 +1,10 @@
-import { botInit, getJson, isFresh, MAX_AGE_MS, paginate, post } from "../bots.ts";
+import { type Api, getJson, isFresh, MAX_AGE_MS, paginate, post } from "../bots.ts";
 
 const MAX_PER_RUN = 10;
 
-async function main() {
-  const { apiUrl, auth, botUsername } = botInit("WELCOME");
-
-  const users = await getJson<{ name: string; created_at: string }[]>(`/us?limit=500`, auth, apiUrl);
-  const fresh = users.filter((u) => u.name.toLowerCase() !== botUsername.toLowerCase() && isFresh(u.created_at));
+export default async (api: Api) => {
+  const users = await getJson<{ name: string; created_at: string }[]>(api, `/us?limit=500`);
+  const fresh = users.filter((u) => u.name.toLowerCase() !== api.botUsername.toLowerCase() && isFresh(u.created_at));
   if (!fresh.length) {
     console.log("No users in last 4h");
     return;
@@ -14,9 +12,8 @@ async function main() {
 
   const since = Date.now() - MAX_AGE_MS;
   const mine = await paginate<{ body: string; created_at: string }>(
-    (p) => `/c?usr=${botUsername}&sort=new&limit=100&p=${p}`,
-    auth,
-    apiUrl,
+    api,
+    (p) => `/c?usr=${api.botUsername}&sort=new&limit=100&p=${p}`,
     { until: (r) => new Date(r.created_at).getTime() < since },
   );
   const welcomed = new Set<string>();
@@ -28,9 +25,7 @@ async function main() {
   if (todo.length === MAX_PER_RUN) console.warn(`Hit MAX_PER_RUN=${MAX_PER_RUN}; signup spike?`);
 
   for (const u of todo) {
-    const ok = await post(auth, apiUrl, `welcome @${u.name}!`, `#welcome #bot`);
+    const ok = await post(api, `welcome @${u.name}!`, `#welcome #bot`);
     console.log(`${ok ? "welcomed" : "FAILED"} @${u.name}`);
   }
-}
-
-main();
+};

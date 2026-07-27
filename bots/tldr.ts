@@ -1,4 +1,4 @@
-import { botInit, claude, fetchFreshPosts, getAnsweredCids, isFresh, MAX_AGE_MS, reply } from "../bots.ts";
+import { type Api, claude, fetchFreshPosts, getAnsweredCids, isFresh, MAX_AGE_MS, reply } from "../bots.ts";
 
 const SYSTEM = "Summarize in 1 short sentence (max 200 chars). " +
   "No preamble, no 'TLDR:' prefix, no sign-off, no hashtags, no quotes.";
@@ -23,14 +23,13 @@ const cleanOutput = (s: string) => {
   return (sent ? sent[0] : cut.replace(/\s+\S*$/, "")).trim() + "…";
 };
 
-async function main() {
-  const { apiUrl, auth, botUsername } = botInit("TLDR");
-  const answered = await getAnsweredCids(auth, botUsername, apiUrl, { since: Date.now() - MAX_AGE_MS });
+export default async (api: Api) => {
+  const answered = await getAnsweredCids(api, { since: Date.now() - MAX_AGE_MS });
 
-  const posts = await fetchFreshPosts(auth, apiUrl);
+  const posts = await fetchFreshPosts(api);
 
   const candidates = posts.filter((p) =>
-    p.created_by !== botUsername && !answered.has(p.cid) && isFresh(p.created_at) &&
+    p.created_by !== api.botUsername && !answered.has(p.cid) && isFresh(p.created_at) &&
     p.body.replace(/https?:\S+/g, "").trim().length >= MIN_BODY_LEN &&
     !isQuoteHeavy(p.body)
   );
@@ -47,9 +46,7 @@ async function main() {
       console.error(`skip cid=${p.cid}: output is substring of original body`);
       continue;
     }
-    await reply(auth, apiUrl, p.cid, `tl;dr: ${text}`);
+    await reply(api, p.cid, `tl;dr: ${text}`);
     console.log(`Replied to cid=${p.cid}: ${text.slice(0, 60)}...`);
   }
-}
-
-main();
+};

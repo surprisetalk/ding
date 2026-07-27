@@ -1,8 +1,6 @@
 // Daily Fermi estimation bot — posts a question, reveals answer next day with closest guesser.
 
-import { botInit, dayNumber, getJson, post, reply } from "../bots.ts";
-
-const { apiUrl, auth, botUsername } = botInit("ESTIMATION");
+import { type Api, dayNumber, getJson, post, reply } from "../bots.ts";
 
 interface Question {
   q: string;
@@ -82,8 +80,8 @@ const logDist = (guess: number, actual: number) =>
 type ThreadPost = { cid: number; created_at: string; child_comments?: ChildComment[] };
 type ChildComment = { cid: number; body: string; created_by: string };
 
-async function main() {
-  const posts = await getJson<ThreadPost[]>(`/c?usr=${botUsername}&limit=5`, auth, apiUrl);
+export default async (api: Api) => {
+  const posts = await getJson<ThreadPost[]>(api, `/c?usr=${api.botUsername}&limit=5`);
   const lastPost = posts[0];
   const lastAgeHours = lastPost ? (Date.now() - new Date(lastPost.created_at).getTime()) / 3_600_000 : Infinity;
 
@@ -93,11 +91,11 @@ async function main() {
     const dayIndex = Math.floor(new Date(lastPost.created_at).getTime() / 86_400_000) % QUESTIONS.length;
     const question = QUESTIONS[dayIndex];
 
-    const [threadPost] = await getJson<ThreadPost[]>(`/c/${lastPost.cid}`, auth, apiUrl);
+    const [threadPost] = await getJson<ThreadPost[]>(api, `/c/${lastPost.cid}`);
     if (threadPost) {
-      const alreadyRevealed = (threadPost.child_comments || []).some((c) => c.created_by === botUsername);
+      const alreadyRevealed = (threadPost.child_comments || []).some((c) => c.created_by === api.botUsername);
       if (!alreadyRevealed) {
-        const playerReplies = (threadPost.child_comments || []).filter((c) => c.created_by !== botUsername);
+        const playerReplies = (threadPost.child_comments || []).filter((c) => c.created_by !== api.botUsername);
         const guesses = playerReplies
           .map((c) => {
             const n = parseNumber(c.body);
@@ -120,7 +118,7 @@ async function main() {
         if (guesses.length > 1) reveal += `\n\n${guesses.length} total guesses`;
 
         console.log(`Revealing answer for cid=${lastPost.cid}`);
-        await reply(auth, apiUrl, lastPost.cid, reveal);
+        await reply(api, lastPost.cid, reveal);
         revealed = true;
       }
     }
@@ -133,11 +131,9 @@ async function main() {
     const dayNum = dayNumber();
     const body = `Estimation #${dayNum}\n\n${question.q}\n\nReply with your best guess (just a number)!`;
     console.log(`Posting: Estimation #${dayNum}`);
-    if (!await post(auth, apiUrl, body, "#estimation #game #bot")) Deno.exit(1);
+    if (!await post(api, body, "#estimation #game #bot")) throw new Error("estimation: POST /c rejected the post");
     console.log("Posted!");
   } else {
     console.log(`Last post was ${lastAgeHours.toFixed(1)}h ago, skipping new question`);
   }
-}
-
-main();
+};

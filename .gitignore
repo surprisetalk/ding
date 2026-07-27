@@ -1,3 +1,4 @@
 /.vim
 .env
 .DS_Store
+bots.env

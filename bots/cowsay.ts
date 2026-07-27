@@ -1,4 +1,4 @@
-import { resolveTextContent, tagResponderBot } from "../bots.ts";
+import { type Api, resolveTextContent, tagResponderBot } from "../bots.ts";
 
 const ANIMALS: Record<string, string> = {
   cow: `        \\   ^__^
@@ -86,10 +86,9 @@ function cowsay(text: string, animalKey: string): string {
 
 const ANIMAL_KEYS = ["cow", "tux", "stegosaurus", "dragon"];
 
-tagResponderBot({
-  envPrefix: "COWSAY",
-  tag: "cowsay",
-  max: 5,
-  respond: async (p, { auth, apiUrl }) =>
-    cowsay(await resolveTextContent(auth, apiUrl, p), ANIMAL_KEYS[p.cid % ANIMAL_KEYS.length]),
-});
+export default (api: Api) =>
+  tagResponderBot(api, {
+    tag: "cowsay",
+    max: 5,
+    respond: async (p, ctx) => cowsay(await resolveTextContent(ctx, p), ANIMAL_KEYS[p.cid % ANIMAL_KEYS.length]),
+  });

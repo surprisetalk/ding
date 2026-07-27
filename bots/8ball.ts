@@ -1,4 +1,4 @@
-import { tagResponderBot } from "../bots.ts";
+import { type Api, tagResponderBot } from "../bots.ts";
 
 const ANSWERS = [
   "It is certain.",
@@ -23,8 +23,8 @@ const ANSWERS = [
   "Very doubtful.",
 ];
 
-tagResponderBot({
-  envPrefix: "8BALL",
-  tag: "8ball",
-  respond: (p) => `🎱 ${ANSWERS[p.cid % ANSWERS.length]}`,
-});
+export default (api: Api) =>
+  tagResponderBot(api, {
+    tag: "8ball",
+    respond: (p) => `🎱 ${ANSWERS[p.cid % ANSWERS.length]}`,
+  });
