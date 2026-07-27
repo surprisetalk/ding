@@ -267,11 +267,18 @@ export const parseRedditEntries = (xml: string): RedditItem[] => {
 
 // ---- API helpers ----
 
+// How far back dedup looks. Unbounded history does not scale: a bot with >5000 posts walks
+// straight past paginate's maxPages cap and throws, which silently killed bot_hn and
+// bot_smallweb for months. Every feed these bots read is a "recent items" feed and the item
+// freshness cutoff is 4–24h, so 30 days is a wide margin against a URL resurfacing.
+export const DEDUP_WINDOW_MS = 30 * 24 * 60 * 60 * 1000;
+
 export async function getAnsweredCids(api: Api, opts: { since?: number } = {}): Promise<Set<number>> {
+  const since = opts.since ?? Date.now() - DEDUP_WINDOW_MS;
   const replies = await paginate<{ parent_cid: number; created_at: string }>(
     api,
     (p) => `/c?usr=${api.botUsername}&comments=1&sort=new&limit=100&p=${p}`,
-    opts.since !== undefined ? { until: (r) => new Date(r.created_at).getTime() < opts.since! } : {},
+    { until: (r) => new Date(r.created_at).getTime() < since },
   );
   return new Set(replies.map((r) => r.parent_cid));
 }
@@ -284,10 +291,11 @@ export async function getLastPostAge(api: Api, opts: { replies?: boolean } = {})
 }
 
 export async function getPostedUrls(api: Api, opts: { since?: number } = {}): Promise<Set<string>> {
+  const since = opts.since ?? Date.now() - DEDUP_WINDOW_MS;
   const posts = await paginate<{ body: string; created_at: string }>(
     api,
     (p) => `/c?usr=${api.botUsername}&sort=new&limit=100&p=${p}`,
-    opts.since !== undefined ? { until: (r) => new Date(r.created_at).getTime() < opts.since! } : {},
+    { until: (r) => new Date(r.created_at).getTime() < since },
   );
   const urls = new Set<string>();
   for (const p of posts) for (const u of p.body.match(/https?:\/\/[^\s]+/g) || []) urls.add(u);
@@ -729,7 +737,9 @@ export async function dailyPostBot(api: Api, opts: {
 
 // ---- Claude ----
 
-const CLAUDE_MODEL = "claude-3-haiku-20240307";
+// claude-3-haiku-20240307 retired 2026-04-19 and now 404s. Haiku 4.5 is the replacement;
+// sampling params (temperature) are still accepted on this tier, unlike Opus 4.7+.
+const CLAUDE_MODEL = "claude-haiku-4-5";
 
 export async function claude(
   prompt: string,

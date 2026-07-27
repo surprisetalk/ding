@@ -135,8 +135,8 @@ signed.
 **Bots** (`bots/`):
 
 - Content aggregators (HN, Lobsters, arXiv, bubbles, etc.) that post via Basic Auth
-- LLM persona bots (kenm, bigfoot, caveman, critic) use `claude()` helper in `bots.ts` with Haiku 3; require
-  `ANTHROPIC_API_KEY`
+- LLM persona bots (kenm, bigfoot, caveman, critic) use `claude()` helper in `bots.ts` with Haiku 4.5
+  (`claude-haiku-4-5`; Haiku 3 retired 2026-04-19 and 404s); require `ANTHROPIC_API_KEY`
 - **Every bot is `export default (api: Api) => …`** — a function, never a top-level side effect, so it can be called
   repeatedly in one isolate. `bots/mod.ts` is the registry (static imports, so Deno Deploy bundles them); its keys are
   the bot names and uppercase to the `BOT_<NAME>_EMAIL`/`_PASSWORD` env prefix.
@@ -144,6 +144,10 @@ signed.
   `runBotFleet` builds one `Api` per bot and runs them `BOT_CONCURRENCY` at a time, each with a `BOT_TIMEOUT_MS`
   deadline (Deno skips a tick while the previous run is live, so an untimed hang would wedge the whole fleet) and its
   own try/catch (one bot's failure can't abort the sweep). Missing creds → warn + skip, never throw.
+- **Dedup is windowed, not full-history.** `getPostedUrls`/`getAnsweredCids` default to `DEDUP_WINDOW_MS` (30 days).
+  Unbounded history walks past `paginate`'s `maxPages=50` cap and throws — that silently killed bot_hn and bot_smallweb
+  for months under Actions' `continue-on-error`. `com.links` is internal cids, not external URLs, so no index can answer
+  exact-URL dedup; the window is the fix.
 - **`Api` carries its own `fetch`** — that's the seam. Standalone runs (`deno task bot hn`) use real fetch against
   `DING_API_URL`; the cron passes `botFetch`, which dispatches through `app.request` in-process because a Deno Deploy
   isolate **cannot fetch its own origin**. `botFetch` follows redirects the way real fetch does — a successful `POST /c`
