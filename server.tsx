@@ -316,12 +316,12 @@ const DING_ORG_PK = Deno.env.get("DING_ORG_PK") ?? null;
 export const verified = { at: 0, names: new Set<string>() };
 const refreshVerified = async () => {
   if (!DING_ORG_PK || Date.now() - verified.at < 60_000) return;
-  const rows = await sql`
+  const rows = await sql<{ name: string }[]>`
     select u.name from usr u where exists(
       select 1 from dht m where m.kind = 'mark' and m.target = u.id and m.pubkey = ${DING_ORG_PK}
         and m.val->'mark'->>'v' in ('email','payment','human')
         and (m.val->'mark'->>'exp')::bigint > extract(epoch from now()))`;
-  verified.names = new Set(rows.map((r: { name: string }) => r.name.toLowerCase())); // names are citext
+  verified.names = new Set(rows.map((r) => r.name.toLowerCase())); // names are citext
   verified.at = Date.now();
 };
 
@@ -338,7 +338,7 @@ const ensureKey = async (name: string): Promise<{ priv: CryptoKey; pub: string }
 
 // A new child bumps its parent's denormalized counters: reactions land in the
 // c_reactions hstore, real comments in c_comments.
-const bumpCounts = (db: Sql, cid: number | string, body: string) =>
+const bumpCounts = (db: pg.ISql, cid: number | string, body: string) =>
   isReaction(body)
     ? db`update com set c_reactions = c_reactions || hstore(${body}, (coalesce((c_reactions->${body})::int,0)+1)::text) where cid = ${cid}`
     : db`update com set c_comments = c_comments + 1 where cid = ${cid}`;
@@ -396,7 +396,7 @@ export const ingestMsg = async (
   // must NEVER project to com.usrs='{}', or the feed ACL would render it PUBLICLY — so when
   // no recipient is local, fall back to the raw ids (non-empty, matches no local viewer).
   const usrNames = kind === "msg" && usrs.length
-    ? (await sql`select name from usr where id = any(${usrs})`).map((r: { name: string }) => r.name)
+    ? (await sql<{ name: string }[]>`select name from usr where id = any(${usrs})`).map((r) => r.name)
     : [];
   const comUsrs = usrNames.length ? usrNames : usrs;
   // dht.tags stays sorted (canonical); com.tags keeps submission order so the rendered feed
@@ -419,11 +419,11 @@ export const ingestMsg = async (
   const dhtUsrs = kind === "msg" ? usrs : [];
   const rowId = kind === "usr" || kind === "org" || kind === "peer" ? await idOf(pubkey) : null;
   const members = kind === "org" ? (payload.members as string[]) ?? [] : []; // org register: member ids
-  const res = await sql.begin(async (tx: Sql) => {
+  const res = await sql.begin(async (tx) => {
     const [stored] = await tx`
       insert into dht (k, kind, pubkey, id, ts, sig, val, tags, orgs, usrs, members, target)
       values (${k}, ${kind}, ${pubkey}, ${rowId}, ${ts}, ${sig}, ${
-      sql.json(payload)
+      sql.json(payload as pg.JSONValue)
     }, ${tags}, ${dhtOrgs}, ${dhtUsrs}, ${members}, ${target})
       on conflict (k) do nothing returning k`;
     if (!stored) {
@@ -515,12 +515,15 @@ const wsSubs = new Set<WsSub>();
 const wireRow = (r: Pick<DhtFull, "k" | "kind" | "pubkey" | "ts" | "sig" | "val">) =>
   JSON.stringify({ k: r.k, kind: r.kind, pubkey: r.pubkey, ts: Number(r.ts), sig: r.sig, ...r.val });
 
+// postgres.js infers bigint as int8 at runtime, but its Serializable type omits it.
+const int8 = (n: bigint) => n as unknown as number;
+
 // One page of the PUBLIC live-tail drain (WS history sweep + post-subscribe catch-up).
 const drainPage = (after: bigint, qs: ReturnType<typeof parseQ>[]) =>
-  sql`
+  sql<DhtFull[]>`
     select k, seq, kind, pubkey, ts, sig, val, tags, orgs, usrs from dht
-    where seq > ${after} and orgs = '{}' and usrs = '{}' and (${dhtWhere(qs)})
-    order by seq asc limit 1000` as unknown as Promise<DhtFull[]>;
+    where seq > ${int8(after)} and orgs = '{}' and usrs = '{}' and (${dhtWhere(qs)})
+    order by seq asc limit 1000`;
 const supersetOf = (have: string[], need: string[]) => need.every((n) => have.includes(n));
 export const matchesQ = (r: Pick<DhtFull, "kind" | "tags" | "orgs" | "usrs">, qs: WsSub["qs"]) =>
   qs.length === 0 ||
@@ -1185,7 +1188,7 @@ const threadUrl = (parent: number | string | null | undefined, cid: number | str
   parent ? `/c/${parent}#${cid}` : `/c/${cid}`;
 
 const getOrg = async (c: Context) => {
-  const [org] = await sql`select * from org where name = ${c.req.param("name")}`;
+  const [org] = await sql`select * from org where name = ${c.req.param("name") ?? ""}`;
   if (!org) notFound();
   return org;
 };
@@ -1563,8 +1566,10 @@ app.use("*", async (c, next) => {
     // id's private DMs and the *org rows of orgs whose current register lists it as a member.
     const me = await drainAuthId(c);
     const myOrgs = me
-      ? (await sql`select id from (select distinct on (pubkey) id, members from dht where kind = 'org' order by pubkey, ts desc) o where ${me}::text = any(o.members)`)
-        .map((r: { id: string }) => r.id)
+      ? (await sql<
+        { id: string }[]
+      >`select id from (select distinct on (pubkey) id, members from dht where kind = 'org' order by pubkey, ts desc) o where ${me}::text = any(o.members)`)
+        .map((r) => r.id)
       : [];
     type DhtRow = {
       k: string;
@@ -1575,12 +1580,12 @@ app.use("*", async (c, next) => {
       sig: string;
       val: Record<string, unknown>;
     };
-    const rows = await sql`
+    const rows = await sql<DhtRow[]>`
       select k, seq, kind, pubkey, ts, sig, val from dht
-      where seq > ${after} and seen_at > (${parseT(url.searchParams.get("t"))})::timestamp at time zone 'UTC'
+      where seq > ${int8(after)} and seen_at > (${parseT(url.searchParams.get("t"))})::timestamp at time zone 'UTC'
         and (orgs = '{}' or orgs && ${myOrgs}::text[]) and (usrs = '{}' or ${me}::text = any(usrs))
         and (${dhtWhere(qs)})
-      order by seq asc limit 10000` as unknown as DhtRow[];
+      order by seq asc limit 10000`;
     const body = rows.map(wireRow).join("\n");
     const headers: Record<string, string> = { "content-type": "application/x-ndjson" };
     if (rows.length) headers["x-ding-cursor"] = String(rows[rows.length - 1].seq);
@@ -1893,7 +1898,7 @@ app.get("/", async (c) => {
     ) t order by ord, pri, recency desc, rnd
   `;
 
-  const items = await sql`
+  const items = await sql<Com[]>`
     select c.*, ${aggCols("c", me)},
       array(select jsonb_build_object('body', ch.body, 'created_by', ch.created_by, 'cid', ch.cid, 'created_at', ch.created_at, 'c_flags', ch.c_flags,
         ${aggPairs("ch", me)}
@@ -1971,7 +1976,7 @@ app.get("/", async (c) => {
       <section>
         {!items.length
           ? <p class="empty">no posts yet.</p>
-          : <div class="posts">{items.map((i: Com) => Post(i, name, cur))}</div>}
+          : <div class="posts">{items.map((i) => Post(i, name, cur))}</div>}
       </section>
       <Pagination base="/" cur={cur} p={p} more={items.length === 25} />
     </>,
@@ -2360,7 +2365,7 @@ app.post("/u", authed, async (c) => {
 });
 
 const notifQuery = (name: string, orgs_r: string[]) =>
-  sql`
+  sql<Com[]>`
   select c.*, (c.created_at > u.last_seen_at) as unread,
     case when ${name}::text = any(c.usrs) then 'mention' else 'reply' end as kind
   from com c
@@ -2397,7 +2402,7 @@ app.get("/n", authed, async (c) => {
             </p>
           )
           : (
-            items.map((i: Com) => (
+            items.map((i) => (
               <div key={i.cid} class={`notif${i.unread ? " notif--unread" : ""}`}>
                 <div class="notif__kind">{i.kind}</div>
                 {Comment(i, name)}
@@ -2414,7 +2419,7 @@ app.get("/n/unread", authed, async (c) => {
   const name = c.get("name");
   const [usr] = await sql`select orgs_r, last_seen_at from usr where name = ${name}`;
   const rT = usr?.orgs_r || [];
-  const rows = await sql`
+  const rows = await sql<Pick<Com, "cid" | "body" | "created_by" | "parent_cid">[]>`
     select cid, body, created_by, parent_cid
     from com c
     where created_by != ${name}
@@ -2428,7 +2433,7 @@ app.get("/n/unread", authed, async (c) => {
   `;
   return c.json({
     count: rows.length,
-    latest: rows.map((r: Com) => ({
+    latest: rows.map((r) => ({
       title: `@${r.created_by}: ${(r.body || "").trim().slice(0, 80)}`,
       url: `/c/${r.parent_cid || r.cid}#${r.cid}`,
     })),
@@ -2575,11 +2580,11 @@ app.get("/o/success", authed, async (c) => {
 app.get("/o/:name", async (c) => {
   const [org, hasAccess, members] = await Promise.all([
     getOrg(c),
-    sql`select true from usr where true and name = ${c.get("name") ?? ""} and ${c.req.param("name")} = any(orgs_r)`
-      .then(
-        (r: { exists: boolean }[]) => r[0],
-      ),
-    sql`select name from usr where ${c.req.param("name")} = any(orgs_r)`,
+    sql<{ exists: boolean }[]>`select true from usr where true and name = ${c.get("name") ?? ""} and ${
+      c.req.param("name") ?? ""
+    } = any(orgs_r)`
+      .then((r) => r[0]),
+    sql<{ name: string }[]>`select name from usr where ${c.req.param("name") ?? ""} = any(orgs_r)`,
   ]);
   if (!hasAccess) throw new HTTPException(403, { message: "Access denied" });
 
@@ -2594,7 +2599,7 @@ app.get("/o/:name", async (c) => {
         <div>
           <h3>members ({members.length})</h3>
           <div class="stack">
-            {members.map((m: { name: string }) => (
+            {members.map((m) => (
               <div class="member-row">
                 <a href={`/u/${m.name}`}>{Check(m.name)}@{m.name}</a>
                 {org.created_by === viewer && m.name !== viewer && (
@@ -2743,8 +2748,8 @@ app.post("/api/stripe-webhook", async (c) => {
     const sub = event.data.object;
     const [org] = await sql`select name from org where stripe_sub_id = ${sub.id}`;
     if (org) {
-      await sql.begin(async (tx: Sql) => {
-        const sql = tx as unknown as Sql;
+      await sql.begin(async (tx) => {
+        const sql = tx;
         await sql`update usr set orgs_r = array_remove(orgs_r, ${org.name}), orgs_w = array_remove(orgs_w, ${org.name})`;
         await sql`delete from org where name = ${org.name}`;
       });
@@ -2869,8 +2874,8 @@ app.post("/c/:p?", async (c) => {
       const [existing] =
         await sql`select cid from com where parent_cid = ${pid} and created_by = ${n} and body = ${b} and char_length(body) = 1 limit 1`;
       if (existing) {
-        await sql.begin((tx: Sql) => {
-          const sql = tx as unknown as Sql;
+        await sql.begin((tx) => {
+          const sql = tx;
           return Promise.all([
             sql`delete from com where cid = ${existing.cid}`,
             sql`update com set c_reactions = c_reactions || hstore(${b}, greatest(coalesce((c_reactions->${b})::int,0)-1, 0)::text) where cid = ${pid}`,
@@ -2967,7 +2972,7 @@ app.get("/c/:cid?", async (c) => {
     mens = c.req.queries("mention") || [],
     www = c.req.queries("www") || [];
 
-  const items = await sql`
+  const items = await sql<Com[]>`
     select c.*, ${
     DING_ORG_PK
       ? sql`exists(select 1 from dht m where m.kind='mark' and m.target = c.author_id and m.pubkey = ${DING_ORG_PK} and m.val->'mark'->>'v' in ('email','payment','human') and (m.val->'mark'->>'exp')::bigint > extract(epoch from now()))`
@@ -3008,7 +3013,7 @@ app.get("/c/:cid?", async (c) => {
       `<?xml version="1.0"?><rss version="2.0"><channel><title>ding</title><link>https://ding.bar/</link>${
         items
           .map(
-            (i: Com) =>
+            (i) =>
               `<item><title>${escapeXml(i.body.slice(0, 60))}</title><link>https://ding.bar/c/${i.cid}</link><pubDate>${
                 new Date(
                   i.created_at,
@@ -3053,7 +3058,7 @@ app.get("/c/:cid?", async (c) => {
       : null;
     const usrPostCount = usrRow?.post_count ?? null;
     const userMatches = q.q
-      ? await sql`select name from usr
+      ? await sql<{ name: string }[]>`select name from usr
                    where name ilike ${"%" + q.q + "%"} or bio ilike ${"%" + q.q + "%"}
                    order by (name ilike ${q.q + "%"}) desc, length(name) asc
                    limit 5`
@@ -3115,7 +3120,7 @@ app.get("/c/:cid?", async (c) => {
           {!singleTag && !singleOrg && !singleUsr && meta && <h2>{meta}</h2>}
           {q.q && userMatches.length > 0 && (
             <div class="user-matches">
-              {userMatches.map((u: { name: string }) => (
+              {userMatches.map((u) => (
                 <a key={u.name} href={`/c?usr=${u.name}`}>
                   {Check(u.name)}@{u.name}
                 </a>
@@ -3131,7 +3136,7 @@ app.get("/c/:cid?", async (c) => {
                 no results. <a href="/c">clear filters</a> or <a href="/">back to home</a>.
               </p>
             )
-            : <div class="posts">{items.map((i: Com) => Post(i, n, cur))}</div>}
+            : <div class="posts">{items.map((i) => Post(i, n, cur))}</div>}
         </section>
         <Pagination base="/c" cur={cur} p={p} more={items.length === lim} />
       </>,
@@ -3141,10 +3146,11 @@ app.get("/c/:cid?", async (c) => {
 
   const post = items[0];
   if (!post) return notFound();
-  const backlinks =
-    await sql`select cid, body, created_at from com where parent_cid is null and ${post.cid} = any(links) and ${
-      visibleTo(rT, n || "")
-    } order by created_at desc limit 5`;
+  const backlinks = await sql<
+    { cid: number; body: string }[]
+  >`select cid, body, created_at from com where parent_cid is null and ${post.cid} = any(links) and ${
+    visibleTo(rT, n || "")
+  } order by created_at desc limit 5`;
   const replies = (post.child_comments || []).filter(
     (r: ChildCom) => !isReaction(r.body),
   );
@@ -3234,7 +3240,7 @@ app.get("/c/:cid?", async (c) => {
         <section>
           <h3>backlinks</h3>
           <div class="backlinks">
-            {backlinks.map((bl: { cid: number; body: string }) => (
+            {backlinks.map((bl) => (
               <div key={bl.cid}>
                 <a href={`/c/${bl.cid}`}>
                   {bl.body.trim().split("\n")[0].slice(0, 60)}

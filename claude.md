@@ -263,5 +263,15 @@ const Post = ({ post }: { post: Com }) => <article>...</article>;
 
 ## Testing
 
-Tests use PGlite (in-memory PostgreSQL) with mocked pgcrypto functions. The test file seeds its own database and doesn't
-require external PostgreSQL.
+Tests use **`jsr:@surprisetalk/pgtemp`** — ephemeral in-memory Postgres (PGlite + pg-gateway behind a real wire
+listener), so no external PostgreSQL is needed. `pgtest(f)` in `server.test.ts` wraps each `Deno.test`: it boots one
+instance, swaps it into the server with `setSql`, resets the rate limiters, and stubs `Deno.resolveDns`. `await using`
+means a throwing test still tears the backend down (the old hand-rolled harness leaked one per failure).
+
+Schema + seed run **once** at module load into a `snapshot` blob; every test boots from that tarball instead of
+replaying the DDL (~3x faster). Add new fixtures to `setup`/`seedSql`, not to individual tests, so they land in the
+snapshot. `pgcrypto` doesn't exist in PGlite: `gen_salt`/`crypt` are mocked in `setup` and the schema's
+`create extension pgcrypto` is stripped, so seeded passwords are the literal string `hashed:<password>`.
+
+`pgtemp`'s bundled client comes from `npm:postgres` while the server imports `deno.land/x/postgresjs` — same library,
+different module identity, hence the one `as unknown as pg.Sql` cast in `pgtest`.

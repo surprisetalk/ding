@@ -72,10 +72,11 @@ export const backfill = async (
       const key = await keyFor(c.created_by);
       const ts = Math.floor(new Date(c.created_at).getTime() / 1000);
       const row = await signRow("msg", ts, payload, key.priv, key.pub);
-      await sql.begin(async (tx: Sql) => {
+      await sql.begin(async (tx) => {
         await tx`
           insert into dht (k, kind, pubkey, ts, sig, val, tags)
-          values (${row.k}, 'msg', ${key.pub}, ${ts}, ${row.sig}, ${sql.json(payload)}, ${payload.tags as string[]})
+          values (${row.k}, 'msg', ${key.pub}, ${ts}, ${row.sig}, ${sql.json(payload as pg.JSONValue)}, ${payload
+          .tags as string[]})
           on conflict (k) do nothing`;
         await tx`
           update com set hash = ${row.k}, author_id = ${key.id}, sig = ${row.sig}, parent_hash = ${parentHash}, t = ${ts}

@@ -18,11 +18,10 @@ import {
 import { backfill } from "./backfill.ts";
 import { type Api, getPostedUrls, post, unansweredMentions } from "./bots.ts";
 import { jsx } from "@hono/hono/jsx";
+import { pgtemp } from "@surprisetalk/pgtemp";
 import pg from "postgres";
-import { PGlite } from "@electric-sql/pglite";
 import { citext } from "@electric-sql/pglite/contrib/citext";
 import { hstore } from "@electric-sql/pglite/contrib/hstore";
-import { PostgresConnection } from "pg-gateway";
 import "./test_env.ts"; // sets env BEFORE server.tsx module evaluation (ES import order)
 import dbSql from "./db.sql" with { type: "text" };
 
@@ -205,44 +204,26 @@ const fakeResolveDns =
         recordType === "MX" ? [{ preference: 10, exchange: "mx.test" }] : ["1.2.3.4"],
       )) as typeof Deno.resolveDns;
 
-const pglite = (f: (sql: pg.Sql) => (t: Deno.TestContext) => Promise<void>) => async (t: Deno.TestContext) => {
-  const listener = Deno.listen({ hostname: "127.0.0.1", port: 0 }); // OS-assigned free port (no random collisions)
-  const port = (listener.addr as Deno.NetAddr).port;
-  const db = new PGlite({ extensions: { citext, hstore } });
-  const testSql = pg(`postgresql://postgres@127.0.0.1:${port}/postgres`, {
-    fetch_types: true,
-    onnotice: (n: { severity: string }) => n.severity !== "DEBUG" && console.log(n),
-  });
+// PGlite has no pgcrypto, so gen_salt/crypt are mocked; the schema's own
+// `create extension pgcrypto` is stripped for the same reason.
+const setup = [
+  `create or replace function gen_salt(text, int default 8) returns text language sql as $$ select 'salt' $$;
+   create or replace function crypt(password text, salt text) returns text language sql as $$
+     select case when salt like '$%' then password else 'hashed:' || password end
+   $$;`,
+  dbSql.replace(/create extension if not exists pgcrypto;/i, ""),
+  seedSql,
+];
 
-  (async () => {
-    for await (const conn of listener) {
-      new PostgresConnection(conn, {
-        async onStartup() {
-          await db.waitReady;
-        },
-        async onMessage(data: Uint8Array, { isAuthenticated }: { isAuthenticated: boolean }) {
-          if (!isAuthenticated) return;
-          if (data[0] === 88) return; // Terminate message
-          return await db.execProtocolRaw(data);
-        },
-      });
-    }
-  })();
+// Schema + seed cost the same on every test, so pay once and boot the rest from the
+// tarball — pgtemp restores a snapshot ~3x faster than replaying the DDL.
+const snapshot = await (async () => {
+  await using seed = await pgtemp({ extensions: { citext, hstore }, setup });
+  return await seed.snapshot();
+})();
 
-  await db.waitReady;
-
-  // Mock pgcrypto functions for testing (PGlite doesn't have pgcrypto)
-  await db.exec(`
-    create or replace function gen_salt(text, int default 8) returns text language sql as $$ select 'salt' $$;
-    create or replace function crypt(password text, salt text) returns text language sql as $$
-      select case when salt like '$%' then password else 'hashed:' || password end
-    $$;
-  `);
-
-  // Load schema (skip pgcrypto extension since we mocked it; hstore needs explicit CREATE)
-  const schema = dbSql.replace(/create extension if not exists pgcrypto;/i, "");
-  await db.exec(schema);
-  await db.exec(seedSql);
+const pgtest = (f: (sql: pg.Sql) => (t: Deno.TestContext) => Promise<void>) => async (t: Deno.TestContext) => {
+  await using db = await pgtemp({ extensions: { citext, hstore }, snapshot });
 
   // Mock Stripe
   mStripe.checkout = {
@@ -269,18 +250,14 @@ const pglite = (f: (sql: pg.Sql) => (t: Deno.TestContext) => Promise<void>) => a
       sig === "valid" ? Promise.resolve(JSON.parse(body)) : Promise.reject(new Error("bad sig")),
   };
 
-  setSql(testSql);
+  setSql(db.sql);
   postRate.clear();
   dbIngestRate.ip.clear();
   dbIngestRate.key.clear();
   signupRate.ip.clear();
   signupRate.perHour = 10_000; // don't throttle the general suite; a dedicated step tests it low
   Deno.resolveDns = fakeResolveDns; // hermetic MX check (no live DNS)
-  await f(testSql)(t);
-
-  await testSql.end();
-  listener.close();
-  await db.close();
+  await f(db.sql)(t);
 };
 
 //// TESTS /////////////////////////////////////////////////////////////////////
@@ -289,7 +266,7 @@ const basic = (email: string, pass: string) => ({ Authorization: "Basic " + btoa
 
 Deno.test(
   "routes",
-  pglite((sql) => async (t) => {
+  pgtest((sql) => async (t) => {
     await t.step("GET /robots.txt", async () => {
       const res = await app.request("/robots.txt");
       assertEquals(res.status, 200);
@@ -846,7 +823,7 @@ Deno.test(
 
 Deno.test(
   "Org Management",
-  pglite((sql) => async (t) => {
+  pgtest((sql) => async (t) => {
     const authHeaders = {
       ...basic("john@example.com", "password1!"),
     };
@@ -1070,7 +1047,7 @@ Deno.test(
 
 Deno.test(
   "write paths",
-  pglite((sql) => async (t) => {
+  pgtest((sql) => async (t) => {
     const jAuth = basic("john@example.com", "password1!");
     const janeAuth = basic("jane@example.com", "password1!");
     const fd = (o: Record<string, string>) => {
@@ -1440,7 +1417,7 @@ Deno.test(
 
 Deno.test(
   "recommendation scoring",
-  pglite((sql) => async (t) => {
+  pgtest((sql) => async (t) => {
     const mkPost = async (author: string, body: string, tags: string[], domains: string[] = []) => {
       const [r] =
         await sql`insert into com (created_by, body, tags, domains) values (${author}, ${body}, ${tags}, ${domains}) returning cid`;
@@ -1569,7 +1546,7 @@ Deno.test(
 
 Deno.test(
   "bot interactions",
-  pglite((sql) => async (t) => {
+  pgtest((sql) => async (t) => {
     // Create a bot user
     await sql`insert into usr (name, email, password, bio, invited_by, email_verified_at)
       values ('bot_test', 'bot-test@ding.bar', 'hashed:botpass!', 'I am a test bot', 'john_doe', now())`;
@@ -1834,7 +1811,7 @@ Deno.test(
 
 Deno.test(
   "synthetic domain tags",
-  pglite((sql) => async (t) => {
+  pgtest((sql) => async (t) => {
     const jAuth = basic("john@example.com", "password1!");
     const fd = (o: Record<string, string>) => {
       const f = new FormData();
@@ -1910,7 +1887,7 @@ Deno.test(
 
 Deno.test(
   "notifications inbox",
-  pglite((_sql) => async (t) => {
+  pgtest((_sql) => async (t) => {
     const jAuth = basic("john@example.com", "password1!");
     const janeAuth = basic("jane@example.com", "password1!");
     const fd = (o: Record<string, string>) => {
@@ -2048,7 +2025,7 @@ Deno.test(
 
 Deno.test(
   "uploads",
-  pglite((_sql) => async (t) => {
+  pgtest((_sql) => async (t) => {
     const jAuth = basic("john@example.com", "password1!");
     type Call = { filename: string; contentType: string; prefix: string; size: number };
     const calls: Call[] = [];
@@ -2209,7 +2186,7 @@ Deno.test(
 // 322 (humor,learning) — 355 (*secret, humor) and 357 (DM, general) must never count.
 Deno.test(
   "tag discovery",
-  pglite((sql) => async (t) => {
+  pgtest((sql) => async (t) => {
     // `GET /` reads the signed cookie, not Basic Auth — the compose form (and with it the
     // preset chips) only renders for a cookie session.
     const login = async (email: string) => {
@@ -2228,8 +2205,10 @@ Deno.test(
       presetsOf(await (await app.request("/", { headers: { cookie } })).text());
 
     await t.step("stat_tag counts public root posts only", async () => {
-      const rows = await sql`select tag, posts_count from stat_tag order by tag`;
-      const byTag = Object.fromEntries(rows.map((r: { tag: string; posts_count: number }) => [r.tag, r.posts_count]));
+      const rows = await sql<
+        { tag: string; posts_count: number }[]
+      >`select tag, posts_count from stat_tag order by tag`;
+      const byTag = Object.fromEntries(rows.map((r) => [r.tag, r.posts_count]));
       assertEquals(byTag.general, undefined, "DM-only tag leaked into stat_tag");
       assertEquals(byTag.humor, 14); // 355 is *secret-scoped and also tagged #humor
       assertEquals(byTag.coding, 7); // 356 is *internal-scoped and tagged #coding
@@ -2762,7 +2741,7 @@ Deno.test("WS shared-listener matchesQ mirrors the q-filter containment semantic
 
 Deno.test(
   "dht ingest + projection + adversarial",
-  pglite((sql) => async (t) => {
+  pgtest((sql) => async (t) => {
     await sql`insert into usr (name, email, bio, invited_by, pubkey)
       values ('alice', 'alice@x.com', 'hi, i am alice', 'john_doe', ${ALICE.pub})`;
     await sql`insert into usr (name, email, password, bio, invited_by)
@@ -3198,7 +3177,7 @@ const YEAR = 365 * 86400;
 
 Deno.test(
   "history backfill",
-  pglite((sql) => async (t) => {
+  pgtest((sql) => async (t) => {
     await t.step("signs legacy public posts into the dht; resumable + idempotent", async () => {
       const [{ n: pending }] =
         await sql`select count(*)::int as n from com where hash is null and char_length(body) > 1 and orgs = '{}' and usrs = '{}'`;
@@ -3229,7 +3208,7 @@ Deno.test(
 // because a Deno Deploy isolate cannot fetch its own origin.
 Deno.test(
   "bot fleet in-process transport (app.request)",
-  pglite(() => async (t) => {
+  pgtest(() => async (t) => {
     const api: Api = {
       apiUrl: "",
       auth: btoa("john@example.com:password1!"),

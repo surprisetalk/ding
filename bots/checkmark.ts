@@ -58,10 +58,10 @@ export const runCheckmark = async (opts: { sql?: Sql; sink?: (rows: Row[]) => Pr
     // current org-issued marks still comfortably fresh, keyed "<subject>:<claim>", so we don't
     // re-emit on every run (DAY marks renew only when within ~12h of expiry).
     const fresh = new Set(
-      (await sql`
+      (await sql<{ target: string; claim: string }[]>`
         select target, val->'mark'->>'v' as claim from dht
         where kind = 'mark' and pubkey = ${ORG_PK} and (val->'mark'->>'exp')::bigint > ${now + DAY / 2}`)
-        .map((r: { target: string; claim: string }) => `${r.target}:${r.claim}`),
+        .map((r) => `${r.target}:${r.claim}`),
     );
 
     const rows: Row[] = [];
