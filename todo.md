@@ -1,3 +1,4 @@
+- [ ] think of how to attract actual users
 - [ ] full rewrite
 - [ ] redesign /u ; move notifs into /u
 - [ ] needs more craigslist-like density?
