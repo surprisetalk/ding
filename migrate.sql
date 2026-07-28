@@ -57,3 +57,17 @@ create table if not exists used_nonce (
   exp   bigint not null
 );
 create index if not exists used_nonce_exp_idx on used_nonce (exp);
+
+-- stat_tag: restrict the tag rollup to PUBLIC root posts. Previously it aggregated
+-- *org and @user rows too, so a tag used only inside a private post could surface as a
+-- public frontpage chip. Column list is unchanged, so this replace is idempotent.
+-- Side effect: refresh_score's tag_ups/tag_downs signal no longer counts private posts.
+create or replace view stat_tag as
+select t.tag,
+  count(distinct t.cid)::int as posts_count,
+  count(*) filter (where r.body = '▲')::int as ups_received,
+  count(*) filter (where r.body = '▼')::int as downs_received
+from (select unnest(tags) tag, cid from com
+       where tags <> '{}' and parent_cid is null and orgs = '{}' and usrs = '{}') t
+left join com r on r.parent_cid = t.cid and char_length(r.body) = 1
+group by t.tag;

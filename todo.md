@@ -1,3 +1,4 @@
+- [ ] deno add jsr:@surprisetalk/pgtemp
 - [ ] full rewrite
 - [ ] redesign /u ; move notifs into /u
 - [ ] needs more craigslist-like density?

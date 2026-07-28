@@ -1,4 +1,4 @@
-import { type Api, tagResponderBot } from "../bots.ts";
+import { type Api, mentionResponderBot } from "../bots.ts";
 
 const HOUSES = [
   { name: "Gryffindor", emoji: "🦁", traits: "bravery, nerve, chivalry" },
@@ -8,8 +8,7 @@ const HOUSES = [
 ];
 
 export default (api: Api) =>
-  tagResponderBot(api, {
-    tag: "sortinghat",
+  mentionResponderBot(api, {
     max: Infinity,
     respond: (p) => {
       const house = HOUSES[p.cid % HOUSES.length];

@@ -39,6 +39,22 @@ new+empty. Idempotent and re-runnable. Validated against a copy of the old schem
 forward-compatible** — the currently-deployed code ignores the new columns/tables, so you can sit here safely before
 deploying.
 
+The tail of `migrate.sql` also `create or replace`s the **`stat_tag`** view so it only aggregates public root posts
+(`orgs = '{}' and usrs = '{}'`) — without it, a tag used only inside a `*org` post can surface as a public frontpage
+chip. Column list is unchanged, so the replace is instant and re-runnable. Expect `refresh_score`'s `tag_ups`/
+`tag_downs` signal to shift slightly (private posts stop contributing); existing `score` values are not rewritten until
+the next `refresh_score` call.
+
+Smoke check — **must return zero rows**. It lists any tag the view still exposes that lives only on private posts:
+
+```sql
+select st.tag from stat_tag st
+ where st.tag in (select unnest(tags) from com
+                   where parent_cid is null and (orgs <> '{}' or usrs <> '{}'))
+   and st.tag not in (select unnest(tags) from com
+                       where parent_cid is null and orgs = '{}' and usrs = '{}');
+```
+
 ## 2. Deploy the new code
 
 **Deno Deploy auto-deploys on push to `main`.** So the schema migration (step 1) MUST already be done — otherwise the

@@ -66,6 +66,8 @@ export type Usr = {
   post_count?: number;
 };
 
+export type TagStat = { tag: string; posts: number; ups: number };
+
 export type Org = {
   name: string;
   created_by: string;
@@ -758,7 +760,7 @@ const isVerified = (name?: string | null | false) => !!name && verified.names.ha
 const checkSpan = () => <span class="check" title="verified">✓</span>;
 const Check = (name?: string | null) => isVerified(name) ? checkSpan() : null;
 
-const User = (u: Usr, viewerName?: string) => {
+const User = (u: Usr, viewerName?: string, tags: TagStat[] = []) => {
   const isOwner = viewerName && viewerName == u.name;
   return (
     <section class="user">
@@ -776,6 +778,16 @@ const User = (u: Usr, viewerName?: string) => {
           </>
         )}
       </div>
+      {tags.length > 0 && (
+        <div class="tag-presets">
+          {tags.map((t) => (
+            <a key={t.tag} href={`/c?tag=${encodeURIComponent(t.tag)}`} class="tag-preset">
+              #{t.tag}
+              {t.ups > 0 && <span class="tag-preset__count">▲{t.ups}</span>}
+            </a>
+          ))}
+        </div>
+      )}
       <pre>{u.bio}</pre>
     </section>
   );
@@ -1814,6 +1826,18 @@ const aggPairs = (a: string, me: string) =>
       'reaction_counts', ${aggReactionCounts(a)},
       'user_reactions', ${aggUserReactions(a, me)}`;
 
+// What a user is known for, ranked by upvotes received. Profiles are world-readable, so
+// `visibleTo` can't gate this — hard-filter to public root posts instead.
+const topTags = (who: string) =>
+  sql<TagStat[]>`
+    select t.tag, count(distinct t.cid)::int as posts,
+           count(*) filter (where r.body = '▲')::int as ups
+      from (select unnest(tags) as tag, cid from com
+             where created_by = ${who} and parent_cid is null
+               and orgs = '{}' and usrs = '{}' and tags <> '{}') t
+      left join com r on r.parent_cid = t.cid and char_length(r.body) = 1
+     group by t.tag order by ups desc, posts desc, t.tag limit 12`;
+
 app.get("/", async (c) => {
   const q = c.req.query(),
     p = Math.max(0, Math.trunc(+(q.p || 0)) || 0),
@@ -1845,20 +1869,28 @@ app.get("/", async (c) => {
         where r.created_by = ${me} and r.body = '▲' and p.parent_cid is null
         group by 1
     ),
-    quality as (
-      select '#' || tag as tag, 3 as pri,
-        (ups_received::float / ln(posts_count + 2)) as q
+    mine as (
+      select distinct on (tag) tag, pri, recency from (
+        select '*' || unnest(${wT}::text[]) as tag, 1 as pri, now() as recency
+        union all select p || t, 2, recency from own
+        union all select p || t, 2, recency from affinity
+      ) m order by tag, pri, recency desc
+    ),
+    top_mine as (select tag, pri, recency from mine order by pri, recency desc limit 12),
+    disco as (
+      select '#' || tag as tag,
+        row_number() over (
+          order by -ln(greatest(random(), 1e-9)) / greatest(ups_received::float / ln(posts_count + 2), 0.05)
+        ) as rnd
       from stat_tag
       where posts_count >= 3
-      order by q desc
-      limit 40
+        and not exists (select 1 from top_mine m where m.tag = '#' || stat_tag.tag)
+      order by rnd limit 8
     )
-    select distinct on (tag) tag from (
-      select '*' || unnest(${wT}::text[]) as tag, 1 as pri, now() as recency, 0.0 as q
-      union all select p || t, 2, recency, 0.0 from own
-      union all select p || t, 2, recency, 0.0 from affinity
-      union all select tag, pri, now() - interval '365 days', q from quality
-    ) t order by tag, pri, recency desc, q desc limit 20
+    select tag from (
+      select tag, 0 as ord, pri, recency, 0::bigint as rnd from top_mine
+      union all select tag, 1, 0, now(), rnd from disco
+    ) t order by ord, pri, recency desc, rnd
   `;
 
   const items = await sql`
@@ -2307,7 +2339,7 @@ app.get("/u", async (c) => {
           </p>
         </section>
       )}
-      <section>{User(usr as unknown as Usr, name)}</section>
+      <section>{User(usr as unknown as Usr, name, await topTags(name))}</section>
       <section>
         <form method="post" action="/u">
           <textarea name="bio" rows={6}>
@@ -2415,7 +2447,7 @@ app.get("/u/:name", async (c) => {
   `;
   if (!usr) return notFound();
   if (host(c) === "api") return c.json(usr, 200);
-  return c.render(<section>{User(usr as Usr, viewerName)}</section>, { title: usr.name });
+  return c.render(<section>{User(usr as Usr, viewerName, await topTags(profileName))}</section>, { title: usr.name });
 });
 
 app.get("/us", async (c) => {

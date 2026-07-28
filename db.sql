@@ -144,7 +144,8 @@ select t.tag,
   count(distinct t.cid)::int as posts_count,
   count(*) filter (where r.body = '▲')::int as ups_received,
   count(*) filter (where r.body = '▼')::int as downs_received
-from (select unnest(tags) tag, cid from com where tags <> '{}' and parent_cid is null) t
+from (select unnest(tags) tag, cid from com
+       where tags <> '{}' and parent_cid is null and orgs = '{}' and usrs = '{}') t
 left join com r on r.parent_cid = t.cid and char_length(r.body) = 1
 group by t.tag;
 

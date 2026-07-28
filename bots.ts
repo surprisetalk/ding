@@ -644,20 +644,30 @@ export async function personaBot(api: Api, opts: {
   }
 }
 
-// Replies to fresh unanswered posts under #tag. respond returns the reply body,
-// or null to skip a post. Counts successful replies up to max.
-export async function tagResponderBot(api: Api, opts: {
-  tag: string;
+// Fresh, unanswered posts and comments that @-mention this bot. The single source of
+// the mention query — every mention-driven harness below builds on it.
+// TWO fetches on purpose: `/c`'s `comments=1` selects `parent_cid is not null`, i.e.
+// comments INSTEAD OF roots, not in addition to them. One query can't see both, and a bot
+// summoned from a brand-new post is the common case.
+export async function unansweredMentions<T extends Post>(api: Api): Promise<T[]> {
+  const answered = await getAnsweredCids(api, { since: Date.now() - MAX_AGE_MS });
+  console.log(`Already answered ${answered.size} posts in last 4h`);
+  const q = `/c?mention=${api.botUsername}&sort=new&limit=20`;
+  const posts = (await Promise.all([getJson<T[]>(api, q), getJson<T[]>(api, `${q}&comments=1`)])).flat();
+  const todo = posts.filter((p) => p.created_by !== api.botUsername && !answered.has(p.cid) && isFresh(p.created_at));
+  console.log(`Found ${todo.length} unanswered @${api.botUsername} posts`);
+  return todo;
+}
+
+// Replies to fresh unanswered @mentions. respond returns the reply body, or null to skip a
+// post — decide that CHEAPLY: a skipped mention is never marked answered, so it comes back
+// on every tick for the full MAX_AGE_MS window. Counts successful replies up to max.
+export async function mentionResponderBot(api: Api, opts: {
   max?: number;
   respond: (post: Post, ctx: Api) => string | null | Promise<string | null>;
 }) {
-  const answered = await getAnsweredCids(api, { since: Date.now() - MAX_AGE_MS });
-  console.log(`Already answered ${answered.size} posts in last 4h`);
-  const posts = await getJson<Post[]>(api, `/c?tag=${opts.tag}&sort=new&limit=20`);
-  const todo = posts.filter((p) => p.created_by !== api.botUsername && !answered.has(p.cid) && isFresh(p.created_at));
-  console.log(`Found ${todo.length} unanswered #${opts.tag} posts`);
-  let replies = 0;
-  for (const p of todo) {
+  let replies = 0, attempts = 0;
+  for (const p of await unansweredMentions(api)) {
     if (replies >= (opts.max ?? 10)) break;
     const body = await opts.respond(p, api);
     if (!body) {
@@ -665,9 +675,14 @@ export async function tagResponderBot(api: Api, opts: {
       continue;
     }
     console.log(`Replying to cid=${p.cid}`);
+    attempts++;
     if (await reply(api, p.cid, body)) replies++;
   }
   console.log(`Replied to ${replies} posts`);
+  // Every reply bounced (rate limit, deleted parent, 5xx). `max` bounds successes, not work,
+  // so staying quiet here would burn a full run's worth of respond() calls per tick and still
+  // report a green run to the fleet.
+  if (attempts && !replies) throw new Error(`@${api.botUsername}: ${attempts} replies attempted, none landed`);
 }
 
 // Answers @mentions that carry (or reply to) an image: fetch the image bytes, run
@@ -680,14 +695,7 @@ export async function imageMentionBot(api: Api, opts: {
     post: Post,
   ) => Promise<string | { bytes: Uint8Array; ext: string; contentType: string }>;
 }) {
-  const answered = await getAnsweredCids(api, { since: Date.now() - MAX_AGE_MS });
-  console.log(`Already answered ${answered.size} posts in last 4h`);
-  const posts = await getJson<Post[]>(api, `/c?mention=${api.botUsername}&comments=1&sort=new&limit=20`);
-  const unanswered = posts.filter((p) =>
-    p.created_by !== api.botUsername && !answered.has(p.cid) && isFresh(p.created_at)
-  );
-  console.log(`Found ${unanswered.length} unanswered mentions`);
-  for (const post of unanswered.slice(0, opts.max ?? 5)) {
+  for (const post of (await unansweredMentions(api)).slice(0, opts.max ?? 5)) {
     const imageUrl = await resolveImageUrl(api, post);
     if (!imageUrl) {
       console.log(`cid=${post.cid}: no image found, skipping`);

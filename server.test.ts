@@ -16,7 +16,7 @@ import {
   verifyRow,
 } from "./dht.ts";
 import { backfill } from "./backfill.ts";
-import { type Api, getPostedUrls, post } from "./bots.ts";
+import { type Api, getPostedUrls, post, unansweredMentions } from "./bots.ts";
 import { jsx } from "@hono/hono/jsx";
 import pg from "postgres";
 import { PGlite } from "@electric-sql/pglite";
@@ -2202,6 +2202,128 @@ Deno.test(
   }),
 );
 
+//// TAG DISCOVERY TESTS ///////////////////////////////////////////////////////
+
+// Seeded tag facts these steps lean on: `general` appears ONLY on the DM (357), `secret`/
+// `internal` orgs own 355/356, and BugHunter42's public roots are 301/311 (humor,bugs) +
+// 322 (humor,learning) — 355 (*secret, humor) and 357 (DM, general) must never count.
+Deno.test(
+  "tag discovery",
+  pglite((sql) => async (t) => {
+    // `GET /` reads the signed cookie, not Basic Auth — the compose form (and with it the
+    // preset chips) only renders for a cookie session.
+    const login = async (email: string) => {
+      const body = new FormData();
+      body.append("email", email);
+      body.append("password", "password1!");
+      const boot = await app.request("/login", { method: "POST", body });
+      const setCookie = boot.headers.get("set-cookie");
+      if (!setCookie) throw new Error(`no set-cookie on login as ${email}`);
+      return setCookie.split(";")[0];
+    };
+    // The chips live in one `.tag-presets` div; the feed below renders its own label links,
+    // so a whole-page substring search would happily match the wrong thing.
+    const presetsOf = (html: string) => html.match(/<div class="tag-presets">([\s\S]*?)<\/div>/)?.[1] ?? "";
+    const frontpage = async (cookie: string) =>
+      presetsOf(await (await app.request("/", { headers: { cookie } })).text());
+
+    await t.step("stat_tag counts public root posts only", async () => {
+      const rows = await sql`select tag, posts_count from stat_tag order by tag`;
+      const byTag = Object.fromEntries(rows.map((r: { tag: string; posts_count: number }) => [r.tag, r.posts_count]));
+      assertEquals(byTag.general, undefined, "DM-only tag leaked into stat_tag");
+      assertEquals(byTag.humor, 14); // 355 is *secret-scoped and also tagged #humor
+      assertEquals(byTag.coding, 7); // 356 is *internal-scoped and tagged #coding
+    });
+
+    await t.step("GET /u/:name shows top tags, ranked by ups, public posts only", async () => {
+      // Two upvotes on 322 (#humor #learning) lift `learning` above `bugs` (2 posts, 0 ups)
+      // and above `humor`, which shares the same 2 ups but is otherwise tied on ups.
+      await sql`insert into com (parent_cid, created_by, body) values
+        (322, 'DebuggerDiva', '▲'), (322, 'SyntaxSamurai', '▲')`;
+      const res = await app.request("/u/BugHunter42");
+      assertEquals(res.status, 200);
+      const html = await res.text();
+      assertStringIncludes(html, `href="/c?tag=humor" class="tag-preset"`);
+      assertStringIncludes(html, `href="/c?tag=learning" class="tag-preset"`);
+      assertStringIncludes(html, `href="/c?tag=bugs" class="tag-preset"`);
+      assertEquals(html.includes(`href="/c?tag=general"`), false, "DM-only tag rendered on a public profile");
+
+      const order = ["humor", "learning", "bugs"].map((tg) => html.indexOf(`/c?tag=${tg}`));
+      assertEquals(order[0] < order[1] && order[1] < order[2], true, `ups-first ordering broken: ${order}`);
+      assertStringIncludes(html, "▲2"); // count chip renders when ups > 0
+      assertEquals(html.includes("▲0"), false, "zero-up tags should render no count");
+    });
+
+    await t.step("GET /u/:name for a user with no posts renders no tag chips", async () => {
+      const html = await (await app.request("/u/jane_doe")).text();
+      assertEquals(html.includes("tag-preset"), false);
+    });
+
+    await t.step("frontpage presets keep personal tags past the alphabetical cutoff", async () => {
+      // The old query was `distinct on (tag) … order by tag … limit 20`, which kept the
+      // alphabetically-FIRST 20 and silently dropped the ranking. These z-tags sort last.
+      const zTags = Array.from({ length: 25 }, (_, i) => `zz_own_${String(i).padStart(2, "0")}`);
+      for (const tg of zTags) {
+        await sql`insert into com (parent_cid, created_by, body, tags) values (null, 'john_doe', ${"post " + tg}, ${[
+          tg,
+        ]})`;
+      }
+      const chips = await frontpage(await login("john@example.com"));
+      assertEquals(zTags.some((tg) => chips.includes(`>#${tg}<`)), true, "personal tags lost to alphabetical cutoff");
+      assertStringIncludes(chips, `>*secret<`); // writable org still pinned first
+    });
+
+    await t.step("frontpage presets never leak a private-only tag", async () => {
+      await sql`insert into com (parent_cid, created_by, body, tags, orgs) values
+        (null, 'BugHunter42', 'roadmap a', '{roadmap}', '{secret}'),
+        (null, 'BugHunter42', 'roadmap b', '{roadmap}', '{secret}'),
+        (null, 'BugHunter42', 'roadmap c', '{roadmap}', '{secret}')`;
+      // jane_doe reads no orgs, so #roadmap must be invisible to her however the dice fall.
+      const cookie = await login("jane@example.com");
+      for (let i = 0; i < 12; i++) {
+        assertEquals(
+          (await frontpage(cookie)).includes(">#roadmap<"),
+          false,
+          "private-only tag surfaced as a public chip",
+        );
+      }
+    });
+
+    await t.step("frontpage presets reserve discovery slots behind capped personal tags", async () => {
+      // john_doe now owns 25 z-tags + *secret. Personal chips must cap at 12 so the
+      // discovery slice can't be crowded out, and the whole row stays within 20.
+      const labels = [...(await frontpage(await login("john@example.com"))).matchAll(/class="tag-preset">([^<]*)/g)]
+        .map((m) => m[1]);
+      assertEquals(labels.length <= 20, true, `too many chips: ${labels.length}`);
+      assertEquals(labels.filter((l) => l.startsWith("#zz_own_") || l === "*secret").length, 12);
+      assertEquals(labels.some((l) => !l.startsWith("#zz_own_") && l !== "*secret"), true, "no discovery chips");
+    });
+
+    await t.step("frontpage discovery samples a rotating subset of an oversized pool", async () => {
+      // The seed only has 4 tags clearing `posts_count >= 3`, which is under the 8 disco
+      // slots — every load would return all 4 and the sampling would be untested. Widen the
+      // pool to 20 so selection genuinely has to choose.
+      for (let i = 0; i < 20; i++) {
+        const tg = `pool_${String(i).padStart(2, "0")}`;
+        await sql`insert into com (parent_cid, created_by, body, tags) values
+          (null, 'SyntaxSamurai', ${"a " + tg}, ${[tg]}),
+          (null, 'SyntaxSamurai', ${"b " + tg}, ${[tg]}),
+          (null, 'SyntaxSamurai', ${"c " + tg}, ${[tg]})`;
+      }
+      // jane_doe has no posts, orgs or upvotes, so every chip she sees is a discovery chip.
+      const cookie = await login("jane@example.com");
+      const union = new Set<string>();
+      for (let i = 0; i < 30; i++) {
+        const chips = [...(await frontpage(cookie)).matchAll(/class="tag-preset">([^<]*)/g)].map((m) => m[1]);
+        assertEquals(chips.length, 8, `discovery slice should fill its 8 slots, got ${chips.length}`);
+        assertEquals(new Set(chips).size, 8, `duplicate chips in one row: ${chips}`);
+        chips.forEach((ch) => union.add(ch));
+      }
+      assertEquals(union.size > 8, true, `discovery never rotated past one slate: ${[...union]}`);
+    });
+  }),
+);
+
 //// LABEL PARSING TESTS ///////////////////////////////////////////////////////
 
 Deno.test("parseLabels", async (t) => {
@@ -3127,6 +3249,35 @@ Deno.test(
       const bad = { ...api, auth: btoa("john@example.com:wrong!") };
       assertEquals(await post(bad, "should never land https://example.com/nope", "#bot"), false);
       assertEquals((await getPostedUrls(api)).has("https://example.com/nope"), false);
+    });
+
+    // The mocked bots.test.ts harness can't see this: only the real `/c` knows that
+    // `comments=1` selects `parent_cid is not null` — comments INSTEAD OF roots. A
+    // single-query unansweredMentions silently answers one kind and drops the other.
+    await t.step("unansweredMentions sees BOTH a root mention and a reply mention", async () => {
+      const botApi = { ...api, botUsername: "jane_doe" };
+      const rootBody = new FormData();
+      rootBody.append("body", "summoning the bot from a brand new post");
+      rootBody.append("tags", "@jane_doe #bots");
+      const rootRes = await app.request("/c", {
+        method: "POST",
+        body: rootBody,
+        headers: basic("john@example.com", "password1!"),
+      });
+      const rootCid = Number(new URL(rootRes.headers.get("location")!, "http://x").pathname.split("/")[2]);
+
+      const replyBody = new FormData();
+      replyBody.append("body", "and again from a reply @jane_doe");
+      await app.request(`/c/${rootCid}`, {
+        method: "POST",
+        body: replyBody,
+        headers: basic("john@example.com", "password1!"),
+      });
+
+      const seen = await unansweredMentions(botApi);
+      const bodies = seen.map((p) => p.body);
+      assertEquals(bodies.some((b) => b.includes("brand new post")), true, `root mention dropped: ${bodies}`);
+      assertEquals(bodies.some((b) => b.includes("from a reply")), true, `reply mention dropped: ${bodies}`);
     });
   }),
 );

@@ -1,5 +1,15 @@
 import { assertEquals, assertRejects, assertThrows } from "@std/assert";
-import { type Api, decodeEntities, extractPubDate, isFresh, isLinkPost, MAX_AGE_MS, paginate } from "./bots.ts";
+import {
+  type Api,
+  decodeEntities,
+  extractPubDate,
+  isFresh,
+  isLinkPost,
+  MAX_AGE_MS,
+  mentionResponderBot,
+  paginate,
+  type Post,
+} from "./bots.ts";
 
 Deno.test("isLinkPost: bare url → true", () => {
   assertEquals(isLinkPost("https://example.com/foo"), true);
@@ -158,4 +168,141 @@ Deno.test("paginate: throws past maxPages", async () => {
     Error,
     "maxPages=3",
   );
+});
+
+// ---- mentionResponderBot ----
+
+// Routes the two calls the harness makes: `/c?usr=…` (getAnsweredCids' dedup walk) and
+// `/c?mention=…` (the trigger query). POST /c/<cid> records a reply.
+const mentionApi = (opts: {
+  mentions: Partial<Post>[];
+  answered?: { parent_cid: number; created_at: string }[];
+  replyFails?: number[];
+}) => {
+  const replies: number[] = [];
+  const api: Api = {
+    apiUrl: "http://x",
+    auth: "auth",
+    botUsername: "bot_test",
+    fetch: (input, init) => {
+      const url = new URL(input);
+      if (init?.method === "POST") {
+        const cid = Number(url.pathname.split("/")[2]);
+        if (opts.replyFails?.includes(cid)) return Promise.resolve(new Response("nope", { status: 500 }));
+        replies.push(cid);
+        return Promise.resolve(new Response("", { status: 200 }));
+      }
+      // The real `/c` treats `comments=1` as comments INSTEAD OF roots, so the harness must
+      // issue both queries; serving mentions from only the root call proves it does.
+      const rows = url.searchParams.has("mention")
+        ? (url.searchParams.has("comments") ? [] : opts.mentions)
+        : (opts.answered ?? []);
+      return Promise.resolve(
+        new Response(JSON.stringify(rows), { status: 200, headers: { "content-type": "application/json" } }),
+      );
+    },
+  };
+  return { api, replies };
+};
+
+const mention = (cid: number, over: Partial<Post> = {}): Post => ({
+  cid,
+  parent_cid: null,
+  body: "@bot_test do the thing",
+  created_by: "alice",
+  created_at: new Date().toISOString(),
+  ...over,
+});
+
+// The reported bug: the old harness logged `#<tag>` while cowsay et al. answer @mentions.
+Deno.test("mentionResponderBot: logs the @handle, not a #tag", async () => {
+  const { api } = mentionApi({ mentions: [mention(1)] });
+  const lines: string[] = [];
+  const orig = console.log;
+  console.log = (...a: unknown[]) => void lines.push(a.join(" "));
+  try {
+    await mentionResponderBot(api, { respond: () => "hi" });
+  } finally {
+    console.log = orig;
+  }
+  assertEquals(lines.includes("Found 1 unanswered @bot_test posts"), true, lines.join("\n"));
+});
+
+Deno.test("mentionResponderBot: replies to a fresh mention", async () => {
+  const { api, replies } = mentionApi({ mentions: [mention(1)] });
+  await mentionResponderBot(api, { respond: () => "hi" });
+  assertEquals(replies, [1]);
+});
+
+Deno.test("mentionResponderBot: skips own posts, answered cids, and stale mentions", async () => {
+  const { api, replies } = mentionApi({
+    mentions: [
+      mention(1, { created_by: "bot_test" }),
+      mention(2),
+      mention(3, { created_at: new Date(Date.now() - MAX_AGE_MS - 1000).toISOString() }),
+      mention(4),
+    ],
+    answered: [{ parent_cid: 4, created_at: new Date().toISOString() }],
+  });
+  await mentionResponderBot(api, { respond: () => "hi" });
+  assertEquals(replies, [2]);
+});
+
+Deno.test("mentionResponderBot: a null respond skips without spending the max budget", async () => {
+  const { api, replies } = mentionApi({ mentions: [mention(1), mention(2)] });
+  await mentionResponderBot(api, { max: 1, respond: (p) => p.cid === 1 ? null : "hi" });
+  assertEquals(replies, [2]);
+});
+
+Deno.test("mentionResponderBot: max caps successful replies", async () => {
+  const { api, replies } = mentionApi({ mentions: [mention(1), mention(2), mention(3)] });
+  await mentionResponderBot(api, { max: 2, respond: () => "hi" });
+  assertEquals(replies, [1, 2]);
+});
+
+Deno.test("mentionResponderBot: a failed reply doesn't count toward max", async () => {
+  const { api, replies } = mentionApi({ mentions: [mention(1), mention(2)], replyFails: [1] });
+  await mentionResponderBot(api, { max: 1, respond: () => "hi" });
+  assertEquals(replies, [2]);
+});
+
+Deno.test("mentionResponderBot: no mentions → no replies", async () => {
+  const { api, replies } = mentionApi({ mentions: [] });
+  await mentionResponderBot(api, { respond: () => "hi" });
+  assertEquals(replies, []);
+});
+
+// Let it crash: a broken respond must surface to the fleet runner, not be swallowed.
+Deno.test("mentionResponderBot: a throwing respond propagates", async () => {
+  const { api } = mentionApi({ mentions: [mention(1)] });
+  await assertRejects(
+    () =>
+      mentionResponderBot(api, {
+        respond: () => {
+          throw new Error("respond exploded");
+        },
+      }),
+    Error,
+    "respond exploded",
+  );
+});
+
+Deno.test("mentionResponderBot: a mention with an unparseable timestamp throws", async () => {
+  const { api } = mentionApi({ mentions: [mention(1, { created_at: "not-a-date" })] });
+  await assertRejects(() => mentionResponderBot(api, { respond: () => "hi" }), Error, "invalid timestamp");
+});
+
+Deno.test("mentionResponderBot: throws when every reply attempt bounces", async () => {
+  const { api, replies } = mentionApi({ mentions: [mention(1), mention(2)], replyFails: [1, 2] });
+  await assertRejects(
+    () => mentionResponderBot(api, { respond: () => "hi" }),
+    Error,
+    "@bot_test: 2 replies attempted, none landed",
+  );
+  assertEquals(replies, []);
+});
+
+Deno.test("mentionResponderBot: all-null responds is quiet, not an error", async () => {
+  const { api } = mentionApi({ mentions: [mention(1)] });
+  await mentionResponderBot(api, { respond: () => null });
 });

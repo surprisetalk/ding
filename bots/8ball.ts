@@ -1,4 +1,4 @@
-import { type Api, tagResponderBot } from "../bots.ts";
+import { type Api, mentionResponderBot } from "../bots.ts";
 
 const ANSWERS = [
   "It is certain.",
@@ -24,7 +24,6 @@ const ANSWERS = [
 ];
 
 export default (api: Api) =>
-  tagResponderBot(api, {
-    tag: "8ball",
+  mentionResponderBot(api, {
     respond: (p) => `🎱 ${ANSWERS[p.cid % ANSWERS.length]}`,
   });

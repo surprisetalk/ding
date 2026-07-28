@@ -154,8 +154,16 @@ signed.
   302s to `/c/<cid>`, so an unfollowed redirect reads as failure on every single post. Bots must never `Deno.exit` (it
   would kill the server isolate); throw instead.
 - Most bots are thin configs over shared harnesses in `bots.ts`: `rssBot` (single RSS feed), `personaBot` (LLM replies),
-  `tagResponderBot` (reply to fresh `#tag` posts), `imageMentionBot` (transform an image from a @mention),
-  `dailyPostBot` (one gated post per run). Shared helpers: `sweepFeeds` (bounded-concurrency newest-per-feed),
+  `mentionResponderBot` (reply to fresh `@bot` mentions), `imageMentionBot` (transform an image from a @mention),
+  `dailyPostBot` (one gated post per run). The mention harnesses share `unansweredMentions` — the **single** definition
+  of the mention trigger, plus the own-post/answered/stale filter and its `Found N unanswered @<bot> posts` log. It
+  fires **two** `/c?mention=<bot>` fetches on purpose: `comments=1` selects `parent_cid is not null`, i.e. comments
+  **instead of** roots, so one query can never see both (this silently made every mention bot comment-only).
+  `cowsay`/`dice`/`8ball`/`sortinghat` are mention-triggered, **not** `#tag`-triggered (they used to be; `#cowsay` posts
+  no longer get answered). `mentionResponderBot`'s `max` bounds _successful_ replies, so it throws when it attempted
+  replies and none landed — otherwise a run that burns 20 LLM calls into a rate limit reports green. A `respond` that
+  returns null must decide cheaply: the mention isn't marked answered, so it returns every tick for the whole
+  `MAX_AGE_MS` window. Shared helpers: `sweepFeeds` (bounded-concurrency newest-per-feed),
   `redditFetch`/`parseRedditEntries`, `glitchSvg`/`glitchTwemojiToR2`, `fetchFreshPosts`, `atomTitleLink`,
   `parseTitleLinkComments`, `decodeEntities` (fixpoint HTML-entity decode, for feeds that double-encode)
 - `bots/checkmark.ts` is NOT part of the fleet (not in `bots/mod.ts`; consumed by `server.tsx` as `runCheckmark`)
@@ -172,6 +180,26 @@ Search and tagging use a unified label syntax:
 - `~domain` - synthetic label auto-extracted from every URL host in the body (stored in `domains` array, GIN indexed)
 
 Exported functions: `parseLabels()`, `encodeLabels()`, `decodeLabels()`, `formatLabels()`
+
+## Tag Discovery
+
+Two surfaces, both rendered as `.tag-preset` chips (`public/style.css`):
+
+- **Frontpage presets** (`GET /`, logged-in only, inside the compose form): `top_mine` — your writable `*orgs`, your own
+  labels, and tags you've upvoted — capped at **12** so the `disco` slice always keeps its **8** reserved slots. `disco`
+  is a _weighted random sample_ of `stat_tag` (`posts_count >= 3`) via the exponential-race trick
+  `order by -ln(greatest(random(), 1e-9)) / greatest(ups_received / ln(posts_count + 2), 0.05)`, so the row is fresh on
+  every load and better tags surface more often. Do **not** reintroduce
+  `select distinct on (tag) … order by tag …
+  limit N` — DISTINCT ON forces `tag` leftmost, which silently keeps the
+  alphabetically-first N and throws the ranking away (that was the bug).
+- **Profile top tags** (`User` component, both `GET /u/:name` and `GET /u`): `topTags(name)`, ranked by upvotes received
+  with post count as tiebreak, chips link to the global `/c?tag=<tag>` feed.
+
+**Both are world- or org-stranger-readable, so neither may use `visibleTo`** — they hard-filter to public root posts
+(`orgs = '{}' and usrs = '{}'`). `stat_tag` (`db.sql`) carries that same filter for the same reason: before, a tag used
+only inside a `*org` post could surface as a public frontpage chip. Side effect: `refresh_score`'s `tag_ups`/`tag_downs`
+signal no longer counts private posts.
 
 ## Body Formatting
 
