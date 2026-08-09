@@ -1500,10 +1500,25 @@ const botRe = /bot|crawl|spider|slurp|bing|facebook|google|yandex|baidu|duck|sog
 // Static assets need no cookie, no verified-set refresh, no unread count and no renderer.
 const assetRe = /\.(css|js|ico|png|svg|webmanifest)$/;
 
+// style.css and client.js carry no content hash in their path, so a long max-age would serve
+// stale JS after a deploy. Version the URL instead: DENO_DEPLOYMENT_ID changes every deploy,
+// so `?v=` is a new URL and the old one is never asked for again — which makes `immutable`
+// safe. Unset locally, where we then version nothing and cache nothing, so edits show up.
+export let assetV = Deno.env.get("DENO_DEPLOYMENT_ID") ?? "";
+export const setAssetV = (v: string) => (assetV = v); // tests only, like setSql
+const assetUrl = (p: string) => (assetV ? `${p}?v=${assetV}` : p);
+
 app.use("*", async (c, next) => {
   const url = new URL(c.req.url),
     ua = c.req.header("User-Agent") || "";
-  if (assetRe.test(c.req.path)) return next();
+  if (assetRe.test(c.req.path)) {
+    await next();
+    // Only the versioned URL is immutable — a bare /client.js must stay revalidated, or a
+    // client that guessed the path would pin this deploy's copy for a year.
+    if (assetV && c.req.query("v") === assetV && c.res.ok)
+      c.res.headers.set("cache-control", "public, max-age=31536000, immutable");
+    return;
+  }
   if (url.searchParams.getAll("tag").length > 3)
     throw new HTTPException(400, { message: "Too many tags. Use 3 or fewer." });
   if (url.search && botRe.test(ua)) return c.text("Forbidden", 403);
@@ -1535,7 +1550,7 @@ app.use("*", async (c, next) => {
             content="width=device-width, initial-scale=1.0"
           />
 
-          <link rel="stylesheet" href="/style.css" />
+          <link rel="stylesheet" href="${assetUrl("/style.css")}" />
         </head>
         <body ${n ? raw(`data-unread="${unread}"`) : ""}>
           <header>
@@ -1578,7 +1593,7 @@ app.use("*", async (c, next) => {
               </dialog>
             `
             : ""}
-          <script src="/client.js" defer></script>
+          <script src="${assetUrl("/client.js")}" defer></script>
         </body>
       </html>
     `)
@@ -3142,7 +3157,7 @@ app.get("/embed", async (c) => {
           <meta charset="UTF-8" />
           <meta name="viewport" content="width=device-width, initial-scale=1.0" />
           <base target="_blank" />
-          <link rel="stylesheet" href="https://ding.bar/style.css" />
+          <link rel="stylesheet" href="https://ding.bar${assetUrl("/style.css")}" />
         </head>
         <body class="embed">
                 ${inner}

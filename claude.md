@@ -52,10 +52,18 @@ makes postgres run that correlated subquery for every candidate row, not just th
 only (`Post` never touches `child_comments`), so it must NOT select a `child_comments` array — only `GET /c` does, and
 only `GET /c` needs `visibleTo` at the child + grandchild levels.
 
-**Client JS lives in `public/client.js`**, served statically and cached — it is NOT inlined into every page. Anything it
-needs from the server arrives as a `data-` attribute on `<body>` (currently `data-unread`, present only when logged in).
-The `app.use("*")` middleware early-returns on asset paths (`assetRe`), so a `/client.js` or `/style.css` hit costs no
-cookie read, no `refreshVerified`, and no unread query.
+**Client JS lives in `public/client.js`**, served statically and cached — it is NOT inlined into every page.
+
+**Asset caching**: `style.css`/`client.js` have no content hash in their path, so the HTML links them as
+`?v=${DENO_DEPLOYMENT_ID}` (`assetUrl`) and the middleware sets `cache-control: public, max-age=31536000, immutable`
+**only** when `?v=` matches the current deploy. A bare or stale-version path stays revalidated, so a client that guesses
+the path can't pin one deploy's copy for a year, and a deploy invalidates everything by changing the URL.
+`DENO_DEPLOYMENT_ID` is unset locally → no versioning and no caching, so edits show up. Tests override it with
+`setAssetV` rather than the env var, because setting `DENO_DEPLOYMENT_ID` would make `Deno.cron` register the bot fleet.
+The `assetRe` early-return must stay ABOVE the `botRe` check — assets now carry a query string, and that check 403s any
+crawler request with one. Anything it needs from the server arrives as a `data-` attribute on `<body>` (currently
+`data-unread`, present only when logged in). The `app.use("*")` middleware early-returns on asset paths (`assetRe`), so
+a `/client.js` or `/style.css` hit costs no cookie read, no `refreshVerified`, and no unread query.
 
 **Postgres connection**: `DATABASE_URL` is Neon's **`-pooler`** endpoint (transaction mode), so `server.tsx` sets
 `prepare: false`. Named prepared statements there outlive the client that created them and are reused by the next one,

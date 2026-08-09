@@ -48,6 +48,7 @@ import app, {
   replicate,
   resend,
   resolveName,
+  setAssetV,
   setSql,
   signupRate,
   stripe,
@@ -686,6 +687,36 @@ Deno.test(
       const js = await app.request("/client.js");
       assertEquals(js.status, 200);
       assertStringIncludes(await js.text(), "ding:compose-body");
+    });
+
+    // Unversioned (local dev): assets must stay revalidated so edits show up.
+    await t.step("assets are not cached without a deploy version", async () => {
+      for (const p of ["/client.js", "/style.css", "/client.js?v=whatever"])
+        assertEquals((await app.request(p)).headers.get("cache-control"), null, p);
+    });
+
+    // Versioned (deployed): ?v=<DENO_DEPLOYMENT_ID> is a fresh URL every deploy, so the old
+    // one is never requested again and immutable is safe. Tests can't set the real env var —
+    // that would make Deno.cron register the bot fleet — hence setAssetV.
+    await t.step("a versioned asset URL is immutable, a bare or stale one is not", async () => {
+      setAssetV("deploy123");
+      try {
+        const html = await (await app.request("/")).text();
+        assertStringIncludes(html, `<script src="/client.js?v=deploy123" defer></script>`);
+        assertStringIncludes(html, `<link rel="stylesheet" href="/style.css?v=deploy123" />`);
+        assertStringIncludes(
+          await (await app.request("/embed?url=https://x.example/a")).text(),
+          `href="https://ding.bar/style.css?v=deploy123"`,
+        );
+
+        const cc = async (p: string) => (await app.request(p)).headers.get("cache-control");
+        assertEquals(await cc("/client.js?v=deploy123"), "public, max-age=31536000, immutable");
+        assertEquals(await cc("/style.css?v=deploy123"), "public, max-age=31536000, immutable");
+        assertEquals(await cc("/client.js"), null); // bare path must not be pinned for a year
+        assertEquals(await cc("/client.js?v=olddeploy"), null); // a stale version must revalidate
+      } finally {
+        setAssetV("");
+      }
     });
 
     await t.step("data-unread is present only for logged-in viewers", async () => {
