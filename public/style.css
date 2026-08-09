@@ -10,8 +10,6 @@
   --code-bg: color-mix(in oklch, var(--fg) 7%, var(--bg));
   --surface-quiet: color-mix(in oklch, var(--fg) 3%, var(--bg));
 
-  --link: oklch(40% 0.18 268);
-  --visited: oklch(38% 0.15 310);
   --error: oklch(48% 0.16 28);
   --focus: oklch(55% 0.19 268);
 
@@ -42,8 +40,6 @@
   :root {
     --bg: oklch(5% 0.005 60);
     --fg: oklch(92% 0.006 85);
-    --link: oklch(78% 0.13 240);
-    --visited: oklch(75% 0.12 310);
     --error: oklch(72% 0.14 28);
     --focus: oklch(70% 0.15 240);
     --lh-prose: 1.6;

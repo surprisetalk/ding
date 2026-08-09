@@ -1,27 +1,26 @@
-import { type Api, extractImageUrl, getAnsweredCids, getJson, isFresh, MAX_AGE_MS, pick, reply } from "../bots.ts";
+import {
+  type Api,
+  extractImageUrl,
+  getAnsweredCids,
+  getJson,
+  getLastPostAge,
+  isFresh,
+  MAX_AGE_MS,
+  pick,
+  type Post as BotPost,
+  reply,
+} from "../bots.ts";
 
 const IMAGE_BOTS = ["@bot_lowpoly", "@bot_pixelsort", "@bot_dither"];
 const TEXT_BOTS = ["@bot_cowsay", "@bot_upgoerfive"];
 
-type Post = {
-  cid: number;
-  body: string;
-  created_by: string;
-  created_at: string;
-  child_comments: { body: string; created_by: string }[];
-};
+type Post = BotPost & { child_comments: { body: string; created_by: string }[] };
 
 const hasBotMention = (p: Post) =>
   p.child_comments.some((c) => c.created_by.startsWith("bot_") || /@bot_\w+/.test(c.body));
 
 export default async (api: Api) => {
-  // sort=new is load-bearing: the default hot sort returns the HOTTEST comment, whose
-  // age kept reading as >2h — the throttle never tripped and summoner summoned every tick.
-  const recent = await getJson<{ created_at: string }[]>(
-    api,
-    `/c?usr=${api.botUsername}&comments=1&sort=new&limit=1`,
-  );
-  const age = recent.length ? Date.now() - new Date(recent[0].created_at).getTime() : Infinity;
+  const age = await getLastPostAge(api, { replies: true });
   if (age < 7200000) {
     console.log(`Last post ${Math.round(age / 60000)}m ago, skipping`);
     return;

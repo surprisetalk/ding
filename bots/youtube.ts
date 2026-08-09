@@ -1,7 +1,7 @@
 import {
   type Api,
   atomTitleLink,
-  fetchTimeout,
+  fetchFeedText,
   firstMatch as m,
   getPostedUrls,
   post,
@@ -55,16 +55,13 @@ export default async (api: Api) => {
   };
 
   const fetchFeed = async (ch: Channel): Promise<Item[]> => {
-    const res = await fetchTimeout(FEED_URL(ch.id), FETCH_TIMEOUT_MS, {
-      "user-agent": UA,
-      accept: "application/atom+xml, application/xml;q=0.9, */*;q=0.5",
-    });
-    if (!res?.ok) return [];
-    try {
-      return parseEntries(await res.text(), ch); // a body that stalls mid-read skips this feed, not the sweep
-    } catch {
-      return [];
-    }
+    const xml = await fetchFeedText(
+      FEED_URL(ch.id),
+      UA,
+      "application/atom+xml, application/xml;q=0.9, */*;q=0.5",
+      FETCH_TIMEOUT_MS,
+    );
+    return xml ? parseEntries(xml, ch) : [];
   };
 
   // Real shorts return 200 at /shorts/{id}; regular videos return 303 to /watch?v=...

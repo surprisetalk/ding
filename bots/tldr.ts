@@ -1,4 +1,4 @@
-import { type Api, claude, fetchFreshPosts, getAnsweredCids, isFresh, MAX_AGE_MS, reply } from "../bots.ts";
+import { type Api, claude, getAnsweredCids, MAX_AGE_MS, pickCandidates, reply } from "../bots.ts";
 
 const SYSTEM = "Summarize in 1 short sentence (max 200 chars). " +
   "No preamble, no 'TLDR:' prefix, no sign-off, no hashtags, no quotes.";
@@ -26,13 +26,11 @@ const cleanOutput = (s: string) => {
 export default async (api: Api) => {
   const answered = await getAnsweredCids(api, { since: Date.now() - MAX_AGE_MS });
 
-  const posts = await fetchFreshPosts(api);
-
-  const candidates = posts.filter((p) =>
-    p.created_by !== api.botUsername && !answered.has(p.cid) && isFresh(p.created_at) &&
-    p.body.replace(/https?:\S+/g, "").trim().length >= MIN_BODY_LEN &&
-    !isQuoteHeavy(p.body)
-  );
+  const candidates = await pickCandidates(api, answered, {
+    minBodyLen: MIN_BODY_LEN,
+    excludeLinkPosts: false,
+    extra: (p) => !isQuoteHeavy(p.body),
+  });
 
   console.log(`Found ${candidates.length} long-body candidates`);
   for (const p of candidates) {

@@ -68,13 +68,6 @@ export type Usr = {
 
 export type TagStat = { tag: string; posts: number; ups: number };
 
-export type Org = {
-  name: string;
-  created_by: string;
-  stripe_sub_id: string | null;
-  created_at: Date;
-};
-
 export type ChildCom = {
   cid: number;
   parent_cid: number | null;
@@ -125,17 +118,7 @@ export type Com = {
 //// CONSTANTS & HELPERS ///////////////////////////////////////////////////////
 
 const escapeXml = (s: string) =>
-  s.replace(
-    /[&<>"']/g,
-    (m) =>
-      ({
-        "&": "&amp;",
-        "<": "&lt;",
-        ">": "&gt;",
-        '"': "&quot;",
-        "'": "&apos;",
-      })[m]!,
-  );
+  s.replace(/[&<>"']/g, (m) => `&${({ "&": "amp", "<": "lt", ">": "gt", '"': "quot", "'": "apos" })[m]};`);
 const extractFirstUrl = (b: string) => b.match(/https?:\/\/[^\s]+/)?.[0] || null;
 export const extractLinks = (b: string) => [...b.matchAll(/https:\/\/ding\.bar\/c\/(\d+)/g)].map((m) => parseInt(m[1]));
 export const extractMentions = (b: string) => [
@@ -159,11 +142,14 @@ export const extractDomains = (b: string): string[] => {
   return [...out];
 };
 
-const refreshScores = async (pid: string | number) => {
-  await sql`select refresh_score(array(
-    select cid from com where cid = ${pid} or ${pid}::int = any(links)
-  ))`;
-};
+// `links @> array[..]` (not `= any(links)`) so the gin index on links can serve it.
+// Never throws: callers run it AFTER the write has committed, so a failure here (statement
+// timeout as `com` grows, say) must not report the post as failed. Stale ranking is the
+// right degradation; the next write on the same cid refreshes it.
+const refreshScores = (pid: string | number) =>
+  sql`select refresh_score(array(
+    select cid from com where cid = ${pid} or links @> array[${pid}::int]
+  ))`.then(() => {}, (err) => console.error(`refresh_score failed for cid=${pid}:`, err));
 
 const FLAG_THRESHOLD = 3;
 
@@ -300,7 +286,15 @@ const validateEmailToken = async (
 type Sql = ReturnType<typeof pg>;
 export let sql: Sql = pg(
   Deno.env.get(`DATABASE_URL`)?.replace(/flycast/, "internal")!,
-  { database: "ding" },
+  // Every Deno Deploy isolate opens its own pool, so keep it small and let idle
+  // connections go. statement_timeout stops one pathological query pinning a slot.
+  {
+    database: "ding",
+    max: 3,
+    idle_timeout: 20,
+    connect_timeout: 10,
+    connection: { statement_timeout: 15_000 },
+  },
 );
 export const setSql = (s: Sql) => (sql = s);
 
@@ -394,27 +388,30 @@ export const ingestMsg = async (
 
   // Derivations (incl. the network thumbnail fetch) happen OUTSIDE the transaction.
   const body = kind === "msg" ? (payload.body as string) ?? "" : "";
-  const author = kind === "msg" ? (await sql`select name from usr where pubkey = ${pubkey}`)[0] : null;
-  // dht.usrs stays id-scoped (for auth-gated delivery); com.usrs resolves to local names
-  // (for the existing name-based feed ACL + rendering). CRITICAL: a DM (usrs non-empty)
-  // must NEVER project to com.usrs='{}', or the feed ACL would render it PUBLICLY — so when
-  // no recipient is local, fall back to the raw ids (non-empty, matches no local viewer).
-  const usrNames = kind === "msg" && usrs.length
-    ? (await sql<{ name: string }[]>`select name from usr where id = any(${usrs})`).map((r) => r.name)
-    : [];
-  const comUsrs = usrNames.length ? usrNames : usrs;
   // dht.tags stays sorted (canonical); com.tags keeps submission order so the rendered feed
   // is byte-for-byte unchanged for existing users (the local /c path passes the original order).
   const comTags = opts.comTags ?? tags;
   const parentHash = (payload.parent as string) ?? null;
-  const parentCid = kind !== "msg"
-    ? null
-    : opts.parentCid !== undefined
-    ? opts.parentCid
-    : parentHash
-    ? (await sql`select cid from com where hash = ${parentHash}`)[0]?.cid ?? null
-    : null;
-  const author_id = kind === "msg" ? await idOf(pubkey) : null;
+  // Independent lookups — serialized, this was four round trips before the transaction.
+  const [author, usrNames, parentCid, author_id] = await Promise.all([
+    kind === "msg" ? sql`select name from usr where pubkey = ${pubkey}`.then((r) => r[0]) : null,
+    // dht.usrs stays id-scoped (for auth-gated delivery); com.usrs resolves to local names
+    // (for the existing name-based feed ACL + rendering). CRITICAL: a DM (usrs non-empty)
+    // must NEVER project to com.usrs='{}', or the feed ACL would render it PUBLICLY — so when
+    // no recipient is local, fall back to the raw ids (non-empty, matches no local viewer).
+    kind === "msg" && usrs.length
+      ? sql<{ name: string }[]>`select name from usr where id = any(${usrs})`.then((r) => r.map((x) => x.name))
+      : [],
+    kind !== "msg"
+      ? null
+      : opts.parentCid !== undefined
+      ? opts.parentCid
+      : parentHash
+      ? sql`select cid from com where hash = ${parentHash}`.then((r) => r[0]?.cid ?? null)
+      : null,
+    kind === "msg" ? idOf(pubkey) : null,
+  ]);
+  const comUsrs = usrNames.length ? usrNames : usrs;
   const { mentions, links, domains, thumb } = await deriveBody(body, kind === "msg" && parentCid == null);
 
   // delivery scope (orgs/usrs) is meaningful only on msg rows; force '{}' elsewhere so a
@@ -547,6 +544,11 @@ const startDhtListener = async () => {
         where k = ${k} and orgs = '{}' and usrs = '{}'` as unknown as DhtFull[];
       if (!r) return; // private/missing → never fans out over WS
       for (const sub of wsSubs) if (matchesQ(r, sub.qs)) sub.onRow(r);
+      // A rejected promise must not be cached — otherwise one DB blip kills live-tail for
+      // the whole isolate, since listenerHandle never becomes truthy to clear it.
+    }).catch((e) => {
+      listenerStarting = null;
+      throw e;
     });
   }
   listenerHandle = await listenerStarting;
@@ -668,13 +670,11 @@ if (!Deno.env.get(`RESEND_API_KEY`)) {
   );
 }
 
-const resendErrBody = (err: unknown) => {
-  const r = (err as { response?: { body?: unknown } })?.response;
-  return r?.body ?? err;
-};
-
 const logEmailFailure = (where: string, email: string, err: unknown) =>
-  console.error(`${where} email_failed for ${email}:`, resendErrBody(err));
+  console.error(
+    `${where} email_failed for ${email}:`,
+    (err as { response?: { body?: unknown } })?.response?.body ?? err,
+  );
 
 const VERIFY_COOLDOWN = `5 minutes`;
 
@@ -832,20 +832,45 @@ const SortToggle = ({
   );
 };
 
-const pageHref = (base: string, cur: URLSearchParams, p: number) => {
-  const n = new URLSearchParams(cur);
-  n.set("p", String(p));
-  return `${base}?${n}`;
-};
-
-const Pagination = ({ base, cur, p, more }: { base: string; cur: URLSearchParams; p: number; more: boolean }) => (
-  <section>
-    <div class="pagination">
-      {p > 0 ? <a href={pageHref(base, cur, p - 1)}>prev</a> : <span />}
-      {more && <a href={pageHref(base, cur, p + 1)}>next</a>}
-    </div>
-  </section>
+// The #tag / *org / @user header above a filtered feed: same skeleton, different subject.
+const InfoBlock = (
+  { head, note, postTo }: { head: BodyNode; note: BodyNode; postTo: BodyNode },
+) => (
+  <div class="info-block">
+    <h2>{head}</h2>
+    <p class="note">{note}</p>
+    <p class="note-sm">{postTo}</p>
+  </div>
 );
+
+// The draw + attach pair, identical in the frontpage compose form and the reply form.
+const ComposeTools = () => (
+  <>
+    <button type="button" class="upload-btn" data-draw>draw</button>
+    <label class="upload-btn">
+      attach
+      <input type="file" multiple accept="image/*,video/mp4,video/webm,.pdf" data-upload hidden />
+    </label>
+  </>
+);
+
+const Pagination = ({ base, cur, p, more }: { base: string; cur: URLSearchParams; p: number; more: boolean }) => {
+  // set, not append: the current URL already carries p past page 0, and c.req.query reads the
+  // FIRST value — appending makes every prev/next a self-link.
+  const href = (to: number) => {
+    const n = new URLSearchParams(cur);
+    n.set("p", String(to));
+    return `${base}?${n}`;
+  };
+  return (
+    <section>
+      <div class="pagination">
+        {p > 0 ? <a href={href(p - 1)}>prev</a> : <span />}
+        {more && <a href={href(p + 1)}>next</a>}
+      </div>
+    </section>
+  );
+};
 
 const ActiveFilters = ({
   params,
@@ -897,8 +922,6 @@ const ActiveFilters = ({
     : <div class="active-filters" />;
 };
 
-const reactName = (k: string) => k === "▲" ? "upvote" : k === "▼" ? "downvote" : `react ${k}`;
-
 const Reactions = (c: Com | ChildCom, votesOnly?: boolean) =>
   Object.entries({
     "▲": 0,
@@ -912,7 +935,7 @@ const Reactions = (c: Com | ChildCom, votesOnly?: boolean) =>
       class={`reaction${(c.user_reactions || []).includes(k) ? " reacted" : ""}`}
     >
       <input type="hidden" name="body" value={k} />
-      <button type="submit" aria-label={reactName(k)}>
+      <button type="submit" aria-label={k === "▲" ? "upvote" : k === "▼" ? "downvote" : `react ${k}`}>
         {k} {v}
       </button>
     </form>
@@ -969,9 +992,6 @@ const inlineFmt = (s: string): BodyNode[] => {
   return out;
 };
 
-const heading = (level: number, children: BodyNode[]) =>
-  level === 1 ? <h3>{children}</h3> : level === 2 ? <h4>{children}</h4> : <h5>{children}</h5>;
-
 export const formatBody = (body: string): BodyNode[] => {
   const out: BodyNode[] = [];
   const parts = body.split(/(```[\s\S]*?```)/g);
@@ -1019,7 +1039,13 @@ export const formatBody = (body: string): BodyNode[] => {
       }
       const hm = ln.match(/^(#{1,6})\s+/);
       if (hm) {
-        out.push(heading(Math.min(hm[1].length, 3), inlineFmt(ln)));
+        out.push(
+          hm[1].length === 1
+            ? <h3>{inlineFmt(ln)}</h3>
+            : hm[1].length === 2
+            ? <h4>{inlineFmt(ln)}</h4>
+            : <h5>{inlineFmt(ln)}</h5>,
+        );
         i++;
         continue;
       }
@@ -1266,188 +1292,11 @@ const MIME_BY_EXT: Record<string, string> = {
   mp4: "video/mp4",
   webm: "video/webm",
 };
+// Mirrored in public/client.js (pre-flight check + user-facing copy) — change both.
 const MAX_UPLOAD_BYTES = 25 * 1024 * 1024;
 
 // Static client-side JS (uploads, drawing pad, search box, compose autosave). The
 // per-login notification poller is appended per-request in the "*" middleware.
-const CLIENT_SCRIPT = `
-    document.querySelectorAll("pre").forEach(x => {
-      x.innerHTML = x.innerHTML.replace(/(https?:\\/\\/\\S+)/g, u => {
-        // innerHTML's getter leaves quotes raw in text nodes — escape before attribute interpolation
-        const q = u.replace(/"/g, "&quot;");
-        const isImg = /\\.(jpe?g|png|gif|webp|svg)(\\?.*)?$/i.test(u) || /^https?:\\/\\/(i\\.redd\\.it|i\\.imgur\\.com|pbs\\.twimg\\.com)\\//i.test(u);
-        const isVid = /\\.(mp4|webm)(\\?.*)?$/i.test(u);
-        return isVid ? '<video src="'+q+'" class="pre-img" muted loop autoplay playsinline preload="metadata"></video><a href="'+q+'">'+u+'</a>'
-          : isImg ? '<img src="'+q+'" loading="lazy" class="pre-img"><a href="'+q+'">'+u+'</a>' : '<a href="'+q+'">'+u+'</a>';
-      });
-    });
-    (() => {
-      const alpha = "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789";
-      const randId = () => { const a = new Uint8Array(8); crypto.getRandomValues(a); let s = ""; for (const b of a) s += alpha[b % alpha.length]; return s; };
-      const extOf = (name, type) => {
-        const e = (name.split(".").pop() || "").toLowerCase();
-        if (["jpg","jpeg","png","gif","webp","pdf","mp4","webm"].includes(e)) return e === "jpeg" ? "jpg" : e;
-        if (type === "image/jpeg") return "jpg";
-        if (type === "image/png") return "png";
-        if (type === "image/gif") return "gif";
-        if (type === "image/webp") return "webp";
-        if (type === "application/pdf") return "pdf";
-        if (type === "video/mp4") return "mp4";
-        if (type === "video/webm") return "webm";
-        return "";
-      };
-      const insertAt = (ta, s) => {
-        const start = ta.selectionStart ?? ta.value.length, end = ta.selectionEnd ?? start;
-        const pre = ta.value.slice(0, start), post = ta.value.slice(end);
-        const sep = pre && !pre.endsWith("\\n") ? "\\n" : "";
-        ta.value = pre + sep + s + post;
-        const pos = (pre + sep + s).length;
-        ta.setSelectionRange(pos, pos);
-        ta.focus();
-      };
-      const pendings = new WeakMap();
-      const setPending = (form, d) => {
-        const btn = form && form.querySelector("button[type=submit]");
-        if (!btn) return;
-        if (!btn.dataset.label) btn.dataset.label = btn.textContent;
-        const c = (pendings.get(form) || 0) + d;
-        pendings.set(form, c);
-        btn.disabled = c > 0;
-        btn.textContent = c > 0 ? "uploading…" : btn.dataset.label;
-      };
-      const upload = async (ta, files) => {
-        const form = ta.closest("form");
-        for (const file of files) {
-          const ext = extOf(file.name, file.type);
-          if (!ext) { alert("unsupported file: " + file.name); continue; }
-          if (file.size > ${MAX_UPLOAD_BYTES}) { alert("too big (max 25 MB): " + file.name); continue; }
-          const id = randId() + "." + ext;
-          const url = "https://i.ding.bar/" + id;
-          insertAt(ta, url);
-          setPending(form, 1);
-          const fd = new FormData();
-          fd.append("id", id);
-          fd.append("file", file);
-          try {
-            const r = await fetch("/i", { method: "POST", credentials: "same-origin", body: fd });
-            if (!r.ok) { ta.value = ta.value.replace(url, "").replace(/\\n{3,}/g, "\\n\\n"); alert("upload failed (" + r.status + "): " + file.name); }
-          } catch (e) {
-            ta.value = ta.value.replace(url, "").replace(/\\n{3,}/g, "\\n\\n");
-            alert("upload error: " + file.name + " — " + e);
-          } finally { setPending(form, -1); }
-        }
-      };
-      document.querySelectorAll("input[type=file][data-upload]").forEach(inp => {
-        const ta = inp.closest("form")?.querySelector("textarea[name=body]");
-        if (!ta) return;
-        inp.onchange = async () => { await upload(ta, inp.files); inp.value = ""; };
-      });
-      const allTas = () => document.querySelectorAll("textarea[name=body]");
-      if (!allTas().length) return;
-      let lastTa = null;
-      document.addEventListener("focusin", e => { if (e.target.tagName === "TEXTAREA" && e.target.name === "body") lastTa = e.target; });
-      const targetTa = () => lastTa || allTas()[0];
-      const hasFiles = (e) => e.dataTransfer && [...(e.dataTransfer.types || [])].includes("Files");
-      let depth = 0;
-      document.addEventListener("dragenter", e => { if (!hasFiles(e)) return; depth++; document.body.classList.add("dropping"); });
-      document.addEventListener("dragleave", e => { if (!hasFiles(e)) return; depth = Math.max(0, depth - 1); if (!depth) document.body.classList.remove("dropping"); });
-      document.addEventListener("dragover", e => { if (hasFiles(e)) e.preventDefault(); });
-      document.addEventListener("drop", e => {
-        if (!hasFiles(e)) return;
-        e.preventDefault();
-        depth = 0; document.body.classList.remove("dropping");
-        const ta = targetTa();
-        if (ta && e.dataTransfer.files.length) upload(ta, e.dataTransfer.files);
-      });
-      const dlg = document.getElementById("draw-dialog");
-      if (dlg) {
-        const cv = dlg.querySelector("#draw-canvas");
-        const ctx = cv.getContext("2d");
-        ctx.lineCap = "round"; ctx.lineJoin = "round";
-        let tool = "pen", size = 4, drawing = false, last = null;
-        const reset = () => { ctx.fillStyle = "#fff"; ctx.fillRect(0, 0, cv.width, cv.height); };
-        reset();
-        const pos = e => {
-          const r = cv.getBoundingClientRect();
-          return { x: (e.clientX - r.left) * (cv.width / r.width), y: (e.clientY - r.top) * (cv.height / r.height) };
-        };
-        const stroke = (a, b) => {
-          ctx.strokeStyle = tool === "eraser" ? "#fff" : "#000";
-          ctx.lineWidth = size;
-          ctx.beginPath(); ctx.moveTo(a.x, a.y); ctx.lineTo(b.x, b.y); ctx.stroke();
-        };
-        const dot = p => {
-          ctx.fillStyle = tool === "eraser" ? "#fff" : "#000";
-          ctx.beginPath(); ctx.arc(p.x, p.y, size / 2, 0, Math.PI * 2); ctx.fill();
-        };
-        cv.addEventListener("pointerdown", e => {
-          e.preventDefault();
-          cv.setPointerCapture(e.pointerId);
-          drawing = true; last = pos(e); dot(last);
-        });
-        cv.addEventListener("pointermove", e => {
-          if (!drawing) return;
-          const p = pos(e); stroke(last, p); last = p;
-        });
-        const end = e => { if (drawing) { drawing = false; last = null; try { cv.releasePointerCapture(e.pointerId); } catch {} } };
-        cv.addEventListener("pointerup", end);
-        cv.addEventListener("pointercancel", end);
-        cv.addEventListener("pointerleave", end);
-        const setPressed = (group, sel) => {
-          dlg.querySelectorAll("[" + group + "]").forEach(b => b.setAttribute("aria-pressed", b === sel ? "true" : "false"));
-        };
-        dlg.addEventListener("click", e => {
-          const t = e.target;
-          if (!(t instanceof HTMLElement)) return;
-          if (t.dataset.tool) { tool = t.dataset.tool; setPressed("data-tool", t); }
-          else if (t.dataset.size) { size = +t.dataset.size; setPressed("data-size", t); }
-          else if (t.hasAttribute("data-clear")) reset();
-          else if (t.hasAttribute("data-cancel")) dlg.close();
-          else if (t.hasAttribute("data-insert")) {
-            const ta = targetTa();
-            if (!ta) { dlg.close(); return; }
-            cv.toBlob(b => {
-              if (b) upload(ta, [new File([b], "drawing.png", { type: "image/png" })]);
-              dlg.close();
-            }, "image/png");
-          }
-        });
-        dlg.addEventListener("click", e => { if (e.target === dlg) dlg.close(); });
-        document.querySelectorAll("[data-draw]").forEach(b => {
-          b.addEventListener("click", () => {
-            const ta = b.closest("form")?.querySelector("textarea[name=body]");
-            if (ta) lastTa = ta;
-            reset();
-            dlg.showModal();
-          });
-        });
-      }
-    })();
-    const fr = document.getElementById("search-form");
-    if (fr) fr.onsubmit = e => {
-      e.preventDefault();
-      const v = fr.querySelector('input[name="search"]').value, p = new URLSearchParams();
-      v.split(/\\s+/).filter(Boolean).forEach(t => {
-        const k = {"#":"tag","*":"org","@":"usr","~":"www"}[t[0]];
-        if (k) p.append(k, t.slice(1).toLowerCase()); else p.set("q", (p.get("q") ? p.get("q") + " " : "") + t);
-      });
-      window.location.href = "/c?" + p;
-    };
-    (() => {
-      const ta = document.querySelector('.upload-form textarea[name=body]');
-      if (!ta) return;
-      const KEY = "ding:compose-body";
-      const saved = sessionStorage.getItem(KEY);
-      if (saved && !ta.value) ta.value = saved;
-      sessionStorage.removeItem(KEY);
-      let submitted = false;
-      ta.form?.addEventListener("submit", () => { submitted = true; });
-      window.addEventListener("pagehide", () => {
-        if (submitted) return;
-        if (ta.value) sessionStorage.setItem(KEY, ta.value);
-      });
-    })();
-`;
 
 app.use("*", async (c, next) => {
   if (host(c) !== "i") return next();
@@ -1478,8 +1327,15 @@ export const clientIp = (c: Context): string =>
 
 // Sliding-window limiter over a Map of timestamps. Returns false when `k` is already at `max`
 // within `windowMs` (caller rejects); otherwise records the hit and returns true.
+// Keys are caller-supplied (IPs, pubkeys, names), so the map must not grow forever. One sweep
+// per window drops fully-expired keys; that bounds memory at "keys seen in the last window".
+const lastSweep = new WeakMap<Map<string, number[]>, number>();
 const rateHit = (m: Map<string, number[]>, k: string, max: number, windowMs: number): boolean => {
   const now = Date.now();
+  if (now - (lastSweep.get(m) ?? 0) > windowMs) {
+    lastSweep.set(m, now);
+    for (const [key, ts] of m) if (ts.every((t) => now - t >= windowMs)) m.delete(key);
+  }
   const fresh = (m.get(k) ?? []).filter((t) => now - t < windowMs);
   m.set(k, fresh);
   if (fresh.length >= max) return false;
@@ -1635,9 +1491,13 @@ app.use("*", async (c, next) => {
 
 const botRe = /bot|crawl|spider|slurp|bing|facebook|google|yandex|baidu|duck|sogou|semrush|ahref/i;
 
+// Static assets need no cookie, no verified-set refresh, no unread count and no renderer.
+const assetRe = /\.(css|js|ico|png|svg|webmanifest)$/;
+
 app.use("*", async (c, next) => {
   const url = new URL(c.req.url),
     ua = c.req.header("User-Agent") || "";
+  if (assetRe.test(c.req.path)) return next();
   if (url.searchParams.getAll("tag").length > 3)
     throw new HTTPException(400, { message: "Too many tags. Use 3 or fewer." });
   if (url.search && botRe.test(ua)) return c.text("Forbidden", 403);
@@ -1646,45 +1506,15 @@ app.use("*", async (c, next) => {
   else if (n === false) deleteCookie(c, "name", { path: "/" }); // stale cookie (e.g. COOKIE_SECRET rotated) → clear it
   if (!host(c)) await refreshVerified(); // keep the verified-handle set warm for HTML renders
   let unread = 0;
-  if (n && !host(c)) {
+  // /n/unread runs the same count itself and renders no nav, so counting here would double it.
+  if (n && !host(c) && c.req.path !== "/n/unread") {
     const [row] = await sql`
       select count(*)::int as c from com
-      where created_by != ${n}
-        and orgs <@ (select orgs_r from usr where name = ${n})::text[]
+      where ${notifWhere(n, sql`(select orgs_r from usr where name = ${n})::text[]`)}
         and created_at > (select last_seen_at from usr where name = ${n})
-        and (${n}::text = any(usrs) or parent_cid in (select cid from com where created_by = ${n}))
     `;
     unread = row?.c || 0;
   }
-  const scriptBody = CLIENT_SCRIPT + (n
-    ? `
-    (async () => {
-      if (!("Notification" in window)) return;
-      if (Notification.permission === "default") {
-        const b = document.createElement("button");
-        b.textContent = "🔔 enable notifications";
-        b.className = "notify-enable";
-        b.onclick = async () => { await Notification.requestPermission(); b.remove(); };
-        document.body.appendChild(b);
-      }
-      let last = ${unread};
-      setInterval(async () => {
-        try {
-          const r = await fetch("/n/unread", { credentials: "same-origin" });
-          if (!r.ok) return;
-          const d = await r.json();
-          if (d.count > last && Notification.permission === "granted") {
-            (d.latest || []).slice(0, d.count - last).forEach(x => {
-              const nn = new Notification("ding", { body: x.title });
-              nn.onclick = () => { window.open(x.url, "_blank"); nn.close(); };
-            });
-          }
-          last = d.count;
-        } catch {}
-      }, 60000);
-    })();
-    `
-    : "");
   const path = c.req.path;
   const cur = (p: string) => (path === p ? raw(' aria-current="page"') : "");
   c.setRenderer((content, props) =>
@@ -1701,7 +1531,7 @@ app.use("*", async (c, next) => {
 
           <link rel="stylesheet" href="/style.css" />
         </head>
-        <body>
+        <body ${n ? raw(`data-unread="${unread}"`) : ""}>
           <header>
             <section>
               <a href="/" class="brand"><span>✦</span>ding</a>
@@ -1742,9 +1572,7 @@ app.use("*", async (c, next) => {
               </dialog>
             `
             : ""}
-          <script>
-          ${raw(scriptBody)};
-          </script>
+          <script src="/client.js" defer></script>
         </body>
       </html>
     `)
@@ -1755,88 +1583,30 @@ app.use("*", async (c, next) => {
 app.get("/robots.txt", (c) => c.text("User-agent: *\\nDisallow: /*?*\\nCrawl-delay: 1"));
 app.get("/sitemap.txt", (c) => c.text("https://ding.bar/"));
 
-const defaultErrCopy: Record<
-  number,
-  { msg: string; action: HtmlEscapedString | Promise<HtmlEscapedString> }
-> = {
-  400: {
-    msg: "That request didn't look right. Check the form and try again.",
-    action: (
-      <p>
-        <a href="/">home</a>
-      </p>
-    ),
-  },
-  401: {
-    msg: "You need to log in to do that.",
-    action: (
-      <p>
-        <a href="/u">log in</a>
-      </p>
-    ),
-  },
-  403: {
-    msg: "You don't have access to that.",
-    action: (
-      <p>
-        <a href="/">home</a>
-      </p>
-    ),
-  },
-  404: {
-    msg: "That page doesn't exist.",
-    action: (
-      <p>
-        <a href="/">home</a>
-      </p>
-    ),
-  },
-  429: {
-    msg: "Too many requests. Try again in a minute.",
-    action: (
-      <p>
-        <a href="/">home</a>
-      </p>
-    ),
-  },
-};
-const fallbackErr = {
-  msg: "Something broke on our end. Try again in a moment, or email support@ding.bar.",
-  action: (
-    <p>
-      <a href="/">home</a>
-    </p>
-  ),
+const errCopy: Record<number, string> = {
+  400: "That request didn't look right. Check the form and try again.",
+  401: "You need to log in to do that.",
+  403: "You don't have access to that.",
+  404: "That page doesn't exist.",
+  429: "Too many requests. Try again in a minute.",
+  500: "Something broke on our end. Try again in a moment, or email support@ding.bar.",
 };
 
 app.onError((err, c) => {
-  const h = host(c);
-  if (err instanceof HTTPException) {
-    if (!h) {
-      const copy = defaultErrCopy[err.status] ?? fallbackErr;
-      c.status(err.status);
-      return c.render(
-        <section>
-          <p>{err.message || copy.msg}</p>
-          {copy.action}
-        </section>,
-        { title: `error ${err.status}` },
-      );
-    }
-    return err.getResponse();
-  }
-  console.error(err);
-  if (h === "api") return c.json({ error: fallbackErr.msg }, 500);
-  if (h === "rss") return c.text(fallbackErr.msg, 500);
-  c.status(500);
+  const h = host(c), http = err instanceof HTTPException, status = http ? err.status : 500;
+  if (!http) console.error(err);
+  if (http && h) return err.getResponse();
+  if (h === "api") return c.json({ error: errCopy[500] }, 500);
+  if (h === "rss") return c.text(errCopy[500], 500);
+  c.status(status);
   return c.render(
     <section>
-      <p>{fallbackErr.msg}</p>
+      <p>{(http && err.message) || errCopy[status] || errCopy[500]}</p>
       <p>
-        <a href="/">home</a>
+        <a href={status === 401 ? "/u" : "/"}>{status === 401 ? "log in" : "home"}</a>
       </p>
     </section>,
-    { title: "error" },
+    { title: `error ${status}` },
   );
 });
 
@@ -1844,11 +1614,36 @@ app.onError((err, c) => {
 // Builders are FUNCTIONS (fragments must read the live `sql` — tests swap it via setSql).
 // The feed ACL: post is visible if its orgs are within the viewer's readable orgs AND
 // it's not a DM — unless the viewer is a recipient or the author.
+// Both branches exist to keep the anonymous case indexable. gin's `<@` can't seek, so it
+// scans the whole orgs index — plain `orgs = '{}'` is exact. And a disjunct can't satisfy
+// com_feed_idx's predicate, so an anonymous viewer (me = "", which no usrs entry or
+// created_by can ever equal) gets `usrs = '{}'` as a top-level conjunct instead of an OR.
 const visibleTo = (rT: string[], me: string) =>
-  sql`orgs <@ ${rT}::text[] and (usrs = '{}' or ${me}::text = any(usrs) or created_by = ${me})`;
+  sql`${rT.length ? sql`orgs <@ ${rT}::text[]` : sql`orgs = '{}'`} and ${
+    me ? sql`(usrs = '{}' or ${me}::text = any(usrs) or created_by = ${me})` : sql`usrs = '{}'`
+  }`;
 
+type Frag = ReturnType<typeof visibleTo>;
+
+// A notification is someone else's post, inside my readable orgs, that either @-mentions me or
+// replies to something I wrote. Shared by the nav badge, GET /n and GET /n/unread — they each
+// had their own copy, and the badge's had already drifted to a correlated orgs_r subselect.
+// Columns are unqualified, so the /n cross-join's subquery must expose ONLY last_seen_at —
+// adding created_by/orgs/usrs/parent_cid to it would make this ambiguous at runtime.
+const notifWhere = (me: string, orgs: Frag) =>
+  sql`created_by != ${me} and orgs <@ ${orgs}
+      and (${me}::text = any(usrs) or parent_cid in (select cid from com where created_by = ${me}))`;
+
+// "top" sorts on the denormalized c_reactions hstore, not the reaction_count alias. Both are
+// per-row subqueries, but an alias in ORDER BY is evaluated for every candidate row rather
+// than the 25 returned — and reaction_count's subquery hits `com` while this one only reads
+// an hstore already on the row. Same counter refresh_score ranks on.
 const orderBy = (s: string) =>
-  s === "new" ? sql`created_at desc` : s === "top" ? sql`reaction_count desc, created_at desc` : sql`score desc`;
+  s === "new"
+    ? sql`created_at desc`
+    : s === "top"
+    ? sql`(select coalesce(sum(v::int), 0) from each(c_reactions) as e(k, v)) desc, created_at desc`
+    : sql`score desc`;
 
 // Per-row aggregates (comment count / reaction tallies / the viewer's own reactions),
 // repeated at every nesting level; `a` is the row alias at that level.
@@ -1895,7 +1690,9 @@ app.get("/", async (c) => {
     usrs = c.req.queries("usr") || [];
 
   const me = name || "";
-  const presets = await sql<{ tag: string }[]>`
+  // Only rendered inside the logged-in compose form, so anonymous hits must not pay for it.
+  const [presets, items] = await Promise.all([
+    !name ? [] : sql<{ tag: string }[]>`
     with
     own as (
       select unnest(tags) as t, '#' as p, max(created_at) as recency
@@ -1935,20 +1732,17 @@ app.get("/", async (c) => {
       select tag, 0 as ord, pri, recency, 0::bigint as rnd from top_mine
       union all select tag, 1, 0, now(), rnd from disco
     ) t order by ord, pri, recency desc, rnd
-  `;
-
-  const items = await sql<Com[]>`
-    select c.*, ${aggCols("c", me)},
-      array(select jsonb_build_object('body', ch.body, 'created_by', ch.created_by, 'cid', ch.cid, 'created_at', ch.created_at, 'c_flags', ch.c_flags,
-        ${aggPairs("ch", me)}
-      ) from com ch where ch.parent_cid = c.cid and char_length(ch.body) > 1 order by ch.created_at desc) as child_comments
+  `,
+    sql<Com[]>`
+    select c.*, ${aggCols("c", me)}
     from com c where parent_cid is null and char_length(c.body) > 0 and ${visibleTo(rT, me)}
     ${tags.length ? sql`and tags @> ${tags}::text[]` : sql``}
     ${orgs.length ? sql`and orgs @> ${orgs}::text[]` : sql``}
     ${usrs.length ? sql`and usrs @> ${usrs}::text[]` : sql``}
     order by ${orderBy(s)}
     offset ${p * 25} limit 25
-  `;
+  `,
+  ]);
 
   const cur = new URL(c.req.url).searchParams,
     meta = buildFilterTitle(cur);
@@ -1977,19 +1771,7 @@ app.get("/", async (c) => {
                 title="Add at least one #tag, *org, or @user before publishing"
                 value={decodeLabels(cur)}
               />
-              <button type="button" class="upload-btn" data-draw>
-                draw
-              </button>
-              <label class="upload-btn">
-                attach
-                <input
-                  type="file"
-                  multiple
-                  accept="image/*,video/mp4,video/webm,.pdf"
-                  data-upload
-                  hidden
-                />
-              </label>
+              <ComposeTools />
               <button type="submit">publish</button>
             </div>
             {presets.length > 0 && (
@@ -2247,6 +2029,17 @@ app.get("/signup", (c) => {
   );
 });
 
+// Three signup paths send the same verification mail and share one failure branch.
+const sendOrFail = async (c: Context, email: string, okUrl: string, where: string, qs: string) => {
+  try {
+    await sendVerify(email);
+    return c.redirect(okUrl);
+  } catch (err) {
+    logEmailFailure(where, email, err);
+    return c.redirect(`/signup?error=email_failed${qs}`);
+  }
+};
+
 app.post("/signup", async (c) => {
   const formData = await form(c);
   const email = formData.email,
@@ -2264,13 +2057,7 @@ app.post("/signup", async (c) => {
     if (existingByEmail.email_verified_at)
       return c.redirect(`/signup?error=already_verified${qs}`);
     // Unverified: idempotent resend so user isn't stuck.
-    try {
-      await sendVerify(email);
-      return c.redirect("/signup?ok");
-    } catch (err) {
-      logEmailFailure("/signup", email, err);
-      return c.redirect(`/signup?error=email_failed${qs}`);
-    }
+    return sendOrFail(c, email, "/signup?ok", "/signup", qs);
   }
 
   const [existingByName] = await sql`select name from usr where name = ${name}`;
@@ -2288,13 +2075,7 @@ app.post("/signup", async (c) => {
     select name, email from usr_
   `;
   if (!newUsr?.email) return c.redirect(`/signup?error=conflict${qs}`); // race: someone grabbed it between checks
-  try {
-    await sendVerify(newUsr.email);
-    return c.redirect("/signup?ok");
-  } catch (err) {
-    logEmailFailure("/signup", newUsr.email, err);
-    return c.redirect(`/signup?error=email_failed${qs}`);
-  }
+  return sendOrFail(c, newUsr.email, "/signup?ok", "/signup", qs);
 });
 
 app.post("/signup/resend", async (c) => {
@@ -2305,24 +2086,29 @@ app.post("/signup/resend", async (c) => {
   if (!u) return c.redirect(`/signup?error=conflict${qs}`); // pretend-success would mislead — ask them to sign up
   if (u.email_verified_at)
     return c.redirect(`/signup?error=already_verified${qs}`);
-  try {
-    await sendVerify(u.email);
-    return c.redirect("/signup?resent");
-  } catch (err) {
-    logEmailFailure("/signup/resend", email, err);
-    return c.redirect(`/signup?error=email_failed${qs}`);
-  }
+  return sendOrFail(c, u.email, "/signup?resent", "/signup/resend", qs);
 });
 
+// Error copy for GET /u, shared by the logged-out login form and the account hub.
+const uErrMsg: Record<string, BodyNode> = {
+  bad_login: (
+    <>
+      wrong email or password — try again or <a href="/forgot">reset your password</a>.
+    </>
+  ),
+  verify_resend_failed: "we couldn't resend your verification email. try again, or email support@ding.bar.",
+  already_invited: "that email already has an account or a pending invite.",
+};
+
 app.get("/u", async (c) => {
-  let name: string | undefined = (await getSignedCookie(c, cookieSecret, "name")) || undefined;
+  // Not viewer(c): a bad Basic header must 401 here, not fall through to the login page.
+  const name: string | undefined = c.get("name") ??
+    (c.req.header("Authorization")?.startsWith("Basic ")
+      ? (await basicAuthName(c)) ?? (() => {
+        throw new HTTPException(401, { message: "Invalid credentials." });
+      })()
+      : undefined);
   if (name) c.set("name", name);
-  else if (c.req.header("Authorization")?.startsWith("Basic ")) {
-    name = (await basicAuthName(c)) ?? undefined;
-    if (!name)
-      throw new HTTPException(401, { message: "Invalid credentials." });
-    c.set("name", name);
-  }
 
   const next = c.req.query("next") ?? "";
 
@@ -2330,25 +2116,10 @@ app.get("/u", async (c) => {
     const action = next ? `/login?next=${encodeURIComponent(next)}` : "/login";
     const err = c.req.query("error");
     const prefillEmail = c.req.query("email") ?? "";
-    const errMsg: Record<
-      string,
-      HtmlEscapedString | Promise<HtmlEscapedString>
-    > = {
-      bad_login: (
-        <p class="error">
-          wrong email or password — try again or <a href="/forgot">reset your password</a>.
-        </p>
-      ),
-      verify_resend_failed: (
-        <p class="error">
-          we couldn't resend your verification email. try again, or email support@ding.bar.
-        </p>
-      ),
-    };
     return c.render(
       <section>
         <h2>login</h2>
-        {err && errMsg[err]}
+        {err && uErrMsg[err] && <p class="error">{uErrMsg[err]}</p>}
         <form method="post" action={action}>
           <label>
             email <input type="email" name="email" value={prefillEmail} required />
@@ -2368,23 +2139,22 @@ app.get("/u", async (c) => {
     );
   }
 
-  const [usr] = await sql`
-    select name, bio, invited_by, password, orgs_r, orgs_w, pubkey,
-           (seckey_enc is not null) as custodial
-    from usr where name = ${name}
-  `;
+  const [[usr], invited, tags] = await Promise.all([
+    sql`
+      select name, bio, invited_by, password, orgs_r, orgs_w, pubkey,
+             (seckey_enc is not null) as custodial
+      from usr where name = ${name}
+    `,
+    sql`
+      select name, (email_verified_at is not null) as verified
+      from usr where invited_by = ${name} and name != ${name}
+      order by created_at desc
+    `,
+    topTags(name),
+  ]);
   if (!usr) return notFound();
   if (!usr.password) return c.redirect("/password");
-  const invited = await sql`
-    select name, (email_verified_at is not null) as verified
-    from usr where invited_by = ${name} and name != ${name}
-    order by created_at desc
-  `;
-  const accountErrMsg: Record<string, string> = {
-    verify_resend_failed: "we couldn't resend your verification email. try again later, or email support@ding.bar.",
-    already_invited: "that email already has an account or a pending invite.",
-  };
-  const accountErr = accountErrMsg[c.req.query("error") ?? ""];
+  const accountErr = uErrMsg[c.req.query("error") ?? ""];
   return c.render(
     <>
       {accountErr && (
@@ -2392,7 +2162,7 @@ app.get("/u", async (c) => {
           <p class="error">{accountErr}</p>
         </section>
       )}
-      <section>{User(usr as unknown as Usr, name, await topTags(name))}</section>
+      <section>{User(usr as unknown as Usr, name, tags)}</section>
       <section>
         <h2>bio</h2>
         <form method="post" action="/u">
@@ -2485,12 +2255,7 @@ const notifQuery = (name: string, orgs_r: string[]) =>
     case when ${name}::text = any(c.usrs) then 'mention' else 'reply' end as kind
   from com c
   cross join (select last_seen_at from usr where name = ${name}) u
-  where c.created_by != ${name}
-    and c.orgs <@ ${orgs_r}::text[]
-    and (
-      ${name}::text = any(c.usrs)
-      or c.parent_cid in (select cid from com where created_by = ${name})
-    )
+  where ${notifWhere(name, sql`${orgs_r}::text[]`)}
   order by c.created_at desc
   limit 100
 `;
@@ -2498,6 +2263,8 @@ const notifQuery = (name: string, orgs_r: string[]) =>
 app.get("/n", authed, async (c) => {
   const name = c.get("name");
   const [usr] = await sql`select orgs_r from usr where name = ${name}`;
+  // Sequential on purpose: notifQuery reads last_seen_at to mark rows unread, so the
+  // "mark read" update must land after it.
   const items = await notifQuery(name, usr?.orgs_r || []);
   await sql`update usr set last_seen_at = now() where name = ${name}`;
   if (host(c) === "api") return c.json(items);
@@ -2537,13 +2304,7 @@ app.get("/n/unread", authed, async (c) => {
   const rows = await sql<Pick<Com, "cid" | "body" | "created_by" | "parent_cid">[]>`
     select cid, body, created_by, parent_cid
     from com c
-    where created_by != ${name}
-      and c.created_at > ${usr.last_seen_at}
-      and orgs <@ ${rT}::text[]
-      and (
-        ${name}::text = any(usrs)
-        or parent_cid in (select cid from com where created_by = ${name})
-      )
+    where ${notifWhere(name, sql`${rT}::text[]`)} and c.created_at > ${usr.last_seen_at}
     order by created_at desc limit 10
   `;
   return c.json({
@@ -2560,16 +2321,19 @@ app.get("/u/:name", async (c) => {
   const viewerName = await viewer(c);
   if (viewerName) c.set("name", viewerName);
   const isOwner = viewerName && viewerName == profileName;
-  const [usr] = await sql`
-    select name, bio, invited_by
-      ${isOwner ? sql`, orgs_r, orgs_w` : sql``}
-    from usr where name = ${profileName}
-  `;
+  const [[usr], tags] = await Promise.all([
+    sql`
+      select name, bio, invited_by
+        ${isOwner ? sql`, orgs_r, orgs_w` : sql``}
+      from usr where name = ${profileName}
+    `,
+    topTags(profileName),
+  ]);
   if (!usr) return notFound();
   if (host(c) === "api") return c.json(usr, 200);
   return c.render(
     <>
-      <section>{User(usr as Usr, viewerName, await topTags(profileName))}</section>
+      <section>{User(usr as Usr, viewerName, tags)}</section>
       {isOwner && (
         <section>
           <p class="note-sm">
@@ -2729,28 +2493,10 @@ app.get("/o/:name", async (c) => {
             {members.map((m) => (
               <div class="member-row">
                 <a href={`/u/${m.name}`}>{Check(m.name)}@{m.name}</a>
-                {org.created_by === viewer && m.name !== viewer && (
-                  <form
-                    method="post"
-                    action={`/o/${org.name}/remove`}
-                    class="form-inline"
-                  >
+                {(org.created_by === viewer ? m.name !== viewer : m.name === viewer) && (
+                  <form method="post" action={`/o/${org.name}/remove`} class="form-inline">
                     <input type="hidden" name="name" value={m.name} />
-                    <button type="submit" class="btn-sm">
-                      remove
-                    </button>
-                  </form>
-                )}
-                {m.name === viewer && org.created_by !== viewer && (
-                  <form
-                    method="post"
-                    action={`/o/${org.name}/remove`}
-                    class="form-inline"
-                  >
-                    <input type="hidden" name="name" value={viewer} />
-                    <button type="submit" class="btn-sm">
-                      leave
-                    </button>
+                    <button type="submit" class="btn-sm">{org.created_by === viewer ? "remove" : "leave"}</button>
                   </form>
                 )}
               </div>
@@ -2944,20 +2690,8 @@ app.post("/c/:p?", async (c) => {
     }
   };
 
-  const now = Date.now();
-  for (const [k, ts] of postRate) {
-    const fresh = ts.filter((t) => now - t < POST_RATE_MS);
-    if (fresh.length) postRate.set(k, fresh);
-    else postRate.delete(k);
-  }
-  const times = postRate.get(n) ?? [];
-  if (times.length >= POST_RATE_MAX) {
-    throw new HTTPException(429, {
-      message: "slow down. try again in a minute.",
-    });
-  }
-  times.push(now);
-  postRate.set(n, times);
+  if (!rateHit(postRate, n, POST_RATE_MAX, POST_RATE_MS))
+    throw new HTTPException(429, { message: "slow down. try again in a minute." });
 
   const f = await c.req.formData(),
     b = f.get("body")?.toString() || "",
@@ -2971,13 +2705,14 @@ app.post("/c/:p?", async (c) => {
     prm_parent: number | null;
     prm_hash: string | null;
     domains: string[];
+    flaggers: string[];
   };
   let prm: Prm | undefined;
 
   if (pid) {
     [prm] = await sql<
       Prm[]
-    >`select tags, orgs, usrs, created_by, parent_cid as prm_parent, hash as prm_hash, domains from com where cid = ${pid}`;
+    >`select tags, orgs, usrs, created_by, parent_cid as prm_parent, hash as prm_hash, domains, flaggers from com where cid = ${pid}`;
     if (!prm)
       throw new HTTPException(404, { message: "Parent post not found." });
     if (
@@ -3033,18 +2768,16 @@ app.post("/c/:p?", async (c) => {
     usrs = l.usr;
   }
 
-  if (pid && b === "flag") {
-    const [prm2] =
-      await sql`select created_by, parent_cid as prm_parent, hash as prm_hash, flaggers from com where cid = ${pid}`;
-    const back = threadUrl(prm2.prm_parent, pid);
-    if (prm2.created_by === n) return c.redirect(`${back}?err=self-flag`);
-    if (prm2.prm_hash) {
+  if (pid && prm && b === "flag") {
+    const back = threadUrl(prm.prm_parent, pid);
+    if (prm.created_by === n) return c.redirect(`${back}?err=self-flag`);
+    if (prm.prm_hash) {
       // signed post → sign a flag row; ingestMsg recomputes c_flags from distinct flaggers
       const key = await ensureKey(n);
       await ingestMsg(
-        await signRow("flag", nowSec(), { target: prm2.prm_hash }, key.priv, key.pub),
+        await signRow("flag", nowSec(), { target: prm.prm_hash }, key.priv, key.pub),
       );
-    } else if (!prm2.flaggers.includes(n)) {
+    } else if (!prm.flaggers.includes(n)) {
       await sql`update com set c_flags = c_flags + 1, flaggers = array_append(flaggers, ${n}) where cid = ${pid}`;
     }
     return c.redirect(back);
@@ -3078,9 +2811,8 @@ app.post("/c/:p?", async (c) => {
     const r = refBack();
     if (r) return c.redirect(`${r}#${pid}`);
   }
-  const [pr] = pid ? await sql`select parent_cid from com where cid = ${pid}` : [null];
   return c.redirect(
-    pid ? pr?.parent_cid ? threadUrl(pr.parent_cid, pid) : `/c/${pid}#${cm.cid}` : `/c/${cm.cid}`,
+    pid ? prm?.prm_parent ? threadUrl(prm.prm_parent, pid) : `/c/${pid}#${cm.cid}` : `/c/${cm.cid}`,
   );
 });
 
@@ -3180,14 +2912,11 @@ app.get("/c/:cid?", async (c) => {
         await sql`select (select count(*)::int from usr where ${singleOrg} = any(orgs_r)) as member_count, (select created_by from org where name = ${singleOrg}) as created_by`
       )[0]
       : null;
-    const orgMembers = orgInfo?.member_count ?? null;
-    const orgCreatedBy = orgInfo?.created_by ?? null;
     const usrRow = singleUsr
       ? (
         await sql`select u.name, u.bio, (select count(*)::int from com where created_by = ${singleUsr} and parent_cid is null and orgs <@ ${rT}::text[]) as post_count from usr u where u.name = ${singleUsr}`
       )[0]
       : null;
-    const usrPostCount = usrRow?.post_count ?? null;
     const userMatches = q.q
       ? await sql<{ name: string }[]>`select name from usr
                    where name ilike ${"%" + q.q + "%"} or bio ilike ${"%" + q.q + "%"}
@@ -3207,46 +2936,43 @@ app.get("/c/:cid?", async (c) => {
           </form>
           <ActiveFilters params={cur} />
           {singleTag && (
-            <div class="info-block">
-              <h2>#{singleTag}</h2>
-              <p class="note">
-                {tagCount} post{tagCount === 1 ? "" : "s"}
-              </p>
-              <p class="note-sm">
-                <a href={`/?tag=${singleTag}`}>post to #{singleTag}</a>
-              </p>
-            </div>
+            <InfoBlock
+              head={<>#{singleTag}</>}
+              note={<>{tagCount} post{tagCount === 1 ? "" : "s"}</>}
+              postTo={<a href={`/?tag=${singleTag}`}>post to #{singleTag}</a>}
+            />
           )}
           {singleOrg && (
-            <div class="info-block">
-              <h2>*{singleOrg}</h2>
-              <p class="note">
-                {orgMembers} member{orgMembers === 1 ? "" : "s"}
-                {orgCreatedBy && (
-                  <>
-                    {" · "}created by <a href={`/u/${orgCreatedBy}`}>{Check(orgCreatedBy)}@{orgCreatedBy}</a>
-                    {" · "}
-                    <a href={`/o/${singleOrg}`}>settings</a>
-                  </>
-                )}
-              </p>
-              <p class="note-sm">
-                <a href={`/?org=${singleOrg}`}>post to *{singleOrg}</a>
-              </p>
-            </div>
+            <InfoBlock
+              head={<>*{singleOrg}</>}
+              note={
+                <>
+                  {orgInfo?.member_count} member{orgInfo?.member_count === 1 ? "" : "s"}
+                  {orgInfo?.created_by && (
+                    <>
+                      {" · "}created by{" "}
+                      <a href={`/u/${orgInfo.created_by}`}>{Check(orgInfo.created_by)}@{orgInfo.created_by}</a>
+                      {" · "}
+                      <a href={`/o/${singleOrg}`}>settings</a>
+                    </>
+                  )}
+                </>
+              }
+              postTo={<a href={`/?org=${singleOrg}`}>post to *{singleOrg}</a>}
+            />
           )}
           {singleUsr && usrRow && (
-            <div class="info-block">
-              <h2>{Check(singleUsr)}@{singleUsr}</h2>
-              <p class="note">
-                {usrPostCount} post{usrPostCount === 1 ? "" : "s"}
-                {" · "}
-                <a href={`/u/${singleUsr}`}>profile</a>
-              </p>
-              <p class="note-sm">
-                <a href={`/?usr=${singleUsr}`}>post to {Check(singleUsr)}@{singleUsr}</a>
-              </p>
-            </div>
+            <InfoBlock
+              head={<>{Check(singleUsr)}@{singleUsr}</>}
+              note={
+                <>
+                  {usrRow.post_count} post{usrRow.post_count === 1 ? "" : "s"}
+                  {" · "}
+                  <a href={`/u/${singleUsr}`}>profile</a>
+                </>
+              }
+              postTo={<a href={`/?usr=${singleUsr}`}>post to {Check(singleUsr)}@{singleUsr}</a>}
+            />
           )}
           {!singleTag && !singleOrg && !singleUsr && meta && <h2>{meta}</h2>}
           {q.q && userMatches.length > 0 && (
@@ -3279,7 +3005,7 @@ app.get("/c/:cid?", async (c) => {
   if (!post) return notFound();
   const backlinks = await sql<
     { cid: number; body: string }[]
-  >`select cid, body, created_at from com where parent_cid is null and ${post.cid} = any(links) and ${
+  >`select cid, body, created_at from com where parent_cid is null and links @> array[${post.cid}::int] and ${
     visibleTo(rT, n || "")
   } order by created_at desc limit 5`;
   const replies = (post.child_comments || []).filter(
@@ -3318,19 +3044,7 @@ app.get("/c/:cid?", async (c) => {
               >
               </textarea>
               <div class="post-form__row">
-                <button type="button" class="upload-btn" data-draw>
-                  draw
-                </button>
-                <label class="upload-btn">
-                  attach
-                  <input
-                    type="file"
-                    multiple
-                    accept="image/*,video/mp4,video/webm,.pdf"
-                    data-upload
-                    hidden
-                  />
-                </label>
+                <ComposeTools />
                 <button type="submit">reply</button>
               </div>
             </form>

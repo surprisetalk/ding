@@ -1,5 +1,6 @@
 import { type Api, imageMentionBot } from "../bots.ts";
 import sharp from "sharp";
+import { fitSharp } from "./images.ts";
 
 const THRESHOLD = 60;
 
@@ -8,12 +9,7 @@ function luminance(r: number, g: number, b: number): number {
 }
 
 async function pixelsort(imageBytes: Uint8Array): Promise<Uint8Array> {
-  const img = sharp(imageBytes);
-  const meta = await img.metadata();
-  const maxDim = 800;
-  const scale = Math.min(1, maxDim / Math.max(meta.width!, meta.height!));
-  const w = Math.round(meta.width! * scale);
-  const h = Math.round(meta.height! * scale);
+  const { img, w, h } = await fitSharp(imageBytes, 800);
 
   const { data } = await img.resize(w, h).removeAlpha().raw().toBuffer({ resolveWithObject: true });
   const pixels = new Uint8Array(data.buffer, data.byteOffset, data.byteLength);

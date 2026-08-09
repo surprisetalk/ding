@@ -21,9 +21,10 @@ create table usr (
   created_at timestamptz not null default current_timestamp
 );
 
-create index usr_email_idx on usr (email);
-create index usr_orgs_r_idx on usr using gin (orgs_r);
+-- `email citext unique` already indexes email, so no usr_email_idx here. No gin index on
+-- orgs_r either: every predicate on it is `x = any(orgs_r)`, which gin array_ops cannot serve.
 create index usr_id_idx on usr (id);
+create index usr_pubkey_idx on usr (pubkey);
 
 create table org (
   name citext primary key check (name ~ '^[0-9a-zA-Z_]{4,32}$'),
@@ -54,17 +55,8 @@ create table com (
   c_reactions hstore not null default ''::hstore,  -- reaction counts (e.g., '▲=>5,👍=>3')
   c_flags int not null default 0,       -- count of 'flag' replies
   flaggers citext[] not null default '{}',
-  -- Denormalized recommendation signals (maintained by refresh_score)
   domains text[] not null default '{}',  -- synthetic ~host tags, one per distinct URL host in body
-  author_ups int not null default 0,
-  author_downs int not null default 0,
-  author_posts_count int not null default 0,
-  tag_ups int not null default 0,
-  tag_downs int not null default 0,
-  domain_ups int not null default 0,
-  domain_downs int not null default 0,
-  repost_ups int not null default 0,
-  score timestamptz not null default current_timestamp,
+  score timestamptz not null default current_timestamp,  -- ranking key, maintained by refresh_score
   -- Root posts need a public tag or DM recipient
   constraint com_tags_pub_check check ((parent_cid is null and (tags <> '{}' or usrs <> '{}')) or parent_cid is not null)
 );
@@ -75,9 +67,14 @@ create index com_orgs_idx on com using gin (orgs);
 create index com_usrs_idx on com using gin (usrs);
 create index com_mentions_idx on com using gin (mentions);
 create index com_links_idx on com using gin (links);
-create index com_parent_cid_idx on com (parent_cid);
-create index com_created_by_idx on com (created_by);
+-- (parent_cid, created_at desc) also serves plain parent_cid lookups, so no separate index.
+create index com_parent_created_idx on com (parent_cid, created_at desc);
+create index com_by_created_idx on com (created_by, created_at desc);
+create index com_created_at_idx on com (created_at desc);
 create index com_score_idx on com (score desc);
+-- The default feed: public root posts by score. A bare score index makes the planner walk
+-- every comment row, and comments outgrow posts.
+create index com_feed_idx on com (score desc) where parent_cid is null and orgs = '{}' and usrs = '{}';
 create index com_domains_idx on com using gin (domains);
 create index com_parent_hash_idx on com (parent_hash);
 
@@ -106,7 +103,6 @@ create table dht (
 create unique index dht_seq_idx on dht (seq);
 create index dht_seen_idx on dht (seen_at);
 create index dht_id_idx on dht (id);
-create index dht_members_idx on dht using gin (members);
 create index dht_kind_ts_idx on dht (kind, pubkey, ts desc);
 create index dht_tags_idx on dht using gin (tags);
 create index dht_target_idx on dht (target);
@@ -162,8 +158,6 @@ create or replace function refresh_score(cids int[]) returns void language sql a
   targets as (select cid, tags, domains, links, created_by, created_at from com where cid = any(cids)),
   tag_agg as (
     select t.cid,
-      coalesce(max(st.ups_received), 0)::int as tag_ups,
-      coalesce(max(st.downs_received), 0)::int as tag_downs,
       coalesce(max(st.ups_received::float / ln(st.posts_count + 2)), 0) as tag_ups_idf,
       coalesce(max(st.downs_received::float / ln(st.posts_count + 2)), 0) as tag_downs_idf
     from targets t left join stat_tag st on st.tag = any(t.tags)
@@ -200,14 +194,6 @@ create or replace function refresh_score(cids int[]) returns void language sql a
     group by t.cid
   )
   update com c set
-    author_ups = ua.ups_received,
-    author_downs = ua.downs_received,
-    author_posts_count = ua.posts_count,
-    tag_ups = ta.tag_ups,
-    tag_downs = ta.tag_downs,
-    domain_ups = da.domain_ups,
-    domain_downs = da.domain_downs,
-    repost_ups = ra.repost_ups,
     score = c.created_at
       + interval '2 hours'   * ln(coalesce((c.c_reactions->'▲')::int, 0) + 1)
       - interval '6 hours'   * ln(coalesce((c.c_reactions->'▼')::int, 0) + 1)

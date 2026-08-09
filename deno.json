@@ -3,6 +3,9 @@
     "raw-imports",
     "cron"
   ],
+  "lint": {
+    "exclude": ["public"]
+  },
   "fmt": {
     "lineWidth": 120,
     "useBraces": "preferNone",

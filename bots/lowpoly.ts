@@ -1,5 +1,5 @@
 import { type Api, imageMentionBot } from "../bots.ts";
-import sharp from "sharp";
+import { fitSharp } from "./images.ts";
 
 function sampleColor(
   pixels: Uint8Array,
@@ -33,12 +33,7 @@ function triangleCentroid(p0: [number, number], p1: [number, number], p2: [numbe
 }
 
 async function lowpoly(imageBytes: Uint8Array): Promise<string> {
-  const img = sharp(imageBytes);
-  const meta = await img.metadata();
-  const maxDim = 800;
-  const scale = Math.min(1, maxDim / Math.max(meta.width!, meta.height!));
-  const w = Math.round(meta.width! * scale);
-  const h = Math.round(meta.height! * scale);
+  const { img, w, h } = await fitSharp(imageBytes, 800);
 
   const { data, info } = await img.resize(w, h).raw().ensureAlpha().toBuffer({ resolveWithObject: true });
   const pixels = new Uint8Array(data.buffer, data.byteOffset, data.byteLength);

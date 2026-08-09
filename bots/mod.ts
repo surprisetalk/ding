@@ -5,10 +5,9 @@ import album from "./album.ts";
 import aquarium from "./aquarium.ts";
 import arxiv from "./arxiv.ts";
 import bestof from "./bestof.ts";
-import bigfoot from "./bigfoot.ts";
+import { personas } from "./personas.ts";
 import blogs from "./blogs.ts";
 import bubbles from "./bubbles.ts";
-import caveman from "./caveman.ts";
 import clipart from "./clipart.ts";
 import codegolf from "./codegolf.ts";
 import cowsay from "./cowsay.ts";
@@ -23,7 +22,6 @@ import haiku from "./haiku.ts";
 import hmmm from "./hmmm.ts";
 import hn from "./hn.ts";
 import hypebot from "./hypebot.ts";
-import kenm from "./kenm.ts";
 import lobsters from "./lobsters.ts";
 import lowpoly from "./lowpoly.ts";
 import mathgif from "./mathgif.ts";
@@ -43,56 +41,52 @@ import tildes from "./tildes.ts";
 import tldr from "./tldr.ts";
 import upgoerfive from "./upgoerfive.ts";
 import welcome from "./welcome.ts";
-import wizard from "./wizard.ts";
 import youtube from "./youtube.ts";
 
 // The fleet. Key = bot name = bots/<name>.ts = the BOT_<NAME>_EMAIL/_PASSWORD env prefix
 // (uppercased). Static imports so Deno Deploy can bundle them; the cron in server.tsx and
 // `deno task bot <name>` are the only callers.
 export const BOTS: Record<string, (api: Api) => void | Promise<void>> = {
+  ...personas,
   "8ball": bot_8ball,
-  "album": album,
-  "aquarium": aquarium,
-  "arxiv": arxiv,
-  "bestof": bestof,
-  "bigfoot": bigfoot,
-  "blogs": blogs,
-  "bubbles": bubbles,
-  "caveman": caveman,
-  "clipart": clipart,
-  "codegolf": codegolf,
-  "cowsay": cowsay,
-  "critic": critic,
-  "dice": dice,
-  "dither": dither,
-  "emojiglitch": emojiglitch,
-  "estimation": estimation,
-  "geometry": geometry,
-  "grouch": grouch,
-  "haiku": haiku,
-  "hmmm": hmmm,
-  "hn": hn,
-  "hypebot": hypebot,
-  "kenm": kenm,
-  "lobsters": lobsters,
-  "lowpoly": lowpoly,
-  "mathgif": mathgif,
-  "museum": museum,
-  "ooh": ooh,
-  "pentameter": pentameter,
-  "pixelsort": pixelsort,
-  "reader": reader,
-  "reddit": reddit,
-  "remind": remind,
-  "replyguy": replyguy,
-  "smallweb": smallweb,
-  "sortinghat": sortinghat,
-  "stars": stars,
-  "summoner": summoner,
-  "tildes": tildes,
-  "tldr": tldr,
-  "upgoerfive": upgoerfive,
-  "welcome": welcome,
-  "wizard": wizard,
-  "youtube": youtube,
+  album,
+  aquarium,
+  arxiv,
+  bestof,
+  blogs,
+  bubbles,
+  clipart,
+  codegolf,
+  cowsay,
+  critic,
+  dice,
+  dither,
+  emojiglitch,
+  estimation,
+  geometry,
+  grouch,
+  haiku,
+  hmmm,
+  hn,
+  hypebot,
+  lobsters,
+  lowpoly,
+  mathgif,
+  museum,
+  ooh,
+  pentameter,
+  pixelsort,
+  reader,
+  reddit,
+  remind,
+  replyguy,
+  smallweb,
+  sortinghat,
+  stars,
+  summoner,
+  tildes,
+  tldr,
+  upgoerfive,
+  welcome,
+  youtube,
 };

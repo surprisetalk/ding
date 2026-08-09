@@ -8,7 +8,9 @@ import {
   MAX_AGE_MS,
   mentionResponderBot,
   paginate,
+  pickCandidates,
   type Post,
+  scanBot,
   verdictBot,
 } from "./bots.ts";
 import grouch from "./bots/grouch.ts";
@@ -494,4 +496,101 @@ Deno.test("verdictBot: bot-authored candidates are excluded", async () => {
       verdicts: { up: (api2, p) => api2.fetch(`http://x/c/${p.cid}`, { method: "POST", body: toForm({ body: "▲" }) }) },
     }));
   assertEquals(posts, [{ cid: 2, body: "▲" }]);
+});
+
+// ---- scanBot ----
+
+// Routes the answered walk (usr&comments=1 -> []) and the /c?sort=new feed; POST records replies.
+const scanApi = (fresh: Partial<Post>[]) => {
+  const replies: { cid: number; body: string }[] = [];
+  const api: Api = {
+    apiUrl: "http://x",
+    auth: "auth",
+    botUsername: "bot_test",
+    fetch: (input, init) => {
+      const url = new URL(input);
+      if (init?.method === "POST") {
+        replies.push({
+          cid: Number(url.pathname.split("/")[2]),
+          body: (init.body as FormData).get("body")?.toString() ?? "",
+        });
+        return Promise.resolve(new Response("", { status: 200 }));
+      }
+      const rows = url.searchParams.has("usr") ? [] : fresh;
+      return Promise.resolve(
+        new Response(JSON.stringify(rows), { status: 200, headers: { "content-type": "application/json" } }),
+      );
+    },
+  };
+  return { api, replies };
+};
+
+const scanPost = (cid: number, body: string, over: Partial<Post> = {}): Partial<Post> => ({
+  cid,
+  parent_cid: null,
+  body,
+  created_by: "alice",
+  created_at: new Date().toISOString(),
+  ...over,
+});
+
+Deno.test("scanBot: replies where match returns copy, skips where it returns null", async () => {
+  const { api, replies } = scanApi([scanPost(1, "yes"), scanPost(2, "no")]);
+  await scanBot(api, { match: (t) => t === "yes" ? "matched" : null });
+  assertEquals(replies, [{ cid: 1, body: "matched" }]);
+});
+
+Deno.test("scanBot: match sees the body with urls and mentions stripped", async () => {
+  const seen: string[] = [];
+  const { api } = scanApi([scanPost(1, "hello https://a.example @bob world")]);
+  await scanBot(api, {
+    match: (t) => {
+      seen.push(t);
+      return null;
+    },
+  });
+  assertEquals(seen, ["hello   world"]);
+});
+
+Deno.test("scanBot: bot authors and stale posts are skipped", async () => {
+  const { api, replies } = scanApi([
+    scanPost(1, "x", { created_by: "bot_other" }),
+    scanPost(2, "x", { created_at: new Date(Date.now() - MAX_AGE_MS - 1000).toISOString() }),
+    scanPost(3, "x"),
+  ]);
+  await scanBot(api, { match: () => "hi" });
+  assertEquals(replies.map((r) => r.cid), [3]);
+});
+
+Deno.test("scanBot: honours max", async () => {
+  const { api, replies } = scanApi([scanPost(1, "x"), scanPost(2, "x"), scanPost(3, "x")]);
+  await scanBot(api, { max: 2, match: () => "hi" });
+  assertEquals(replies.length, 2);
+});
+
+// ---- pickCandidates ----
+
+Deno.test("pickCandidates: drops own posts, answered cids, and short bodies", async () => {
+  const long = "a".repeat(40);
+  const { api } = scanApi([
+    scanPost(1, long, { created_by: "bot_test" }),
+    scanPost(2, long),
+    scanPost(3, "tiny"),
+    scanPost(4, long),
+  ]);
+  const got = await pickCandidates(api, new Set([4]));
+  assertEquals(got.map((p) => p.cid), [2]);
+});
+
+// minBodyLen measures prose, not raw length — a bare link must not qualify as commentary.
+Deno.test("pickCandidates: url text does not count toward minBodyLen", async () => {
+  const { api } = scanApi([scanPost(1, `https://example.com/${"x".repeat(60)}`)]);
+  assertEquals(await pickCandidates(api, new Set(), { excludeLinkPosts: false }), []);
+});
+
+Deno.test("pickCandidates: excludeBots and reacted filter", async () => {
+  const long = "a".repeat(40);
+  const { api } = scanApi([scanPost(1, long, { created_by: "bot_x" }), scanPost(2, long), scanPost(3, long)]);
+  const got = await pickCandidates(api, new Set(), { excludeBots: true, reacted: new Set([3]) });
+  assertEquals(got.map((p) => p.cid), [2]);
 });

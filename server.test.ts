@@ -669,6 +669,39 @@ Deno.test(
       assertEquals(res.status, 200);
     });
 
+    await t.step("pages load client.js from /public, not inline", async () => {
+      const text = await (await app.request("/")).text();
+      assertStringIncludes(text, `<script src="/client.js" defer></script>`);
+      assertEquals(text.includes("document.querySelectorAll"), false);
+      const js = await app.request("/client.js");
+      assertEquals(js.status, 200);
+      assertStringIncludes(await js.text(), "ding:compose-body");
+    });
+
+    await t.step("data-unread is present only for logged-in viewers", async () => {
+      assertEquals((await (await app.request("/")).text()).includes("data-unread"), false);
+      const loginBody = new FormData();
+      loginBody.append("email", "john@example.com");
+      loginBody.append("password", "password1!");
+      const boot = await app.request("/login", { method: "POST", body: loginBody });
+      const cookie = boot.headers.get("set-cookie")!.split(";")[0];
+      assertStringIncludes(await (await app.request("/", { headers: { cookie } })).text(), `data-unread="`);
+    });
+
+    // Regression: the p param must be REPLACED, not appended. c.req.query reads the first
+    // value, so an appended p made every prev/next link back to the page you were on.
+    await t.step("pagination links replace p instead of appending it", async () => {
+      const html = await (await app.request("/?p=1&sort=new")).text();
+      const links = [...html.matchAll(/<a href="([^"]*p=[^"]*)"[^>]*>(prev|next)</g)].map((m) => m[1]);
+      assertEquals(links.length > 0, true);
+      for (const href of links) {
+        const ps = new URLSearchParams(href.split("?")[1]).getAll("p");
+        assertEquals(ps.length, 1);
+        assertEquals(ps[0] === "1", false);
+      }
+      assertStringIncludes(html, "sort=new");
+    });
+
     await t.step("GET /?sort=new", async () => {
       const res = await app.request("/?sort=new");
       assertEquals(res.status, 200);
@@ -1977,9 +2010,53 @@ Deno.test(
       assertEquals(d.latest[0].title.includes("@jane_doe"), true);
     });
 
+    // /c is the only feed that exposes child bodies (HTML and JSON). GET / renders roots only,
+    // so it must not pay for a child_comments subquery it throws away.
+    await t.step("a private reply under a public root never reaches a stranger", async () => {
+      const [root] = await _sql`
+        insert into com (parent_cid, created_by, tags, body)
+        values (null, 'jane_doe', array['leaktest'], 'public root here') returning cid`;
+      await _sql`
+        insert into com (parent_cid, created_by, orgs, body)
+        values (${root.cid}, 'john_doe', array['secret'], 'org-only reply body')`;
+      // authored by jane, addressed to a third party: john is neither author nor recipient
+      await _sql`
+        insert into com (parent_cid, created_by, usrs, body)
+        values (${root.cid}, 'jane_doe', array['BugHunter42'], 'dm-only reply body')`;
+
+      const bodies = async (headers: Record<string, string>) => {
+        const feed = await (await app.request("/c?tag=leaktest", { headers })).json();
+        assertEquals(feed.length, 1);
+        return (feed[0].child_comments ?? []).map((ch: { body: string }) => ch.body);
+      };
+      const asJson = { Accept: "application/json" };
+      assertEquals(await bodies(asJson), []); // stranger sees neither
+      // the *secret member sees the org reply, still not jane's DM
+      assertEquals(await bodies({ ...asJson, ...basic("john@example.com", "password1!") }), ["org-only reply body"]);
+
+      // GET / renders roots only — it must not even fetch children
+      assertEquals((await (await app.request("/?tag=leaktest")).text()).includes("org-only reply body"), false);
+    });
+
     await t.step("/n requires auth", async () => {
       const res = await app.request("/n");
       assertEquals(res.status, 401);
+    });
+
+    // The nav badge, GET /n and GET /n/unread share one predicate (notifWhere). If they drift,
+    // the header count disagrees with the inbox. The badge must also not fire on /n/unread
+    // itself — that request renders no nav, so counting there is pure duplicate work.
+    await t.step("nav badge count agrees with /n/unread", async () => {
+      const loginBody = new FormData();
+      loginBody.append("email", "john@example.com");
+      loginBody.append("password", "password1!");
+      const boot = await app.request("/login", { method: "POST", body: loginBody });
+      const cookie = boot.headers.get("set-cookie")!.split(";")[0];
+
+      const { count } = await (await app.request("/n/unread", { headers: jAuth })).json();
+      const html = await (await app.request("/", { headers: { cookie } })).text();
+      assertStringIncludes(html, `data-unread="${count}"`);
+      assertStringIncludes(html, count ? `inbox (${count})` : ">inbox<");
     });
 
     await t.step("/c?mention= matches body @refs (top-level, no usrs)", async () => {

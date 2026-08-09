@@ -2,11 +2,10 @@ import {
   type Api,
   extractArticle,
   extractImageUrl,
-  fetchFreshPosts,
   firstLink,
   getAnsweredCids,
-  isFresh,
   MAX_AGE_MS,
+  pickCandidates,
   reply,
 } from "../bots.ts";
 
@@ -45,21 +44,19 @@ const smartTruncate = (text: string, max: number) => {
 export default async (api: Api) => {
   const answered = await getAnsweredCids(api, { since: Date.now() - MAX_AGE_MS });
 
-  const posts = await fetchFreshPosts(api);
-
-  const candidates = posts.filter((p) => {
-    if (p.created_by === api.botUsername || answered.has(p.cid) || !isFresh(p.created_at)) return false;
-    const url = firstLink(p.body);
-    if (!url) return false;
-    try {
-      const h = new URL(url).hostname;
-      if (h === "ding.bar" || h.endsWith(".ding.bar")) return false;
-      if (h === "youtube.com" || h.endsWith(".youtube.com") || h === "youtu.be") return false;
-    } catch {
-      return false;
-    }
-    if (extractImageUrl(p.body)) return false;
-    return true;
+  const candidates = await pickCandidates(api, answered, {
+    minBodyLen: 0,
+    excludeLinkPosts: false,
+    extra: (p) => {
+      const url = firstLink(p.body);
+      if (!url || extractImageUrl(p.body)) return false;
+      try {
+        const h = new URL(url).hostname;
+        return !/(^|\.)ding\.bar$/.test(h) && !/(^|\.)youtube\.com$/.test(h) && h !== "youtu.be";
+      } catch {
+        return false;
+      }
+    },
   });
 
   console.log(`Found ${candidates.length} link candidates`);

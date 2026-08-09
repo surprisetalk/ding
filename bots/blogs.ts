@@ -1,7 +1,7 @@
 import {
   type Api,
   atomTitleLink,
-  fetchTimeout,
+  fetchFeedText,
   firstMatch as m,
   getPostedUrls,
   post,
@@ -48,16 +48,13 @@ const parseItems = (xml: string, b: Blog): Item[] => {
 };
 
 const fetchFeed = async (b: Blog): Promise<Item[]> => {
-  const res = await fetchTimeout(b.feed!, FETCH_TIMEOUT_MS, {
-    "user-agent": UA,
-    accept: "application/rss+xml, application/atom+xml, application/xml;q=0.9, */*;q=0.5",
-  });
-  if (!res?.ok) return [];
-  try {
-    return parseItems(await res.text(), b); // a body that stalls mid-read skips this feed, not the sweep
-  } catch {
-    return [];
-  }
+  const xml = await fetchFeedText(
+    b.feed!,
+    UA,
+    "application/rss+xml, application/atom+xml, application/xml;q=0.9, */*;q=0.5",
+    FETCH_TIMEOUT_MS,
+  );
+  return xml ? parseItems(xml, b) : [];
 };
 
 export default async (api: Api) => {

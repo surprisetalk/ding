@@ -1,4 +1,4 @@
-import { type Api, dailyPostBot, glitchTwemojiToR2, seededRng, todaySeed } from "../bots.ts";
+import { type Api, dailyPostBot, dupeLayers, glitchTwemojiToR2, noiseRects, seededRng, todaySeed } from "../bots.ts";
 
 const TWEMOJI_CODEPOINTS = [
   "1f600",
@@ -64,35 +64,15 @@ export default (api: Api) =>
         pathAmp: 4,
         hexProb: 0.1,
         hexShift: 4,
-        decorate: (out, rng) => {
-          let extras = "";
-          const dupeCount = Math.floor(rng() * 2);
-          for (let i = 0; i < dupeCount; i++) {
-            const tx = (rng() - 0.5) * 6;
-            const ty = (rng() - 0.5) * 6;
-            const rot = Math.floor(rng() * 10 - 5);
-            extras += `<g transform="translate(${tx.toFixed(1)},${ty.toFixed(1)}) rotate(${rot})" opacity="${
-              (0.1 + rng() * 0.2).toFixed(2)
-            }">`;
-            const pathMatch = out.match(/<path[^>]*\/>/);
-            if (pathMatch) extras += pathMatch[0];
-            extras += `</g>`;
-          }
-          const rectCount = Math.floor(rng() * 2);
-          for (let i = 0; i < rectCount; i++) {
-            const x = Math.floor(rng() * 36);
-            const y = Math.floor(rng() * 36);
-            const w = 2 + Math.floor(rng() * 8);
-            const h = 1 + Math.floor(rng() * 2);
-            const r = Math.floor(rng() * 256);
-            const g = Math.floor(rng() * 256);
-            const b = Math.floor(rng() * 256);
-            extras += `<rect x="${x}" y="${y}" width="${w}" height="${h}" fill="rgb(${r},${g},${b})" opacity="${
-              (0.05 + rng() * 0.15).toFixed(2)
-            }"/>`;
-          }
-          return extras;
-        },
+        decorate: (out, rng) =>
+          dupeLayers(out, rng, { count: Math.floor(rng() * 2), jitter: 6, rotate: 5 }) +
+          noiseRects(rng, {
+            count: Math.floor(rng() * 2),
+            x: () => Math.floor(rng() * 36),
+            w: () => 2 + Math.floor(rng() * 8),
+            h: () => 1 + Math.floor(rng() * 2),
+            opacity: () => 0.05 + rng() * 0.15,
+          }),
       });
       return `${r2Url}\n\nglitched clipart\n\nsource: ${src}`;
     },

@@ -46,7 +46,6 @@ create table if not exists dht (
 create unique index if not exists dht_seq_idx on dht (seq);
 create index if not exists dht_seen_idx on dht (seen_at);
 create index if not exists dht_id_idx on dht (id);
-create index if not exists dht_members_idx on dht using gin (members);
 create index if not exists dht_kind_ts_idx on dht (kind, pubkey, ts desc);
 create index if not exists dht_tags_idx on dht using gin (tags);
 create index if not exists dht_target_idx on dht (target);
@@ -57,6 +56,101 @@ create table if not exists used_nonce (
   exp   bigint not null
 );
 create index if not exists used_nonce_exp_idx on used_nonce (exp);
+
+-- Index gaps found by profiling. com had no created_at index at all, so every ?sort=new
+-- (which is what every bot uses) sorted the whole table; usr.pubkey was a seq scan on every
+-- ingested dht row. com_parent_created_idx supersedes com_parent_cid_idx, and usr_email_idx
+-- always duplicated the `email citext unique` constraint index — both are dropped last, after
+-- their replacements exist.
+create index concurrently if not exists com_created_at_idx on com (created_at desc);
+create index concurrently if not exists com_by_created_idx on com (created_by, created_at desc);
+create index concurrently if not exists com_parent_created_idx on com (parent_cid, created_at desc);
+create index concurrently if not exists usr_pubkey_idx on usr (pubkey);
+create index concurrently if not exists com_feed_idx on com (score desc)
+  where parent_cid is null and orgs = '{}' and usrs = '{}';
+drop index concurrently if exists com_parent_cid_idx;
+drop index concurrently if exists com_created_by_idx;
+drop index concurrently if exists usr_email_idx;
+-- Unreachable gin indexes: both columns are only ever read with `x = any(col)`, which
+-- gin array_ops cannot serve, and dht.members is read off a materialized subquery besides.
+drop index concurrently if exists usr_orgs_r_idx;
+drop index concurrently if exists dht_members_idx;
+
+-- refresh_score no longer writes the eight denormalized signal columns below (nothing ever
+-- read them; the score expression uses the CTEs directly). Replace the function FIRST, then
+-- drop the columns, so no write ever references a missing column.
+create or replace function refresh_score(cids int[]) returns void language sql as $$
+  with
+  targets as (select cid, tags, domains, links, created_by, created_at from com where cid = any(cids)),
+  tag_agg as (
+    select t.cid,
+      coalesce(max(st.ups_received::float / ln(st.posts_count + 2)), 0) as tag_ups_idf,
+      coalesce(max(st.downs_received::float / ln(st.posts_count + 2)), 0) as tag_downs_idf
+    from targets t left join stat_tag st on st.tag = any(t.tags)
+    group by t.cid
+  ),
+  dom_agg as (
+    select t.cid,
+      coalesce(max(sd.ups_received), 0)::int as domain_ups,
+      coalesce(max(sd.downs_received), 0)::int as domain_downs
+    from targets t left join stat_domain sd on sd.domain = any(t.domains)
+    group by t.cid
+  ),
+  repost_agg as (
+    select t.cid, coalesce(sum(coalesce((c2.c_reactions->'▲')::int, 0))::int, 0) as repost_ups
+    from targets t left join com c2 on c2.cid = any(t.links)
+    group by t.cid
+  ),
+  usr_agg as (
+    select t.cid,
+      coalesce(su.posts_count, 0) as posts_count,
+      coalesce(su.ups_received, 0) as ups_received,
+      coalesce(su.downs_received, 0) as downs_received
+    from targets t left join stat_usr su on su.uid = t.created_by
+  ),
+  burst_agg as (
+    select t.cid, count(c2.cid)::int as burst
+    from targets t left join com c2
+      on c2.created_by = t.created_by
+     and c2.cid <> t.cid
+     and c2.parent_cid is null
+     and char_length(c2.body) > 0
+     and c2.created_at >= t.created_at - interval '1 hour'
+     and c2.created_at <= t.created_at + interval '1 hour'
+    group by t.cid
+  )
+  update com c set
+    score = c.created_at
+      + interval '2 hours'   * ln(coalesce((c.c_reactions->'▲')::int, 0) + 1)
+      - interval '6 hours'   * ln(coalesce((c.c_reactions->'▼')::int, 0) + 1)
+      + interval '1 hour'    * ln(ua.ups_received::float / ln(ua.posts_count + 2) + 1)
+      - interval '3 hours'   * ln(ua.downs_received::float / ln(ua.posts_count + 2) + 1)
+      - interval '48 hours'  * (case when c.created_by like 'bot_%' then 1 else 0 end)
+      + interval '1 hour'    * ln(ta.tag_ups_idf + 1)
+      - interval '3 hours'   * ln(ta.tag_downs_idf + 1)
+      + interval '1 hour'    * ln(c.c_comments + 1)
+      + interval '1 hour'    * ln(da.domain_ups + 1)
+      - interval '3 hours'   * ln(da.domain_downs + 1)
+      - interval '30 minutes'* ln(ua.posts_count + 1)
+      - interval '4 hours'   * ln(greatest(0, ba.burst - 2) + 1)
+      - interval '2 hours'   * ln(ra.repost_ups + 1)
+      + interval '45 minutes'* (case when c.thumb is not null and c.thumb not like 'https://www.google.com/s2/favicons%' then 1 else 0 end)
+  from tag_agg ta, dom_agg da, repost_agg ra, usr_agg ua, burst_agg ba
+  where c.cid = any(cids)
+    and ta.cid = c.cid and da.cid = c.cid and ra.cid = c.cid and ua.cid = c.cid and ba.cid = c.cid;
+$$;
+
+-- Dropping them removes eight values from every `select c.*` feed row and eight assignments
+-- from every write. ⚠ IRREVERSIBLE — the function above must already be replaced.
+alter table com
+  drop column if exists author_ups,
+  drop column if exists author_downs,
+  drop column if exists author_posts_count,
+  drop column if exists tag_ups,
+  drop column if exists tag_downs,
+  drop column if exists domain_ups,
+  drop column if exists domain_downs,
+  drop column if exists repost_ups;
 
 -- stat_tag: restrict the tag rollup to PUBLIC root posts. Previously it aggregated
 -- *org and @user rows too, so a tag used only inside a private post could surface as a

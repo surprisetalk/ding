@@ -121,6 +121,24 @@ export const fetchTimeout = async (
 
 // Worker-pool sweep over many feeds: fetch each concurrently (bounded), keep each
 // feed's newest item inside the freshness window.
+// Fetch a syndication feed as text. A body that stalls mid-read skips this feed, not the sweep.
+export const fetchFeedText = async (url: string, ua: string, accept: string, timeoutMs: number) => {
+  const res = await fetchTimeout(url, timeoutMs, { "user-agent": ua, accept });
+  if (!res?.ok) return null;
+  return await res.text().catch(() => null);
+};
+
+// One bad feed skips itself, never the sweep: these bots read dozens of uncurated public
+// feeds, and a single oversized body (parser RangeError) used to take the whole run with it.
+export const sweepOne = async <F, T>(f: F, fetchOne: (f: F) => Promise<T[]>): Promise<T[]> => {
+  try {
+    return await fetchOne(f);
+  } catch (err) {
+    console.warn(`feed ${String(f)} failed: ${(err as Error).message}`);
+    return [];
+  }
+};
+
 export async function sweepFeeds<F, T>(
   sample: F[],
   concurrency: number,
@@ -133,7 +151,7 @@ export async function sweepFeeds<F, T>(
   await Promise.all(
     Array.from({ length: concurrency }, async () => {
       while (idx < sample.length) {
-        const fresh = (await fetchOne(sample[idx++])).filter((i) => ts(i) > cutoff);
+        const fresh = (await sweepOne(sample[idx++], fetchOne)).filter((i) => ts(i) > cutoff);
         fresh.sort((a, b) => ts(b) - ts(a));
         if (fresh[0]) newest.push(fresh[0]);
       }
@@ -207,6 +225,42 @@ export function glitchSvg(svg: string, rng: () => number, o: GlitchSvgOpts): str
 }
 
 // Fetch a twemoji SVG, glitch it, upload to R2; returns the public URL + source link.
+// The two glitch bots decorate with the same two primitives: ghosted copies of the glyph
+// path, and random colour-noise rects.
+export const dupeLayers = (
+  out: string,
+  rng: () => number,
+  o: { count: number; jitter: number; rotate: number; scale?: boolean },
+) => {
+  const path = out.match(/<path[^>]*\/>/)?.[0] ?? "";
+  let extras = "";
+  for (let i = 0; i < o.count; i++) {
+    const tx = ((rng() - 0.5) * o.jitter).toFixed(1), ty = ((rng() - 0.5) * o.jitter).toFixed(1);
+    const rot = Math.floor(rng() * o.rotate * 2 - o.rotate);
+    const scale = o.scale ? ` scale(${(0.8 + rng() * 0.3).toFixed(2)})` : "";
+    extras += `<g transform="translate(${tx},${ty}) rotate(${rot})${scale}" opacity="${
+      (0.1 + rng() * 0.2).toFixed(2)
+    }">${path}</g>`;
+  }
+  return extras;
+};
+
+export const noiseRects = (
+  rng: () => number,
+  o: { count: number; w: () => number; h: () => number; x?: () => number; opacity: () => number },
+) => {
+  let extras = "";
+  for (let i = 0; i < o.count; i++) {
+    // Draw order is load-bearing: clipart seeds its rng, so reordering changes the artwork.
+    const x = o.x?.() ?? 0, y = Math.floor(rng() * 36), w = o.w(), h = o.h();
+    const rgb = [0, 0, 0].map(() => Math.floor(rng() * 256)).join(",");
+    extras += `<rect x="${x}" y="${y}" width="${w}" height="${h}" fill="rgb(${rgb})" opacity="${
+      o.opacity().toFixed(2)
+    }"/>`;
+  }
+  return extras;
+};
+
 export async function glitchTwemojiToR2(cp: string, rng: () => number, prefix: string, o: GlitchSvgOpts) {
   const res = await fetch(`https://raw.githubusercontent.com/twitter/twemoji/master/assets/svg/${cp}.svg`);
   if (!res.ok) throw new Error(`Failed to fetch twemoji ${cp}: HTTP ${res.status}`);
@@ -273,28 +327,27 @@ export const parseRedditEntries = (xml: string): RedditItem[] => {
 // freshness cutoff is 4–24h, so 30 days is a wide margin against a URL resurfacing.
 export const DEDUP_WINDOW_MS = 30 * 24 * 60 * 60 * 1000;
 
-export async function getAnsweredCids(api: Api, opts: { since?: number } = {}): Promise<Set<number>> {
-  const since = opts.since ?? Date.now() - DEDUP_WINDOW_MS;
-  const replies = await paginate<{ parent_cid: number; created_at: string }>(
+// My own recent rows, newest-first, back to `since`. filter selects the kind:
+// "&comments=1" -> char_length(body) > 1, "&reactions=1" -> single-grapheme votes, "" -> all.
+const myRecent = <T>(api: Api, filter: string, since: number) =>
+  paginate<T & { created_at: string }>(
     api,
-    (p) => `/c?usr=${api.botUsername}&comments=1&sort=new&limit=100&p=${p}`,
+    (p) => `/c?usr=${api.botUsername}${filter}&sort=new&limit=100&p=${p}`,
     { until: (r) => new Date(r.created_at).getTime() < since },
   );
-  return new Set(replies.map((r) => r.parent_cid));
-}
+
+const cidsOf = async (api: Api, filter: string, since?: number) =>
+  new Set(
+    (await myRecent<{ parent_cid: number }>(api, filter, since ?? Date.now() - DEDUP_WINDOW_MS))
+      .map((r) => r.parent_cid),
+  );
+
+export const getAnsweredCids = (api: Api, opts: { since?: number } = {}) => cidsOf(api, "&comments=1", opts.since);
 
 // Dedup for voting bots. `comments=1` filters char_length(body) > 1, so single-grapheme
 // votes are invisible to getAnsweredCids — a voter that only checks it re-judges the same
 // posts every tick and toggles its own votes off (the bug that plagued bot_critic).
-export async function getReactedCids(api: Api, opts: { since?: number } = {}): Promise<Set<number>> {
-  const since = opts.since ?? Date.now() - DEDUP_WINDOW_MS;
-  const reactions = await paginate<{ parent_cid: number; created_at: string }>(
-    api,
-    (p) => `/c?usr=${api.botUsername}&reactions=1&sort=new&limit=100&p=${p}`,
-    { until: (r) => new Date(r.created_at).getTime() < since },
-  );
-  return new Set(reactions.map((r) => r.parent_cid));
-}
+export const getReactedCids = (api: Api, opts: { since?: number } = {}) => cidsOf(api, "&reactions=1", opts.since);
 
 export async function getLastPostAge(api: Api, opts: { replies?: boolean } = {}): Promise<number> {
   const qs = opts.replies ? "&comments=1" : "";
@@ -306,12 +359,7 @@ export async function getLastPostAge(api: Api, opts: { replies?: boolean } = {})
 }
 
 export async function getPostedUrls(api: Api, opts: { since?: number } = {}): Promise<Set<string>> {
-  const since = opts.since ?? Date.now() - DEDUP_WINDOW_MS;
-  const posts = await paginate<{ body: string; created_at: string }>(
-    api,
-    (p) => `/c?usr=${api.botUsername}&sort=new&limit=100&p=${p}`,
-    { until: (r) => new Date(r.created_at).getTime() < since },
-  );
+  const posts = await myRecent<{ body: string }>(api, "", opts.since ?? Date.now() - DEDUP_WINDOW_MS);
   const urls = new Set<string>();
   for (const p of posts) for (const u of p.body.match(/https?:\/\/[^\s]+/g) || []) urls.add(u);
   return urls;
@@ -616,22 +664,32 @@ type Candidate = {
 
 // Fetches top-level posts + comments, filters bot's own posts + already-answered + stale,
 // ranks: prefer posts with fewer replies (spreads bots across threads), random tiebreak.
-async function pickCandidates(
+// The shared "worth replying to" filter: not mine, not already handled, fresh, and with
+// enough prose left once URLs are stripped. Four bots each had their own copy of this.
+export async function pickCandidates(
   api: Api,
   answered: Set<number>,
-  opts: { pool?: number; minBodyLen?: number; excludeLinkPosts?: boolean } = {},
+  opts: {
+    pool?: number;
+    minBodyLen?: number;
+    excludeLinkPosts?: boolean;
+    excludeBots?: boolean;
+    reacted?: Set<number>;
+    extra?: (p: Candidate) => boolean;
+  } = {},
 ): Promise<Candidate[]> {
-  const minBodyLen = opts.minBodyLen ?? 30;
-  const excludeLinkPosts = opts.excludeLinkPosts ?? true;
   const all = await fetchFreshPosts<Candidate>(api, opts.pool ?? 50);
   return all
     .filter((p) =>
       p.created_by !== api.botUsername &&
       !answered.has(p.cid) &&
+      !opts.reacted?.has(p.cid) &&
+      !(opts.excludeBots && p.created_by?.startsWith("bot_")) &&
       isFresh(p.created_at) &&
       p.body.length > 1 &&
-      p.body.replace(/https?:\S+/g, "").trim().length >= minBodyLen &&
-      (!excludeLinkPosts || !isLinkPost(p.body))
+      p.body.replace(/https?:\S+/g, "").trim().length >= (opts.minBodyLen ?? 30) &&
+      (opts.excludeLinkPosts === false || !isLinkPost(p.body)) &&
+      (opts.extra?.(p) ?? true)
     )
     .map((p) => ({ p, c: Number(p.c_comments ?? 0), r: Math.random() }))
     .sort((a, b) => a.c - b.c || a.r - b.r)
@@ -677,14 +735,12 @@ export async function verdictBot(api: Api, opts: {
   ]);
   // bot_% authors excluded: verdict bots reacting to each other's replies would chain
   // one Haiku call per bot per 5-min tick with no terminating condition.
-  const candidates = (await fetchFreshPosts(api, 40)).filter((p) =>
-    p.created_by !== api.botUsername &&
-    !p.created_by?.startsWith("bot_") &&
-    !answered.has(p.cid) && !reacted.has(p.cid) &&
-    isFresh(p.created_at) &&
-    p.body.replace(/https?:\S+/g, "").trim().length >= (opts.minBodyLen ?? 20) &&
-    !isLinkPost(p.body)
-  ).slice(0, 10);
+  const candidates = (await pickCandidates(api, answered, {
+    pool: 40,
+    minBodyLen: opts.minBodyLen ?? 20,
+    excludeBots: true,
+    reacted,
+  })).slice(0, 10);
   console.log(`Judging ${candidates.length} candidates`);
   if (!candidates.length) return;
   const prompt = candidates.map((p) => `cid=${p.cid}\n${p.body.slice(0, 500)}\n---`).join("\n");
@@ -724,6 +780,117 @@ export async function verdictBot(api: Api, opts: {
   console.log(`Landed ${landed}/${attempted} POSTs (${declined} declined, ${skipped} skipped/unknown)`);
   if (attempted && !landed)
     throw new Error(`verdictBot: ${attempted} POSTs attempted, none landed (rate limit? bad creds?)`);
+}
+
+// A category-carrying link-aggregator RSS feed (lobste.rs, tildes.net): item tags come from
+// <category> elements, body is title / link / "<Label>: <comments url>".
+export const categoryRssBot = (
+  api: Api,
+  o: { feedUrl: string; label: string; prefixTags?: string; slugSpaces?: boolean },
+) =>
+  rssBot(api, {
+    feedUrl: o.feedUrl,
+    parseItem: (x) => {
+      const { title, link, comments } = parseTitleLinkComments(x);
+      if (!title || !link) return null;
+      const cats = (x.match(/<category>(.*?)<\/category>/g) || [])
+        .map((t) => {
+          const c = t.replace(/<\/?category>/g, "").toLowerCase();
+          return o.slugSpaces ? c.replace(/\s+/g, "-") : c;
+        });
+      return {
+        link,
+        commentsUrl: comments,
+        body: `${title}\n\n${link}${comments ? `\n\n${o.label}: ${comments}` : ""}`,
+        tags: `${o.prefixTags ? o.prefixTags + " " : ""}${cats.map((t) => `#${t}`).join(" ")} #bot`.trim(),
+      };
+    },
+  });
+
+// Sample subreddits and post up to `maxPosts` fresh unseen entries.
+// `perFeed: "newest"` (bot_reddit) keeps only each sub's newest item, so one loud sub can't
+// take every slot. `perFeed: "all"` (bot_hmmm, one sub) keeps the whole fresh list, so a run
+// whose newest item is already posted falls through to the next one instead of posting nothing.
+export async function redditBot(api: Api, opts: {
+  subs: string[];
+  sample?: number;
+  concurrency?: number;
+  maxPosts?: number;
+  freshnessMs?: number;
+  perFeed?: "newest" | "all";
+  selftext?: boolean;
+  tags?: (sub: string) => string;
+}) {
+  const UA = "ding-bot/1.0 (+https://ding.bar; contact: taylor@ding.bar)";
+  const TIMEOUT = 15_000;
+  const sample = shuffle([...opts.subs]).slice(0, opts.sample ?? opts.subs.length);
+  console.log(`Sampling ${sample.length} of ${opts.subs.length} subreddits: ${sample.join(", ")}`);
+
+  const cutoff = Date.now() - (opts.freshnessMs ?? 24 * 60 * 60 * 1000);
+  const fetchSub = async (sub: string) => {
+    try {
+      const res = await redditFetch(`https://www.reddit.com/r/${sub}/.rss`, TIMEOUT);
+      if (!res.ok) return console.warn(`r/${sub} fetch failed: ${res.status}`), [];
+      return parseRedditEntries(await res.text()).map((i) => ({ sub, ...i }));
+    } catch (err) {
+      console.warn(`r/${sub} fetch error: ${(err as Error).message}`);
+      return [];
+    }
+  };
+  const fresh = opts.perFeed === "all"
+    ? (await Promise.all(sample.map((sub) => sweepOne(sub, fetchSub)))).flat().filter((i) => i.published > cutoff)
+    : await sweepFeeds(sample, opts.concurrency ?? 4, fetchSub, (i) => i.published, cutoff);
+  console.log(`Fetched ${fresh.length} fresh entries`);
+
+  const posted = await getPostedUrls(api);
+  const todo = fresh.filter((i) => !posted.has(i.link)).sort((a, b) => b.published - a.published);
+  const max = opts.maxPosts ?? 3;
+  console.log(`${todo.length} new items after dedup; posting up to ${max}`);
+
+  for (const it of todo.slice(0, max)) {
+    const lines = [it.title];
+    if (opts.selftext !== false) {
+      // A body that stalls mid-read costs this post its selftext, not the whole sweep.
+      const selftext = await fetch(it.link.replace(/\/?$/, "/") + ".json", {
+        signal: AbortSignal.timeout(TIMEOUT),
+        headers: { "User-Agent": UA, "Accept": "application/json" },
+      })
+        .then(async (r) =>
+          r.ok
+            ? ((await r.json())?.[0]?.data?.children?.[0]?.data?.selftext ?? "").trim()
+            : (console.warn(`selftext fetch failed for ${it.link}: ${r.status}`), "")
+        )
+        .catch((err) => (console.warn(`selftext fetch error for ${it.link}: ${err.message}`), ""));
+      if (selftext) lines.push("", selftext);
+    }
+    lines.push("", it.link);
+    if (it.imageUrl) lines.push("", it.imageUrl);
+    lines.push("", `via ${it.author} on r/${it.sub}`);
+    console.log(`Posting: ${it.title.slice(0, 60)}... (r/${it.sub})`);
+    if (!await post(api, lines.join("\n"), opts.tags?.(it.sub) ?? `#reddit #${slugTag(it.sub)} #bot`))
+      console.error(`Failed to post: ${it.title}`);
+  }
+}
+
+// Scan the fresh public feed and reply where `match` recognises something. The scan/filter/
+// cap/log shell is identical across bots; only the recogniser and the reply copy differ.
+export async function scanBot(
+  api: Api,
+  opts: { max?: number; match: (text: string, post: Post) => string | null },
+) {
+  const answered = await getAnsweredCids(api, { since: Date.now() - MAX_AGE_MS });
+  console.log(`Already answered ${answered.size} posts in last 4h`);
+  const posts = await getJson<Post[]>(api, `/c?sort=new&limit=50`);
+  let replies = 0;
+  for (const post of posts) {
+    if (replies >= (opts.max ?? 3)) break;
+    if (post.created_by.startsWith("bot_") || answered.has(post.cid) || !isFresh(post.created_at)) continue;
+    const body = opts.match(stripUrlsMentions(post.body), post);
+    if (!body) continue;
+    console.log(`Replying to cid=${post.cid}`);
+    if (await reply(api, post.cid, body)) replies++;
+  }
+  console.log(`Replied to ${replies} posts`);
 }
 
 // Fresh, unanswered posts and comments that @-mention this bot. The single source of

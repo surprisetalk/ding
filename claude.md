@@ -32,7 +32,7 @@ git config core.hooksPath .githooks
 
 ## Architecture
 
-**Single-file server** (`server.tsx`, ~3,200 lines) using:
+**Single-file server** (`server.tsx`, ~3,300 lines) using:
 
 - **Hono** - HTTP framework with middleware chain
 - **postgres.js** - SQL via template literals (`sql\`SELECT ...\``)
@@ -44,15 +44,31 @@ POSTGRES, DHT, RESEND, STRIPE, COMPONENTS, HONO. The `GET /` and `GET /c` feed q
 (`visibleTo` ACL, `aggCols`/`aggPairs` per-row aggregates, `orderBy`) so the two feeds can't drift; `visibleTo` is
 applied per nesting level (children and grandchildren too — a DM or `*org` reply under a public root must not leak to
 strangers). `wireRow` is the single definition of the NDJSON wire format (WS live-tail + HTTP drain must stay
-byte-identical).
+byte-identical). `notifWhere` is the single definition of the notification predicate (nav badge + `/n` + `/n/unread`);
+the badge is skipped on `/n/unread` so the 60s poller doesn't run the count twice. `visibleTo` emits `orgs = '{}'`
+rather than `orgs <@ '{}'` for the common no-readable-orgs case — gin's `<@` cannot seek, so it scans the whole index.
+`?sort=top` orders on the denormalized `c_reactions` hstore, NOT the `reaction_count` select alias: an alias in ORDER BY
+makes postgres run that correlated subquery for every candidate row, not just the 25 returned. `GET /` renders roots
+only (`Post` never touches `child_comments`), so it must NOT select a `child_comments` array — only `GET /c` does, and
+only `GET /c` needs `visibleTo` at the child + grandchild levels.
+
+**Client JS lives in `public/client.js`**, served statically and cached — it is NOT inlined into every page. Anything it
+needs from the server arrives as a `data-` attribute on `<body>` (currently `data-unread`, present only when logged in).
+The `app.use("*")` middleware early-returns on asset paths (`assetRe`), so a `/client.js` or `/style.css` hit costs no
+cookie read, no `refreshVerified`, and no unread query.
 
 **Database** (`db.sql`):
 
 - `usr` - Users with bcrypt passwords, email verification, org memberships (`orgs_r`/`orgs_w` arrays). `pubkey` +
   `seckey_enc` hold the user's Ed25519 identity (custodial key = AES-256-GCM(JWK, `KEY_WRAP_SECRET`); null =
   self-custody)
-- `com` - Comments with threading (parent_cid), tags/orgs/usrs arrays, full-text search. `hash`/`author_id`/`sig`/
-  `parent_hash`/`t` carry the signed DHT identity; `created_by` is null for foreign authors (rendered by short hash)
+- `com` - Comments with threading (parent_cid), tags/orgs/usrs arrays, full-text search. Index rules: `com_feed_idx` is
+  the partial index the default feed rides (`score desc where parent_cid is null and orgs = '{}' and usrs = '{}'`);
+  `com_by_created_idx` serves the bots' `?usr=X&sort=new` hot path. `= any(array_col)` cannot use a gin index — write
+  `links @> array[$1]` (that was a full table scan on every write and every thread view). `refresh_score` maintains only
+  `score`; the eight `author_ups`/`tag_ups`/… columns it used to write were never read and are dropped.
+  `hash`/`author_id`/`sig`/ `parent_hash`/`t` carry the signed DHT identity; `created_by` is null for foreign authors
+  (rendered by short hash)
 - `dht` - The signed, content-addressed, append-only log (source of truth; `com`/`usr`/`org` are a rebuildable
   projection). `seen_at` (local arrival) is the replication cursor, never the attacker-controlled signed `ts`
 
@@ -137,8 +153,9 @@ signed.
 **Bots** (`bots/`):
 
 - Content aggregators (HN, Lobsters, arXiv, bubbles, etc.) that post via Basic Auth
-- LLM persona bots (kenm, bigfoot, caveman, critic) use `claude()` helper in `bots.ts` with Haiku 4.5
-  (`claude-haiku-4-5`; Haiku 3 retired 2026-04-19 and 404s); require `ANTHROPIC_API_KEY`
+- LLM persona bots (kenm, bigfoot, caveman, wizard — all defined by the `PERSONAS` table in `bots/personas.ts`, not by
+  per-bot files — plus critic) use the `claude()` helper in `bots.ts` with Haiku 4.5 (`claude-haiku-4-5`; Haiku 3
+  retired 2026-04-19 and 404s); require `ANTHROPIC_API_KEY`
 - **Every bot is `export default (api: Api) => …`** — a function, never a top-level side effect, so it can be called
   repeatedly in one isolate. `bots/mod.ts` is the registry (static imports, so Deno Deploy bundles them); its keys are
   the bot names and uppercase to the `BOT_<NAME>_EMAIL`/`_PASSWORD` env prefix.
@@ -155,6 +172,14 @@ signed.
   isolate **cannot fetch its own origin**. `botFetch` follows redirects the way real fetch does — a successful `POST /c`
   302s to `/c/<cid>`, so an unfollowed redirect reads as failure on every single post. Bots must never `Deno.exit` (it
   would kill the server isolate); throw instead.
+- Shared harnesses (each bot should be a config, not a copy): `personaBot` (LLM replies) is driven entirely by the
+  `PERSONAS` table in `bots/personas.ts` — there is no per-persona file. `redditBot` powers both `reddit` and `hmmm`;
+  `categoryRssBot` powers `lobsters` and `tildes`; `scanBot` (feed scan → recogniser → reply) powers `haiku` and
+  `pentameter`; `pickCandidates` is the single "worth replying to" filter (`personaBot`, `verdictBot`, `tldr`,
+  `reader`); `myRecent` backs `getAnsweredCids`/`getReactedCids`/`getPostedUrls`; `fetchFeedText` backs the RSS sweeps;
+  `fitSharp` (in `bots/images.ts`, so `bots.ts` never imports sharp) backs `pixelsort`/`lowpoly`;
+  `dupeLayers`/`noiseRects` back `clipart`/`emojiglitch`. **`noiseRects`' rng draw order is load-bearing** — clipart
+  seeds its rng, so reordering the draws changes the artwork.
 - Most bots are thin configs over shared harnesses in `bots.ts`: `rssBot` (single RSS feed), `personaBot` (LLM replies),
   `mentionResponderBot` (reply to fresh `@bot` mentions), `imageMentionBot` (transform an image from a @mention),
   `dailyPostBot` (one gated post per run). The mention harnesses share `unansweredMentions` — the **single** definition

@@ -2,3 +2,5 @@
 .env
 .DS_Store
 bots.env
+.ruff_cache/
+.impeccable/
