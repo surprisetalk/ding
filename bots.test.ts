@@ -9,7 +9,9 @@ import {
   mentionResponderBot,
   paginate,
   type Post,
+  verdictBot,
 } from "./bots.ts";
+import grouch from "./bots/grouch.ts";
 
 Deno.test("isLinkPost: bare url → true", () => {
   assertEquals(isLinkPost("https://example.com/foo"), true);
@@ -305,4 +307,191 @@ Deno.test("mentionResponderBot: throws when every reply attempt bounces", async 
 Deno.test("mentionResponderBot: all-null responds is quiet, not an error", async () => {
   const { api } = mentionApi({ mentions: [mention(1)] });
   await mentionResponderBot(api, { respond: () => null });
+});
+
+// ---- verdictBot ----
+
+// Routes the harness's four GETs: answered walk (`usr&comments=1`), reacted walk
+// (`usr&reactions=1`), and the two fetchFreshPosts feeds. POST /c/<cid> records {cid, body}.
+const verdictApi = (opts: {
+  fresh: Post[];
+  reacted?: { parent_cid: number; created_at: string }[];
+}) => {
+  const posts: { cid: number; body: string }[] = [];
+  const api: Api = {
+    apiUrl: "http://x",
+    auth: "auth",
+    botUsername: "bot_test",
+    fetch: (input, init) => {
+      const url = new URL(input);
+      if (init?.method === "POST") {
+        posts.push({
+          cid: Number(url.pathname.split("/")[2]),
+          body: (init.body as FormData).get("body")?.toString() ?? "",
+        });
+        return Promise.resolve(new Response("", { status: 200 }));
+      }
+      const rows = url.searchParams.has("reactions")
+        ? (opts.reacted ?? [])
+        : url.searchParams.has("usr") || url.searchParams.has("comments")
+        ? []
+        : opts.fresh;
+      return Promise.resolve(
+        new Response(JSON.stringify(rows), { status: 200, headers: { "content-type": "application/json" } }),
+      );
+    },
+  };
+  return { api, posts };
+};
+
+const freshPost = (cid: number): Post => ({
+  cid,
+  parent_cid: null,
+  body: `post ${cid}: some perfectly ordinary prose content here`,
+  created_by: "alice",
+  created_at: new Date().toISOString(),
+});
+
+// claude() reads globalThis.fetch and ANTHROPIC_API_KEY at call time — that's the seam.
+const withClaude = async (reply: string, f: () => Promise<unknown>) => {
+  const origFetch = globalThis.fetch;
+  const origKey = Deno.env.get("ANTHROPIC_API_KEY");
+  Deno.env.set("ANTHROPIC_API_KEY", "test");
+  globalThis.fetch =
+    ((input: RequestInfo | URL, init?: RequestInit) =>
+      String(input).includes("api.anthropic.com")
+        ? Promise.resolve(new Response(JSON.stringify({ content: [{ text: reply }] }), { status: 200 }))
+        : origFetch(input, init)) as typeof fetch;
+  try {
+    await f();
+  } finally {
+    globalThis.fetch = origFetch;
+    if (origKey === undefined) Deno.env.delete("ANTHROPIC_API_KEY");
+    else Deno.env.set("ANTHROPIC_API_KEY", origKey);
+  }
+};
+
+Deno.test("verdictBot: dispatches verdicts to actions", async () => {
+  const { api, posts } = verdictApi({ fresh: [freshPost(1), freshPost(2)] });
+  await withClaude('[{"cid":1,"verdict":"hype","note":"WOW"},{"cid":2,"verdict":"skip"}]', () =>
+    verdictBot(api, {
+      system: "judge",
+      verdicts: {
+        hype: async (api2, p, note) => {
+          await (api2.fetch(`http://x/c/${p.cid}`, { method: "POST", body: toForm({ body: "▲" }) }));
+          if (note) await api2.fetch(`http://x/c/${p.cid}`, { method: "POST", body: toForm({ body: note }) });
+        },
+      },
+    }));
+  assertEquals(posts, [{ cid: 1, body: "▲" }, { cid: 1, body: "WOW" }]);
+});
+
+const toForm = (fields: Record<string, string>) => {
+  const fd = new FormData();
+  for (const [k, v] of Object.entries(fields)) fd.append(k, v);
+  return fd;
+};
+
+// Pins the critic toggle-bug fix: a cid the bot already REACTED to (single-grapheme
+// reply, invisible to the comments=1 dedup) must never be judged again.
+Deno.test("verdictBot: reacted cids are excluded from candidates", async () => {
+  const { api, posts } = verdictApi({
+    fresh: [freshPost(1), freshPost(2)],
+    reacted: [{ parent_cid: 1, created_at: new Date().toISOString() }],
+  });
+  let prompt = "";
+  await withClaude('[{"cid":1,"verdict":"up"},{"cid":2,"verdict":"up"}]', async () => {
+    const origFetch = globalThis.fetch;
+    globalThis.fetch = ((input: RequestInfo | URL, init?: RequestInit) => {
+      if (String(input).includes("api.anthropic.com"))
+        prompt = JSON.parse(String(init?.body)).messages[0].content;
+      return origFetch(input, init);
+    }) as typeof fetch;
+    try {
+      await verdictBot(api, {
+        system: "judge",
+        verdicts: {
+          up: (api2, p) => api2.fetch(`http://x/c/${p.cid}`, { method: "POST", body: toForm({ body: "▲" }) }),
+        },
+      });
+    } finally {
+      globalThis.fetch = origFetch;
+    }
+  });
+  assertEquals(prompt.includes("cid=1"), false, `reacted cid leaked into prompt: ${prompt}`);
+  assertEquals(posts, [{ cid: 2, body: "▲" }]); // verdict for cid=1 exists but has no candidate
+});
+
+Deno.test("verdictBot: non-JSON verdicts reject", async () => {
+  const { api } = verdictApi({ fresh: [freshPost(1)] });
+  await withClaude("I refuse to answer in JSON today", () =>
+    assertRejects(
+      () => verdictBot(api, { system: "judge", verdicts: {} }),
+      Error,
+      "non-JSON",
+    ));
+});
+
+// grouch hard-caps ▼ at 2 per run no matter how grumpy the model feels.
+Deno.test("grouch: at most 2 downvotes per run", async () => {
+  const { api, posts } = verdictApi({ fresh: [1, 2, 3, 4, 5].map(freshPost) });
+  await withClaude(JSON.stringify([1, 2, 3, 4, 5].map((cid) => ({ cid, verdict: "down" }))), () => grouch(api));
+  assertEquals(posts.map((p) => p.body), ["▼", "▼"]);
+});
+
+// Duplicate verdicts for one cid would toggle the vote back off (the same failure class
+// as the critic dedup bug, one layer up) — the harness must act once per cid.
+Deno.test("verdictBot: duplicate cids in one batch act only once", async () => {
+  const { api, posts } = verdictApi({ fresh: [freshPost(1)] });
+  await withClaude('[{"cid":1,"verdict":"up"},{"cid":1,"verdict":"up"}]', () =>
+    verdictBot(api, {
+      system: "judge",
+      verdicts: { up: (api2, p) => api2.fetch(`http://x/c/${p.cid}`, { method: "POST", body: toForm({ body: "▲" }) }) },
+    }));
+  assertEquals(posts, [{ cid: 1, body: "▲" }]);
+});
+
+// A run where every action reports failure must throw, not report green.
+Deno.test("verdictBot: rejects when actions are attempted but none land", async () => {
+  const { api } = verdictApi({ fresh: [freshPost(1), freshPost(2)] });
+  await withClaude('[{"cid":1,"verdict":"up"},{"cid":2,"verdict":"up"}]', () =>
+    assertRejects(
+      () => verdictBot(api, { system: "judge", verdicts: { up: () => false } }),
+      Error,
+      "none landed",
+    ));
+});
+
+Deno.test("verdictBot: bracketed but invalid JSON rejects with the raw slice", async () => {
+  const { api } = verdictApi({ fresh: [freshPost(1)] });
+  await withClaude('[{"cid":1 "verdict":"up"]', () =>
+    assertRejects(
+      () => verdictBot(api, { system: "judge", verdicts: {} }),
+      Error,
+      "unparseable",
+    ));
+});
+
+// String-typed cids from the model must still resolve to their candidate.
+Deno.test("verdictBot: string cid is coerced", async () => {
+  const { api, posts } = verdictApi({ fresh: [freshPost(7)] });
+  await withClaude('[{"cid":"7","verdict":"up"}]', () =>
+    verdictBot(api, {
+      system: "judge",
+      verdicts: { up: (api2, p) => api2.fetch(`http://x/c/${p.cid}`, { method: "POST", body: toForm({ body: "▲" }) }) },
+    }));
+  assertEquals(posts, [{ cid: 7, body: "▲" }]);
+});
+
+// Verdict bots never judge other bots' content — mutual-reply chains would never terminate.
+Deno.test("verdictBot: bot-authored candidates are excluded", async () => {
+  const { api, posts } = verdictApi({
+    fresh: [{ ...freshPost(1), created_by: "bot_other" }, freshPost(2)],
+  });
+  await withClaude('[{"cid":1,"verdict":"up"},{"cid":2,"verdict":"up"}]', () =>
+    verdictBot(api, {
+      system: "judge",
+      verdicts: { up: (api2, p) => api2.fetch(`http://x/c/${p.cid}`, { method: "POST", body: toForm({ body: "▲" }) }) },
+    }));
+  assertEquals(posts, [{ cid: 2, body: "▲" }]);
 });

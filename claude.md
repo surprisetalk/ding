@@ -41,8 +41,10 @@ git config core.hooksPath .githooks
 
 Server is organized with `//// SECTION ////` headers: IMPORTS, TYPES, CONSTANTS & HELPERS, LABEL PARSING, EMAIL TOKEN,
 POSTGRES, DHT, RESEND, STRIPE, COMPONENTS, HONO. The `GET /` and `GET /c` feed queries share fragment builders
-(`visibleTo` ACL, `aggCols`/`aggPairs` per-row aggregates, `orderBy`) so the two feeds can't drift; `wireRow` is the
-single definition of the NDJSON wire format (WS live-tail + HTTP drain must stay byte-identical).
+(`visibleTo` ACL, `aggCols`/`aggPairs` per-row aggregates, `orderBy`) so the two feeds can't drift; `visibleTo` is
+applied per nesting level (children and grandchildren too — a DM or `*org` reply under a public root must not leak to
+strangers). `wireRow` is the single definition of the NDJSON wire format (WS live-tail + HTTP drain must stay
+byte-identical).
 
 **Database** (`db.sql`):
 
@@ -166,6 +168,17 @@ signed.
   `MAX_AGE_MS` window. Shared helpers: `sweepFeeds` (bounded-concurrency newest-per-feed),
   `redditFetch`/`parseRedditEntries`, `glitchSvg`/`glitchTwemojiToR2`, `fetchFreshPosts`, `atomTitleLink`,
   `parseTitleLinkComments`, `decodeEntities` (fixpoint HTML-entity decode, for feeds that double-encode)
+- **`verdictBot`** (bots.ts): one Haiku call judges a batch of fresh posts → a `verdict → action` map, capped at
+  `maxActions` (keep POSTs-per-verdict × maxActions under the 10/min post rate). Callers: `critic` (earnest ▲/▼) and the
+  deliberately-janky crew — `hypebot` (▲ plus a gushing note that misses the point), `replyguy` (confident off-topic
+  one-liners, no votes), `grouch` (grumbles; the only downvoter, hard-capped at 2 ▼/run since ▼ weighs 3x ▲ in ranking).
+  Action contract: `null` = declined by design, `false` = POST failed, else landed; the run throws when POSTs were
+  attempted and none landed (a rate-limited/credential-rotted run must not report green). Each cid acts at most once per
+  batch (a duplicate verdict would toggle the vote back off) and `bot_%` authors are excluded (verdict bots reacting to
+  each other's replies would chain forever). Voting bots must dedup with `getReactedCids` (`reactions=1`, i.e.
+  `char_length(body) = 1`): `getAnsweredCids` uses `comments=1` (`char_length(body) > 1`) and is blind to
+  single-grapheme votes — that blindness made critic re-judge the same posts every 5-min tick and toggle its own votes
+  off.
 - `bots/checkmark.ts` is NOT part of the fleet (not in `bots/mod.ts`; consumed by `server.tsx` as `runCheckmark`)
 - Credentials live in Deno Deploy env, not GitHub secrets. `bots.env` (gitignored) is the upload file; `bot_linkedin`
   still has a `usr` row but no bot file, so nothing runs it.
@@ -209,8 +222,31 @@ Post/comment bodies are rendered by `formatBody()` as lightweight markdown that 
 blocks render in monospace; prose uses the page font. `<div class="body">` wraps output; styles live in
 `public/style.css` (`.body`, `.body pre`, `.body blockquote`, `.body-list`).
 
+Bare or markdown-linked `.mp4`/`.webm` URLs render as muted looping autoplay `<video class="pre-img">` above the visible
+link (no transcoding — Deno Deploy has no ffmpeg). The same extensions are accepted by `POST /i`
+(`IMG_EXT_RE`/`MIME_BY_EXT`) and served from `i.ding.bar`; `resolveThumbnail` short-circuits video URLs to the favicon
+fallback so it never streams video bytes as text.
+
 Post-detail view (`/c/:cid`) fetches two levels of comments so replies-to-replies render without click-through. Feed
 view (`/`) stays one level deep.
+
+## Account hub (/u)
+
+`GET /u` is the owner's hub: identity (`User` component), bio edit, orgs (from `orgs_r`, "(read-only)" when not in
+`orgs_w`), invites (`POST /invite`, "N of 4 used", pending list), and account actions — logout, custodial `/key`
+download, and a `<details class="danger">` confirm around the irreversible `POST /key/delete`. All three POST targets
+already redirect back to `/u`, so the hub needed no handler changes. `/u/:name` stays lean and shares the `User`
+component (owners get a pointer line back to `/u`). `/n` stays a separate page on purpose — no notif preview on `/u`.
+
+## Embeddable comments (/embed)
+
+`GET /embed?url=<page>` is a read-only iframe widget for static sites
+(`<iframe src="https://ding.bar/embed?url=PAGE_URL">`). It returns `c.html` directly (no `c.render`, so no site layout),
+never reads the viewer's cookie, and hard-filters to public root posts (`orgs = '{}' and usrs = '{}'`) matched by a
+`domains` GIN prefilter plus `strpos` exact-URL match (not `ilike` — URLs contain `%`/`_`). Headers:
+`Content-Security-Policy: frame-ancestors *` and `X-Robots-Tag: noindex`. `EmbedComment` is the slim renderer (absolute
+ding.bar links, no forms). Empty state links `/?www=<domain>` (prefills the compose labels); a bad `?url=` returns 400
+with the copyable snippet.
 
 ## Content Negotiation
 

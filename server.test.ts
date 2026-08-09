@@ -3260,3 +3260,255 @@ Deno.test(
     });
   }),
 );
+
+//// ACCOUNT HUB TESTS ////////////////////////////////////////////////////////
+
+Deno.test(
+  "account hub (/u)",
+  pgtest((sql) => async (t) => {
+    const loginBody = new FormData();
+    loginBody.append("email", "john@example.com");
+    loginBody.append("password", "password1!");
+    const boot = await app.request("/login", { method: "POST", body: loginBody });
+    const cookie = boot.headers.get("set-cookie")!.split(";")[0];
+
+    await t.step("owner hub shows logout, invite form, orgs, self-custody status", async () => {
+      const res = await app.request("/u", { headers: { cookie } });
+      assertEquals(res.status, 200);
+      const html = await res.text();
+      assertEquals(html.includes(`action="/logout"`), true);
+      assertEquals(html.includes(`action="/invite"`), true);
+      assertEquals(html.includes(`href="/o/secret"`), true);
+      assertEquals(html.includes(">account</h2>"), true);
+      assertEquals(html.includes("self-custody key"), true); // john_doe has null seckey_enc
+      assertEquals(html.includes(`href="/key"`), false);
+      assertEquals(html.includes("1 of 4 used"), true); // jane_doe is seeded as john's invitee
+      assertEquals(html.includes(`href="/u/jane_doe"`), true);
+    });
+
+    await t.step("custodial user sees key download and delete confirm", async () => {
+      await sql`update usr set seckey_enc = ${new Uint8Array([0])} where name = 'john_doe'`;
+      const res = await app.request("/u", { headers: { cookie } });
+      const html = await res.text();
+      assertEquals(html.includes(`href="/key"`), true);
+      assertEquals(html.includes(`action="/key/delete"`), true);
+      assertEquals(html.includes("<summary>"), true);
+    });
+
+    await t.step("public profile hides account controls; JSON shape unchanged", async () => {
+      const res = await app.request("/u/john_doe");
+      const html = await res.text();
+      assertEquals(html.includes("@john_doe"), true);
+      assertEquals(html.includes(`href="/c?usr=john_doe"`), true);
+      assertEquals(html.includes(`action="/logout"`), false);
+      assertEquals(html.includes(`action="/invite"`), false);
+      assertEquals(html.includes(`href="/key"`), false);
+      const jres = await app.request("http://api.ding.bar/u/john_doe");
+      const j = await jres.json();
+      assertEquals(j.name, "john_doe");
+      assertEquals("pubkey" in j, false);
+      assertEquals("custodial" in j, false);
+      assertEquals("seckey_enc" in j, false);
+    });
+
+    await t.step("owner sees a pointer from public profile back to /u", async () => {
+      const res = await app.request("/u/john_doe", { headers: { cookie } });
+      const html = await res.text();
+      assertEquals(html.includes("your public profile"), true);
+    });
+
+    await t.step("POST /invite creates invitee, sends email, hub lists it as pending", async () => {
+      const fd = new FormData();
+      fd.append("email", "friend@example.com");
+      const res = await app.request("/invite", { method: "POST", body: fd, headers: { cookie } });
+      assertEquals(res.status, 302);
+      assertEquals(res.headers.get("location"), "/u");
+      assertEquals(sentEmails.at(-1)?.to, "friend@example.com");
+      const hub = await app.request("/u", { headers: { cookie } });
+      const html = await hub.text();
+      assertEquals(html.includes("2 of 4 used"), true);
+      assertEquals(html.includes("(pending)"), true);
+    });
+
+    await t.step("POST /invite duplicate email surfaces an error banner, not silent success", async () => {
+      const fd = new FormData();
+      fd.append("email", "jane@example.com"); // already registered
+      const res = await app.request("/invite", { method: "POST", body: fd, headers: { cookie } });
+      assertEquals(res.status, 302);
+      assertEquals(res.headers.get("location"), "/u?error=already_invited");
+      const hub = await app.request("/u?error=already_invited", { headers: { cookie } });
+      assertEquals((await hub.text()).includes("already has an account"), true);
+    });
+  }),
+);
+
+//// EMBED TESTS //////////////////////////////////////////////////////////////
+
+Deno.test(
+  "embed widget (/embed)",
+  pgtest((sql) => async (t) => {
+    // Direct inserts (not POST /c) so resolveThumbnail never fetches the URL.
+    const [{ cid }] = await sql`
+      insert into com (created_by, body, tags, domains)
+      values ('john_doe', 'great read https://example.com/article discuss', '{reading}', '{example.com}')
+      returning cid`;
+    await sql`insert into com (parent_cid, created_by, body) values (${cid}, 'jane_doe', 'i agree completely')`;
+    await sql`
+      insert into com (parent_cid, created_by, body, orgs) values (${cid}, 'BugHunter42', 'org-only aside', '{secret}')`;
+    await sql`
+      insert into com (parent_cid, created_by, body, usrs) values (${cid}, 'john_doe', 'psst a dm aside', '{jane_doe}')`;
+    await sql`
+      insert into com (created_by, body, tags, orgs, domains)
+      values ('john_doe', 'secret scoop about https://example.com/article', '{reading}', '{secret}', '{example.com}')`;
+
+    await t.step("renders matching public post, its comments, and click-through", async () => {
+      const res = await app.request("/embed?url=https://example.com/article");
+      assertEquals(res.status, 200);
+      assertEquals(res.headers.get("content-security-policy"), "frame-ancestors *");
+      assertEquals(res.headers.get("x-robots-tag"), "noindex");
+      const html = await res.text();
+      assertEquals(html.includes("great read"), true);
+      assertEquals(html.includes("i agree completely"), true);
+      assertEquals(html.includes(`https://ding.bar/c/${cid}`), true);
+      assertEquals(html.includes("secret scoop"), false); // org-scoped post never leaks
+      assertEquals(html.includes("org-only aside"), false); // org child under a public root never leaks
+      assertEquals(html.includes("psst a dm aside"), false); // DM child under a public root never leaks
+      assertEquals(html.includes(`class="brand"`), false); // no site layout inside the iframe
+    });
+
+    await t.step("missing or invalid ?url= → 400 with the iframe snippet", async () => {
+      for (const path of ["/embed", "/embed?url=notaurl"]) {
+        const res = await app.request(path);
+        assertEquals(res.status, 400);
+        assertEquals((await res.text()).includes("&lt;iframe"), true);
+      }
+    });
+
+    await t.step("no matches → empty state linking prefilled compose", async () => {
+      const res = await app.request("/embed?url=https://nomatch.example/x");
+      assertEquals(res.status, 200);
+      const html = await res.text();
+      assertEquals(html.includes("no discussion yet"), true);
+      assertEquals(html.includes("https://ding.bar/?www=nomatch.example&body=https%3A%2F%2Fnomatch.example%2Fx"), true);
+    });
+  }),
+);
+
+Deno.test(
+  "thread children respect the visibility ACL",
+  pgtest((sql) => async (t) => {
+    await sql`insert into com (parent_cid, created_by, body, usrs) values (301, 'john_doe', 'dm aside for jane', '{jane_doe}')`;
+    await sql`insert into com (parent_cid, created_by, body, orgs) values (301, 'BugHunter42', 'secret org aside', '{secret}')`;
+
+    await t.step("stranger sees neither DM nor org children under a public root", async () => {
+      const html = await (await app.request("/c/301")).text();
+      assertEquals(html.includes("dm aside for jane"), false);
+      assertEquals(html.includes("secret org aside"), false);
+    });
+
+    await t.step("DM recipient and org member see their own", async () => {
+      const login = (email: string) => {
+        const fd = new FormData();
+        fd.append("email", email);
+        fd.append("password", "password1!");
+        return app.request("/login", { method: "POST", body: fd });
+      };
+      const jane = (await login("jane@example.com")).headers.get("set-cookie")!.split(";")[0];
+      const janeHtml = await (await app.request("/c/301", { headers: { cookie: jane } })).text();
+      assertEquals(janeHtml.includes("dm aside for jane"), true);
+      assertEquals(janeHtml.includes("secret org aside"), false); // jane has no orgs
+      const john = (await login("john@example.com")).headers.get("set-cookie")!.split(";")[0];
+      const johnHtml = await (await app.request("/c/301", { headers: { cookie: john } })).text();
+      assertEquals(johnHtml.includes("secret org aside"), true); // orgs_r = {secret}
+    });
+
+    await t.step("GET /?body= prefills the compose textarea", async () => {
+      const fd = new FormData();
+      fd.append("email", "john@example.com");
+      fd.append("password", "password1!");
+      const cookie = (await app.request("/login", { method: "POST", body: fd })).headers.get("set-cookie")!.split(
+        ";",
+      )[0];
+      const html = await (await app.request("/?body=https%3A%2F%2Fnomatch.example%2Fx", { headers: { cookie } }))
+        .text();
+      assertEquals(html.includes("https://nomatch.example/x"), true);
+    });
+  }),
+);
+
+//// VIDEO TESTS //////////////////////////////////////////////////////////////
+
+Deno.test("formatBody video urls", async (t) => {
+  await t.step("bare .mp4 url renders muted looping video plus anchor", () => {
+    const out = render("watch https://x.com/clip.mp4 now");
+    assertEquals(out.includes("<video"), true);
+    assertEquals(out.includes(`src="https://x.com/clip.mp4"`), true);
+    assertEquals(out.includes(`class="pre-img"`), true);
+    for (const attr of ["muted", "loop", "autoplay", "playsinline", `preload="metadata"`])
+      assertEquals(out.includes(attr), true, `missing ${attr}: ${out}`);
+    assertEquals(out.includes(`<a href="https://x.com/clip.mp4">`), true);
+  });
+
+  await t.step(".webm renders video", () => {
+    assertEquals(render("https://x.com/clip.webm").includes("<video"), true);
+  });
+
+  await t.step("markdown link to video renders video plus visible link", () => {
+    const out = render("[clip](https://x.com/clip.mp4)");
+    assertEquals(out.includes("<video"), true);
+    assertEquals(out.includes(">clip<"), true);
+  });
+
+  await t.step("trailing punctuation is trimmed before matching", () => {
+    const out = render("see https://x.com/clip.mp4.");
+    assertEquals(out.includes(`src="https://x.com/clip.mp4"`), true);
+  });
+
+  await t.step("non-video suffix does not render video", () => {
+    assertEquals(render("https://x.com/clip.mp4x").includes("<video"), false);
+    assertEquals(render("https://x.com/page").includes("<video"), false);
+  });
+});
+
+Deno.test(
+  "uploads video",
+  pgtest((_sql) => async (t) => {
+    const jAuth = basic("john@example.com", "password1!");
+    type Call = { filename: string; contentType: string };
+    const calls: Call[] = [];
+    const original = r2.uploadToR2;
+    r2.uploadToR2 = (_data, filename, contentType) => {
+      calls.push({ filename, contentType });
+      return Promise.resolve(`mock://i/${filename}`);
+    };
+    try {
+      await t.step("POST /i happy path mp4", async () => {
+        const fd = new FormData();
+        fd.append("id", "abc12345.mp4");
+        fd.append("file", new Blob([new Uint8Array([1, 2])], { type: "video/mp4" }), "clip.mp4");
+        const res = await app.request("/i", { method: "POST", body: fd, headers: jAuth });
+        assertEquals(res.status, 204);
+        assertEquals(calls[0], { filename: "abc12345.mp4", contentType: "video/mp4" });
+      });
+
+      await t.step("POST /i webm content type", async () => {
+        const fd = new FormData();
+        fd.append("id", "Zz1234Aa.webm");
+        fd.append("file", new Blob([new Uint8Array([3])], { type: "video/webm" }), "clip.webm");
+        const res = await app.request("/i", { method: "POST", body: fd, headers: jAuth });
+        assertEquals(res.status, 204);
+        assertEquals(calls[1].contentType, "video/webm");
+      });
+
+      await t.step("POST /i still rejects unknown extensions", async () => {
+        const fd = new FormData();
+        fd.append("id", "abc12345.mov");
+        fd.append("file", new Blob([new Uint8Array([1])], { type: "video/quicktime" }), "clip.mov");
+        const res = await app.request("/i", { method: "POST", body: fd, headers: jAuth });
+        assertEquals(res.status, 400);
+      });
+    } finally {
+      r2.uploadToR2 = original;
+    }
+  }),
+);

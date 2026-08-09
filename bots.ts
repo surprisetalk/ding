@@ -283,6 +283,19 @@ export async function getAnsweredCids(api: Api, opts: { since?: number } = {}): 
   return new Set(replies.map((r) => r.parent_cid));
 }
 
+// Dedup for voting bots. `comments=1` filters char_length(body) > 1, so single-grapheme
+// votes are invisible to getAnsweredCids — a voter that only checks it re-judges the same
+// posts every tick and toggles its own votes off (the bug that plagued bot_critic).
+export async function getReactedCids(api: Api, opts: { since?: number } = {}): Promise<Set<number>> {
+  const since = opts.since ?? Date.now() - DEDUP_WINDOW_MS;
+  const reactions = await paginate<{ parent_cid: number; created_at: string }>(
+    api,
+    (p) => `/c?usr=${api.botUsername}&reactions=1&sort=new&limit=100&p=${p}`,
+    { until: (r) => new Date(r.created_at).getTime() < since },
+  );
+  return new Set(reactions.map((r) => r.parent_cid));
+}
+
 export async function getLastPostAge(api: Api, opts: { replies?: boolean } = {}): Promise<number> {
   const qs = opts.replies ? "&comments=1" : "";
   const posts = await getJson<{ created_at: string }[]>(api, `/c?usr=${api.botUsername}&limit=1${qs}`);
@@ -642,6 +655,73 @@ export async function personaBot(api: Api, opts: {
     await reply(api, p.cid, text);
     console.log(`Replied to cid=${p.cid}: ${text.slice(0, 60)}...`);
   }
+}
+
+// One claude() call judges a batch of fresh posts; each verdict name maps to an action.
+// Used by critic and the janky crew. Dedup spans replies AND single-grapheme votes.
+// Action contract: null/undefined = declined by design, no POST attempted;
+// false = POST attempted and failed (postForm logged the status); else = landed.
+export async function verdictBot(api: Api, opts: {
+  system: string; // must demand ONLY a JSON array: [{"cid":123,"verdict":"...","note":"..."}]
+  verdicts: Record<string, (api: Api, p: Post, note?: string) => unknown>;
+  maxActions?: number; // keep POSTs-per-verdict × maxActions under POST_RATE_MAX (10/min)
+  temperature?: number;
+  minBodyLen?: number;
+}) {
+  const since = Date.now() - MAX_AGE_MS;
+  const [answered, reacted] = await Promise.all([
+    getAnsweredCids(api, { since }),
+    getReactedCids(api, { since }),
+  ]);
+  // bot_% authors excluded: verdict bots reacting to each other's replies would chain
+  // one Haiku call per bot per 5-min tick with no terminating condition.
+  const candidates = (await fetchFreshPosts(api, 40)).filter((p) =>
+    p.created_by !== api.botUsername &&
+    !p.created_by?.startsWith("bot_") &&
+    !answered.has(p.cid) && !reacted.has(p.cid) &&
+    isFresh(p.created_at) &&
+    p.body.replace(/https?:\S+/g, "").trim().length >= (opts.minBodyLen ?? 20) &&
+    !isLinkPost(p.body)
+  ).slice(0, 10);
+  console.log(`Judging ${candidates.length} candidates`);
+  if (!candidates.length) return;
+  const prompt = candidates.map((p) => `cid=${p.cid}\n${p.body.slice(0, 500)}\n---`).join("\n");
+  const raw = await claude(prompt, { system: opts.system, temperature: opts.temperature ?? 1, maxTokens: 800 });
+  const m = raw.match(/\[[\s\S]*\]/);
+  if (!m) throw new Error(`verdictBot: non-JSON verdicts: ${raw.slice(0, 200)}`);
+  let verdicts: { cid: number | string; verdict: string; note?: string }[];
+  try {
+    verdicts = JSON.parse(m[0]);
+  } catch (e) {
+    throw new Error(`verdictBot: unparseable verdicts (${e}): ${m[0].slice(0, 200)}`);
+  }
+  const max = opts.maxActions ?? 8;
+  const byCid = new Map(candidates.map((p) => [p.cid, p]));
+  let acted = 0, attempted = 0, landed = 0, declined = 0, skipped = 0;
+  for (const v of verdicts) {
+    const act = opts.verdicts[v.verdict], p = byCid.get(Number(v.cid));
+    if (!act || !p) {
+      skipped++;
+      continue;
+    }
+    byCid.delete(p.cid); // a duplicate verdict for the same cid would toggle the vote back off
+    if (++acted > max) {
+      console.log(`Capped at ${max} actions, dropped the rest`);
+      break;
+    }
+    const r = await act(api, p, v.note);
+    if (r == null) {
+      declined++;
+      continue;
+    }
+    attempted++;
+    if (r === false) continue;
+    landed++;
+    console.log(`${v.verdict} on cid=${p.cid}`);
+  }
+  console.log(`Landed ${landed}/${attempted} POSTs (${declined} declined, ${skipped} skipped/unknown)`);
+  if (attempted && !landed)
+    throw new Error(`verdictBot: ${attempted} POSTs attempted, none landed (rate limit? bad creds?)`);
 }
 
 // Fresh, unanswered posts and comments that @-mention this bot. The single source of

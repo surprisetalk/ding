@@ -449,6 +449,33 @@ pre {
   gap: var(--space-3);
 }
 
+.account-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--space-2) var(--space-3);
+  align-items: center;
+}
+
+.account-actions form {
+  width: auto;
+}
+
+summary {
+  cursor: pointer;
+  color: var(--muted);
+  font-size: var(--text-sm);
+}
+
+details.danger {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2);
+}
+
+details.danger[open] > summary {
+  color: var(--fg);
+}
+
 .reactions-group {
   display: inline-flex;
   flex-wrap: wrap;
@@ -843,4 +870,17 @@ body.dropping::after {
   height: 1px;
   opacity: 0;
   pointer-events: none;
+}
+
+/* /embed iframe widget: no header/nav, compact spacing inside a foreign page. */
+body.embed {
+  padding: var(--space-3);
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-3);
+}
+
+.embed-footer {
+  margin: 0;
+  font-size: var(--text-xs);
 }

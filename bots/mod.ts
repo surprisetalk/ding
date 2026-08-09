@@ -18,9 +18,11 @@ import dither from "./dither.ts";
 import emojiglitch from "./emojiglitch.ts";
 import estimation from "./estimation.ts";
 import geometry from "./geometry.ts";
+import grouch from "./grouch.ts";
 import haiku from "./haiku.ts";
 import hmmm from "./hmmm.ts";
 import hn from "./hn.ts";
+import hypebot from "./hypebot.ts";
 import kenm from "./kenm.ts";
 import lobsters from "./lobsters.ts";
 import lowpoly from "./lowpoly.ts";
@@ -32,6 +34,7 @@ import pixelsort from "./pixelsort.ts";
 import reader from "./reader.ts";
 import reddit from "./reddit.ts";
 import remind from "./remind.ts";
+import replyguy from "./replyguy.ts";
 import smallweb from "./smallweb.ts";
 import sortinghat from "./sortinghat.ts";
 import stars from "./stars.ts";
@@ -65,9 +68,11 @@ export const BOTS: Record<string, (api: Api) => void | Promise<void>> = {
   "emojiglitch": emojiglitch,
   "estimation": estimation,
   "geometry": geometry,
+  "grouch": grouch,
   "haiku": haiku,
   "hmmm": hmmm,
   "hn": hn,
+  "hypebot": hypebot,
   "kenm": kenm,
   "lobsters": lobsters,
   "lowpoly": lowpoly,
@@ -79,6 +84,7 @@ export const BOTS: Record<string, (api: Api) => void | Promise<void>> = {
   "reader": reader,
   "reddit": reddit,
   "remind": remind,
+  "replyguy": replyguy,
   "smallweb": smallweb,
   "sortinghat": sortinghat,
   "stars": stars,

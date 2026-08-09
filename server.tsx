@@ -79,7 +79,8 @@ export type ChildCom = {
   cid: number;
   parent_cid: number | null;
   body: string;
-  created_by: string;
+  created_by: string | null; // null for foreign (dht) authors — render by short hash
+  hash?: string | null;
   created_at: string;
   tags?: string[];
   orgs?: string[];
@@ -168,6 +169,9 @@ const FLAG_THRESHOLD = 3;
 
 const resolveThumbnail = async (url: string) => {
   if (/\.(?:jpe?g|png|gif|webp|svg)(?:\?|$)/i.test(url)) return url;
+  // never fetch video files as text — fall straight to the favicon
+  if (/\.(?:mp4|webm)(?:\?|$)/i.test(url))
+    return `https://www.google.com/s2/favicons?domain=${new URL(url).hostname}&sz=128`;
   try {
     const res = await fetch(url, {
       headers: { "User-Agent": "ding/1.0" },
@@ -777,7 +781,6 @@ const User = (u: Usr, viewerName?: string, tags: TagStat[] = []) => {
             <a href={`/c?mention=${u.name}`}>mentions</a>
             <a href={`/c?replies_to=${u.name}`}>replies</a>
             <a href={`/c?usr=${u.name}&reactions=1`}>reactions</a>
-            <a href="/o/new">org</a>
           </>
         )}
       </div>
@@ -923,6 +926,11 @@ const INLINE_RE =
 
 const isImageUrl = (u: string) => /\.(?:jpe?g|png|gif|webp|svg)(?:\?[^\s]*)?$/i.test(u);
 
+const isVideoUrl = (u: string) => /\.(?:mp4|webm)(?:\?[^\s]*)?$/i.test(u);
+const videoEl = (u: string) => (
+  <video class="pre-img" src={u} muted loop autoplay playsinline preload="metadata"></video>
+);
+
 const inlineFmt = (s: string): BodyNode[] => {
   const out: BodyNode[] = [];
   let i = 0;
@@ -938,6 +946,7 @@ const inlineFmt = (s: string): BodyNode[] => {
       const innerText = link.slice(1, link.indexOf("]("));
       if (isImageUrl(url))
         out.push(<img class="pre-img" src={url} loading="lazy" />);
+      if (isVideoUrl(url)) out.push(videoEl(url));
       out.push(
         <a href={url}>
           <span class="md-syntax">[</span>
@@ -950,6 +959,7 @@ const inlineFmt = (s: string): BodyNode[] => {
       const clean = trail ? bareUrl.slice(0, -trail.length) : bareUrl;
       if (isImageUrl(clean))
         out.push(<img class="pre-img" src={clean} loading="lazy" />);
+      if (isVideoUrl(clean)) out.push(videoEl(clean));
       out.push(<a href={clean}>{clean}</a>);
       if (trail) out.push(trail);
     }
@@ -1094,6 +1104,27 @@ const Comment = (c: Com | ChildCom, user?: string, asPost?: boolean) => {
   );
 };
 
+// Read-only rendering for the /embed iframe: no vote forms, no delete links, absolute hrefs.
+const EmbedComment = (p: Com) => (
+  <div key={p.cid} class="comment">
+    <div class="body">
+      {p.c_flags >= FLAG_THRESHOLD ? "[flagged]" : formatBody(p.body)}
+    </div>
+    <p class="note-sm">
+      @{p.created_by ?? p.hash?.slice(0, 8)} · ▲{p.reaction_counts?.["▲"] ?? 0} · {p.comments} comments ·{" "}
+      <a href={`https://ding.bar/c/${p.cid}`}>discuss on ding</a>
+    </p>
+    <div class="children">
+      {(p.child_comments || []).map((ch) => (
+        <div key={ch.cid} class="comment">
+          <div class="body">{ch.c_flags >= FLAG_THRESHOLD ? "[flagged]" : formatBody(ch.body)}</div>
+          <p class="note-sm">@{ch.created_by ?? ch.hash?.slice(0, 8)}</p>
+        </div>
+      ))}
+    </div>
+  </div>
+);
+
 const defaultThumb =
   "data:image/svg+xml,%3Csvg xmlns=%27http://www.w3.org/2000/svg%27 viewBox=%270 0 1 1%27%3E%3Crect fill=%27%23333%27 width=%271%27 height=%271%27/%3E%3C/svg%3E";
 
@@ -1224,7 +1255,7 @@ const app = new Hono<{ Variables: { name: string } }>();
 app.use(logger());
 app.notFound(notFound);
 
-const IMG_EXT_RE = /^([A-Za-z0-9]{8})\.(jpe?g|png|gif|webp|pdf)$/;
+const IMG_EXT_RE = /^([A-Za-z0-9]{8})\.(jpe?g|png|gif|webp|pdf|mp4|webm)$/;
 const MIME_BY_EXT: Record<string, string> = {
   jpg: "image/jpeg",
   jpeg: "image/jpeg",
@@ -1232,6 +1263,8 @@ const MIME_BY_EXT: Record<string, string> = {
   gif: "image/gif",
   webp: "image/webp",
   pdf: "application/pdf",
+  mp4: "video/mp4",
+  webm: "video/webm",
 };
 const MAX_UPLOAD_BYTES = 25 * 1024 * 1024;
 
@@ -1240,8 +1273,12 @@ const MAX_UPLOAD_BYTES = 25 * 1024 * 1024;
 const CLIENT_SCRIPT = `
     document.querySelectorAll("pre").forEach(x => {
       x.innerHTML = x.innerHTML.replace(/(https?:\\/\\/\\S+)/g, u => {
+        // innerHTML's getter leaves quotes raw in text nodes — escape before attribute interpolation
+        const q = u.replace(/"/g, "&quot;");
         const isImg = /\\.(jpe?g|png|gif|webp|svg)(\\?.*)?$/i.test(u) || /^https?:\\/\\/(i\\.redd\\.it|i\\.imgur\\.com|pbs\\.twimg\\.com)\\//i.test(u);
-        return isImg ? '<img src="'+u+'" loading="lazy" class="pre-img"><a href="'+u+'">'+u+'</a>' : '<a href="'+u+'">'+u+'</a>';
+        const isVid = /\\.(mp4|webm)(\\?.*)?$/i.test(u);
+        return isVid ? '<video src="'+q+'" class="pre-img" muted loop autoplay playsinline preload="metadata"></video><a href="'+q+'">'+u+'</a>'
+          : isImg ? '<img src="'+q+'" loading="lazy" class="pre-img"><a href="'+q+'">'+u+'</a>' : '<a href="'+q+'">'+u+'</a>';
       });
     });
     (() => {
@@ -1249,12 +1286,14 @@ const CLIENT_SCRIPT = `
       const randId = () => { const a = new Uint8Array(8); crypto.getRandomValues(a); let s = ""; for (const b of a) s += alpha[b % alpha.length]; return s; };
       const extOf = (name, type) => {
         const e = (name.split(".").pop() || "").toLowerCase();
-        if (["jpg","jpeg","png","gif","webp","pdf"].includes(e)) return e === "jpeg" ? "jpg" : e;
+        if (["jpg","jpeg","png","gif","webp","pdf","mp4","webm"].includes(e)) return e === "jpeg" ? "jpg" : e;
         if (type === "image/jpeg") return "jpg";
         if (type === "image/png") return "png";
         if (type === "image/gif") return "gif";
         if (type === "image/webp") return "webp";
         if (type === "application/pdf") return "pdf";
+        if (type === "video/mp4") return "mp4";
+        if (type === "video/webm") return "webm";
         return "";
       };
       const insertAt = (ta, s) => {
@@ -1926,6 +1965,7 @@ app.get("/", async (c) => {
               minlength={1}
               maxlength={4096}
             >
+              {cur.get("body") ?? ""}
             </textarea>
             <div class="post-form__row">
               <input
@@ -1945,7 +1985,7 @@ app.get("/", async (c) => {
                 <input
                   type="file"
                   multiple
-                  accept="image/*,.pdf"
+                  accept="image/*,video/mp4,video/webm,.pdf"
                   data-upload
                   hidden
                 />
@@ -2128,7 +2168,8 @@ app.post("/invite", authed, async (c) => {
     n = Math.random().toString(36).slice(2);
   if (
     (
-      await sql`select count(*) from usr where invited_by = ${c.get("name")!}`
+      // exclude the self-row (root users have invited_by = name) — it isn't an invite
+      await sql`select count(*) from usr where invited_by = ${c.get("name")!} and name != ${c.get("name")!}`
     )[0].count >= 4
   ) {
     throw new HTTPException(429, {
@@ -2138,15 +2179,14 @@ app.post("/invite", authed, async (c) => {
   const [u] = await sql`insert into usr (name, email, bio, invited_by) values (${n}, ${e}, '...', ${c.get(
     "name",
   )!}) on conflict do nothing returning email`;
-  if (u) {
-    try {
-      await sendVerify(u.email);
-    } catch (err) {
-      logEmailFailure("/invite", u.email, err);
-      throw new HTTPException(502, {
-        message: "Invite created, but the email failed to send. Try /invite again in a moment.",
-      });
-    }
+  if (!u) return c.redirect("/u?error=already_invited");
+  try {
+    await sendVerify(u.email);
+  } catch (err) {
+    logEmailFailure("/invite", u.email, err);
+    throw new HTTPException(502, {
+      message: "Invite created, but the email failed to send. Try /invite again in a moment.",
+    });
   }
   return ok(c);
 });
@@ -2329,29 +2369,104 @@ app.get("/u", async (c) => {
   }
 
   const [usr] = await sql`
-    select name, bio, invited_by, password, orgs_r, orgs_w
+    select name, bio, invited_by, password, orgs_r, orgs_w, pubkey,
+           (seckey_enc is not null) as custodial
     from usr where name = ${name}
   `;
   if (!usr) return notFound();
   if (!usr.password) return c.redirect("/password");
-  const accountErr = c.req.query("error");
+  const invited = await sql`
+    select name, (email_verified_at is not null) as verified
+    from usr where invited_by = ${name} and name != ${name}
+    order by created_at desc
+  `;
+  const accountErrMsg: Record<string, string> = {
+    verify_resend_failed: "we couldn't resend your verification email. try again later, or email support@ding.bar.",
+    already_invited: "that email already has an account or a pending invite.",
+  };
+  const accountErr = accountErrMsg[c.req.query("error") ?? ""];
   return c.render(
     <>
-      {accountErr === "verify_resend_failed" && (
+      {accountErr && (
         <section>
-          <p class="error">
-            we couldn't resend your verification email. try again later, or email support@ding.bar.
-          </p>
+          <p class="error">{accountErr}</p>
         </section>
       )}
       <section>{User(usr as unknown as Usr, name, await topTags(name))}</section>
       <section>
+        <h2>bio</h2>
         <form method="post" action="/u">
-          <textarea name="bio" rows={6}>
+          <textarea name="bio" rows={6} aria-label="bio">
             {usr.bio}
           </textarea>
           <button type="submit">save</button>
         </form>
+      </section>
+      <section>
+        <h2>orgs</h2>
+        {usr.orgs_r.length === 0 ? <p class="note-sm">no orgs yet.</p> : (
+          <div class="user-links">
+            {usr.orgs_r.map((o: string) => (
+              <a key={o} href={`/o/${o}`}>*{o}{usr.orgs_w.includes(o) ? "" : " (read-only)"}</a>
+            ))}
+          </div>
+        )}
+        <p class="note-sm">
+          <a href="/o/new">+ new org ($1/member/mo)</a>
+        </p>
+      </section>
+      <section>
+        <h2>invites</h2>
+        {invited.length >= 4
+          ? <p class="note-sm">all 4 invites used — email support@ding.bar for more.</p>
+          : (
+            <form method="post" action="/invite" class="form-inline">
+              <input
+                type="email"
+                name="email"
+                placeholder="friend@example.com"
+                aria-label="invite email"
+                required
+                class="grow"
+              />
+              <button type="submit">invite</button>
+            </form>
+          )}
+        <p class="note-sm">{invited.length} of 4 used</p>
+        {invited.length > 0 && (
+          <div class="user-links">
+            {invited.map((i) => <a key={i.name} href={`/u/${i.name}`}>@{i.name}{i.verified ? "" : " (pending)"}</a>)}
+          </div>
+        )}
+      </section>
+      <section>
+        <h2>account</h2>
+        <div class="account-actions">
+          <form method="post" action="/logout">
+            <button type="submit" class="btn-sm">logout</button>
+          </form>
+          {usr.custodial ? <a href="/key">download key (ding-key.json)</a> : (
+            <span class="note-sm">
+              self-custody key{usr.pubkey && (
+                <>
+                  {" · "}
+                  <code title={usr.pubkey}>{usr.pubkey.slice(0, 8)}…</code>
+                </>
+              )}
+            </span>
+          )}
+        </div>
+        {usr.custodial && (
+          <details class="danger">
+            <summary>switch to self-custody…</summary>
+            <p class="note-sm">
+              deletes the server's copy of your key. irreversible — download your key first or it's gone.
+            </p>
+            <form method="post" action="/key/delete">
+              <button type="submit">delete server copy</button>
+            </form>
+          </details>
+        )}
       </section>
     </>,
     { title: "your account" },
@@ -2452,7 +2567,19 @@ app.get("/u/:name", async (c) => {
   `;
   if (!usr) return notFound();
   if (host(c) === "api") return c.json(usr, 200);
-  return c.render(<section>{User(usr as Usr, viewerName, await topTags(profileName))}</section>, { title: usr.name });
+  return c.render(
+    <>
+      <section>{User(usr as Usr, viewerName, await topTags(profileName))}</section>
+      {isOwner && (
+        <section>
+          <p class="note-sm">
+            <a href="/u">← your account</a> — this is your public profile
+          </p>
+        </section>
+      )}
+    </>,
+    { title: usr.name },
+  );
 });
 
 app.get("/us", async (c) => {
@@ -2983,8 +3110,12 @@ app.get("/c/:cid?", async (c) => {
         ${aggPairs("ch", n || "")},
         'child_comments', array(select jsonb_build_object('body', gc.body, 'created_by', gc.created_by, 'cid', gc.cid, 'parent_cid', gc.parent_cid, 'created_at', gc.created_at, 'tags', gc.tags, 'orgs', gc.orgs, 'usrs', gc.usrs, 'c_flags', gc.c_flags,
           ${aggPairs("gc", n || "")}
-        ) from com gc where gc.parent_cid = ch.cid and char_length(gc.body) > 1 order by gc.created_at desc)
-      ) from com ch where ch.parent_cid = c.cid and char_length(ch.body) > 1 order by ch.created_at desc) as child_comments
+        ) from com gc where gc.parent_cid = ch.cid and char_length(gc.body) > 1 and ${
+    visibleTo(rT, n || "")
+  } order by gc.created_at desc)
+      ) from com ch where ch.parent_cid = c.cid and char_length(ch.body) > 1 and ${
+    visibleTo(rT, n || "")
+  } order by ch.created_at desc) as child_comments
     from com c where ${
     cid
       ? sql`cid = ${cid}`
@@ -3195,7 +3326,7 @@ app.get("/c/:cid?", async (c) => {
                   <input
                     type="file"
                     multiple
-                    accept="image/*,.pdf"
+                    accept="image/*,video/mp4,video/webm,.pdf"
                     data-upload
                     hidden
                   />
@@ -3275,6 +3406,66 @@ app.get("/img", async (c) => {
       "Cache-Control": "public, max-age=604800, immutable",
     },
   });
+});
+
+// Read-only comment widget for static sites: <iframe src="https://ding.bar/embed?url=PAGE_URL">.
+// Never consults the viewer's cookie — only public root posts may render inside a foreign page.
+app.get("/embed", async (c) => {
+  c.header("Content-Security-Policy", "frame-ancestors *");
+  c.header("X-Robots-Tag", "noindex");
+  const page = (inner: HtmlEscapedString | Promise<HtmlEscapedString>) =>
+    html`
+      <!DOCTYPE html>
+      <html>
+        <head>
+          <title>ding embed</title>
+          <meta charset="UTF-8" />
+          <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+          <base target="_blank" />
+          <link rel="stylesheet" href="https://ding.bar/style.css" />
+        </head>
+        <body class="embed">
+                ${inner}
+                <p class="embed-footer"><a href="https://ding.bar/">✦ ding</a></p>
+              </body>
+      </html>
+    `;
+  const url = (c.req.query("url") || "").trim().replace(/\/+$/, "");
+  let domain: string;
+  try {
+    if (!/^https?:\/\//.test(url)) throw new Error("not http(s)");
+    domain = new URL(url).hostname.toLowerCase().replace(/^www\./, "");
+  } catch {
+    return c.html(
+      page(html`
+        <p class="error">/embed needs a full page URL, e.g. /embed?url=https://example.com/post</p>
+        <pre>&lt;iframe src="https://ding.bar/embed?url=PAGE_URL" style="width:100%;height:400px;border:0"&gt;&lt;/iframe&gt;</pre>
+      `),
+      400,
+    );
+  }
+  // strpos, not ilike/like — URLs routinely contain % and _.
+  const posts = await sql<Com[]>`
+    select c.cid, c.body, c.created_by, c.hash, c.c_flags, ${aggCols("c", "")},
+      array(select jsonb_build_object('body', ch.body, 'created_by', ch.created_by, 'cid', ch.cid, 'c_flags', ch.c_flags, 'hash', ch.hash)
+        from com ch where ch.parent_cid = c.cid and char_length(ch.body) > 1
+          and ch.orgs = '{}' and ch.usrs = '{}'
+        order by ch.created_at asc limit 20) as child_comments
+    from com c
+    where c.parent_cid is null and c.orgs = '{}' and c.usrs = '{}' and char_length(c.body) > 1
+      and c.domains @> ${[domain]}::text[]
+      and strpos(c.body, ${url}) > 0
+    order by c.created_at asc limit 5
+  `;
+  return c.html(page(
+    posts.length ? html`${posts.map((p) => EmbedComment(p))}` : html`
+      <p class="empty">
+        no discussion yet — <a href="https://ding.bar/?www=${domain}&body=${encodeURIComponent(
+          url,
+        )}">start one on ding</a>
+      </p>
+    `,
+  ));
 });
 
 app.post("/i", authed, async (c) => {
