@@ -298,7 +298,9 @@ export async function getReactedCids(api: Api, opts: { since?: number } = {}): P
 
 export async function getLastPostAge(api: Api, opts: { replies?: boolean } = {}): Promise<number> {
   const qs = opts.replies ? "&comments=1" : "";
-  const posts = await getJson<{ created_at: string }[]>(api, `/c?usr=${api.botUsername}&limit=1${qs}`);
+  // sort=new is load-bearing: the default hot sort returns the hottest post, whose age
+  // reads as stale and defeats every gap-based throttle built on this probe.
+  const posts = await getJson<{ created_at: string }[]>(api, `/c?usr=${api.botUsername}&sort=new&limit=1${qs}`);
   if (!posts.length) return Infinity;
   return Date.now() - new Date(posts[0].created_at).getTime();
 }

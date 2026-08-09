@@ -16,7 +16,9 @@ import {
   verifyRow,
 } from "./dht.ts";
 import { backfill } from "./backfill.ts";
-import { type Api, getPostedUrls, post, unansweredMentions } from "./bots.ts";
+import { type Api, getPostedUrls, post, reply, unansweredMentions } from "./bots.ts";
+import cowsayBot from "./bots/cowsay.ts";
+import { BOTS } from "./bots/mod.ts";
 import { jsx } from "@hono/hono/jsx";
 import { pgtemp } from "@surprisetalk/pgtemp";
 import pg from "postgres";
@@ -3510,5 +3512,86 @@ Deno.test(
     } finally {
       r2.uploadToR2 = original;
     }
+  }),
+);
+
+//// SUMMONER LOOP ////////////////////////////////////////////////////////////
+
+// Reproduces the reported bug: bot_summoner leaves a bare "@bot_cowsay" comment on a
+// fresh post, and the summoned bot must answer it. Runs the REAL cowsay bot function
+// against the real /c semantics — only the transport is in-process.
+Deno.test(
+  "summoner loop: a bare @bot mention comment gets answered",
+  pgtest((sql) => async (t) => {
+    await sql`insert into usr (name, email, password, bio, email_verified_at, invited_by) values
+      ('bot_summoner', 'bot-summoner@ding.bar', 'hashed:sumpw!', 'beep', now(), 'john_doe'),
+      ('bot_cowsay', 'bot-cowsay@ding.bar', 'hashed:cowpw!', 'moo', now(), 'john_doe')`;
+
+    const rootBody = new FormData();
+    rootBody.append("body", "please draw me a cow, internet");
+    rootBody.append("tags", "#bots");
+    const rootRes = await app.request("/c", {
+      method: "POST",
+      body: rootBody,
+      headers: basic("john@example.com", "password1!"),
+    });
+    const rootCid = Number(new URL(rootRes.headers.get("location")!, "http://x").pathname.split("/")[2]);
+
+    const sumApi: Api = {
+      apiUrl: "",
+      auth: btoa("bot-summoner@ding.bar:sumpw!"),
+      botUsername: "bot_summoner",
+      fetch: (i, n) => botFetch(i, n),
+    };
+    const cowApi: Api = {
+      apiUrl: "",
+      auth: btoa("bot-cowsay@ding.bar:cowpw!"),
+      botUsername: "bot_cowsay",
+      fetch: (i, n) => botFetch(i, n),
+    };
+
+    await t.step("summon comment lands and carries the mention", async () => {
+      assertEquals(await reply(sumApi, rootCid, "@bot_cowsay"), true);
+      const [row] = await sql`select mentions from com where created_by = 'bot_summoner'`;
+      assertEquals(row.mentions, ["bot_cowsay"]);
+    });
+
+    await t.step("cowsay answers the summon with the parent's text", async () => {
+      await cowsayBot(cowApi);
+      const replies = await sql`select body from com where created_by = 'bot_cowsay'`;
+      assertEquals(replies.length, 1, "cowsay did not answer the summon");
+      assertEquals(replies[0].body.includes("please draw me a"), true, replies[0].body);
+    });
+  }),
+);
+
+// summoner's 2h self-throttle: its gap probe must read the NEWEST own comment. Without
+// sort=new the probe gets the default hot sort — an old-but-hot comment reads as "last
+// post 3h ago" every tick, and summoner summons every 5 minutes instead of every 2 hours
+// (observed in prod: ~400 summons in 3 days).
+Deno.test(
+  "summoner throttles on its newest comment, not its hottest",
+  pgtest((sql) => async (t) => {
+    await sql`insert into usr (name, email, password, bio, email_verified_at, invited_by) values
+      ('bot_summoner', 'bot-summoner@ding.bar', 'hashed:sumpw!', 'beep', now(), 'john_doe')`;
+    // old-but-hot comment (score = now) vs fresh-but-cold comment (score = 2 days ago)
+    await sql`insert into com (parent_cid, created_by, body, created_at, score)
+      values (301, 'bot_summoner', '@bot_cowsay', now() - interval '3 hours', now())`;
+    await sql`insert into com (parent_cid, created_by, body, created_at, score)
+      values (302, 'bot_summoner', '@bot_cowsay', now() - interval '1 minute', now() - interval '2 days')`;
+
+    const api: Api = {
+      apiUrl: "",
+      auth: btoa("bot-summoner@ding.bar:sumpw!"),
+      botUsername: "bot_summoner",
+      fetch: (i, n) => botFetch(i, n),
+    };
+
+    await t.step("a 1-minute-old comment means the run skips", async () => {
+      const before = (await sql`select count(*)::int as n from com where created_by = 'bot_summoner'`)[0].n;
+      await BOTS["summoner"](api);
+      const after = (await sql`select count(*)::int as n from com where created_by = 'bot_summoner'`)[0].n;
+      assertEquals(after, before, "summoner posted despite a fresh comment — gap probe read the wrong row");
+    });
   }),
 );
