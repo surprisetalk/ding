@@ -57,6 +57,14 @@ needs from the server arrives as a `data-` attribute on `<body>` (currently `dat
 The `app.use("*")` middleware early-returns on asset paths (`assetRe`), so a `/client.js` or `/style.css` hit costs no
 cookie read, no `refreshVerified`, and no unread query.
 
+**Postgres connection**: `DATABASE_URL` is Neon's **`-pooler`** endpoint (transaction mode), so `server.tsx` sets
+`prepare: false`. Named prepared statements there outlive the client that created them and are reused by the next one,
+so any DDL that changes a result type (`alter table ... drop column`) makes every cached plan fail with
+`cached plan
+must not change result type` — site-wide, including freshly-started isolates. Recover by terminating the
+pooled backends (`pg_terminate_backend`), never with `deallocate all`. Also set: `max: 3` (each isolate gets its own
+pool), `idle_timeout: 20`, `statement_timeout: 15s`.
+
 **Database** (`db.sql`):
 
 - `usr` - Users with bcrypt passwords, email verification, org memberships (`orgs_r`/`orgs_w` arrays). `pubkey` +

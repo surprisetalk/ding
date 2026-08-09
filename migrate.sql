@@ -142,6 +142,17 @@ $$;
 
 -- Dropping them removes eight values from every `select c.*` feed row and eight assignments
 -- from every write. ⚠ IRREVERSIBLE — the function above must already be replaced.
+--
+-- ⚠⚠ THIS STEP TOOK THE SITE DOWN ON 2026-08-09. DATABASE_URL points at Neon's `-pooler`
+-- endpoint (transaction mode), where a named prepared statement outlives the client that
+-- created it and gets handed to the next one. Changing a result type invalidates every such
+-- cached plan, and each reuse fails with `cached plan must not change result type` — across
+-- ALL isolates, and for freshly-started ones too, until the pooled backends recycle.
+-- Deploy `prepare: false` (server.tsx) BEFORE running this. If you are already stuck:
+--   select pg_terminate_backend(pid) from pg_stat_activity
+--    where datname = current_database() and pid <> pg_backend_pid();
+-- Do NOT use `deallocate all` — clients keep referencing the names it removes and it makes
+-- the outage worse.
 alter table com
   drop column if exists author_ups,
   drop column if exists author_downs,

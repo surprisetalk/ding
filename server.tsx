@@ -288,11 +288,17 @@ export let sql: Sql = pg(
   Deno.env.get(`DATABASE_URL`)?.replace(/flycast/, "internal")!,
   // Every Deno Deploy isolate opens its own pool, so keep it small and let idle
   // connections go. statement_timeout stops one pathological query pinning a slot.
+  // prepare:false is REQUIRED — DATABASE_URL points at Neon's `-pooler` endpoint, which is
+  // transaction-mode. There, named prepared statements outlive the client that made them and
+  // are handed to the next one, so any DDL that changes a result type ("alter table com drop
+  // column ...") makes every reused plan fail with `cached plan must not change result type`
+  // until the pooled backends recycle. That took the whole site down once; do not re-enable.
   {
     database: "ding",
     max: 3,
     idle_timeout: 20,
     connect_timeout: 10,
+    prepare: false,
     connection: { statement_timeout: 15_000 },
   },
 );

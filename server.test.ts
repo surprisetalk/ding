@@ -266,6 +266,16 @@ const pgtest = (f: (sql: pg.Sql) => (t: Deno.TestContext) => Promise<void>) => a
 
 const basic = (email: string, pass: string) => ({ Authorization: "Basic " + btoa(`${email}:${pass}`) });
 
+// DATABASE_URL is Neon's transaction-mode `-pooler`, where a named prepared statement outlives
+// the client that made it. With prepare on, `alter table ... drop column` invalidates the cached
+// plans and every isolate 500s with "cached plan must not change result type". That took ding.bar
+// down on 2026-08-09; this pins the setting so it can't be dropped by accident.
+Deno.test("postgres client disables prepared statements (Neon pooler is transaction-mode)", () => {
+  const src = Deno.readTextFileSync(new URL("./server.tsx", import.meta.url));
+  const opts = src.slice(src.indexOf("export let sql: Sql = pg("), src.indexOf("export const setSql"));
+  assertStringIncludes(opts, "prepare: false");
+});
+
 Deno.test(
   "routes",
   pgtest((sql) => async (t) => {
