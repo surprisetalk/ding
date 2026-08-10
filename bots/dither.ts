@@ -9,7 +9,7 @@ const BRAILLE_MAP = [
   [0x40, 0x80],
 ];
 
-async function toBraille(imageBytes: Uint8Array): Promise<string> {
+export async function toBraille(imageBytes: Uint8Array): Promise<string> {
   const cols = 40;
   const rows = 20;
   const w = cols * 2;
@@ -21,6 +21,17 @@ async function toBraille(imageBytes: Uint8Array): Promise<string> {
     .normalize()
     .raw()
     .toBuffer({ resolveWithObject: true });
+
+  // Every index below assumes one byte per pixel. grayscale() drops alpha today, so RGB and RGBA
+  // both land here as 1 channel — but a sharp upgrade that changed that would garble the art
+  // silently instead of failing, so check it.
+  if (data.length !== w * h) {
+    throw new Error(
+      `dither: expected ${w * h} gray bytes (${w}x${h}, 1 channel), got ${data.length} — sharp returned ${
+        data.length / (w * h)
+      } channels`,
+    );
+  }
 
   const buf = new Float32Array(data);
   for (let y = 0; y < h; y++) {

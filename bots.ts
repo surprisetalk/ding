@@ -466,6 +466,17 @@ export function extractImageUrl(body: string): string | null {
   return body.match(/https?:\/\/[^\s]+\.(?:jpe?g|png|gif|webp|svg)(?:\?[^\s]*)?/i)?.[0] ?? null;
 }
 
+// i.ding.bar is a custom domain on the SAME Deno Deploy project — server.tsx's `host(c) === "i"`
+// middleware only proxies `${R2_PUBLIC_URL}/i/<seg>` — and an isolate cannot fetch its own origin
+// (the trap documented on botFetch and the checkmark sink). Go straight to R2. No R2_PUBLIC_URL
+// means a standalone run (`deno task bot dither`), where i.ding.bar resolves normally.
+const SELF_IMG_PREFIX = "https://i.ding.bar/";
+export function directImageUrl(url: string): string {
+  const r2 = Deno.env.get("R2_PUBLIC_URL");
+  if (!r2 || !url.startsWith(SELF_IMG_PREFIX)) return url;
+  return `${r2}/i/${url.slice(SELF_IMG_PREFIX.length)}`;
+}
+
 export async function resolveImageUrl(
   api: Api,
   comment: { cid: number; parent_cid: number | null; body: string },
@@ -944,31 +955,48 @@ export async function imageMentionBot(api: Api, opts: {
     post: Post,
   ) => Promise<string | { bytes: Uint8Array; ext: string; contentType: string }>;
 }) {
+  let replies = 0;
+  const failures: string[] = [];
   for (const post of (await unansweredMentions(api)).slice(0, opts.max ?? 5)) {
     const imageUrl = await resolveImageUrl(api, post);
     if (!imageUrl) {
       console.log(`cid=${post.cid}: no image found, skipping`);
       continue;
     }
-    console.log(`cid=${post.cid}: processing ${imageUrl}`);
-    const imgRes = await fetch(imageUrl);
-    if (!imgRes.ok) {
-      console.error(`Failed to fetch image: HTTP ${imgRes.status}`);
-      continue;
+    // One bad image must not abort the remaining mentions, so every attempt is caught and
+    // collected — the throw below reports them all at once.
+    const src = directImageUrl(imageUrl);
+    console.log(`cid=${post.cid}: processing ${src}`);
+    try {
+      const imgRes = await fetch(src);
+      if (!imgRes.ok) throw new Error(`HTTP ${imgRes.status}`);
+      const out = await opts.transform(new Uint8Array(await imgRes.arrayBuffer()), post);
+      let body: string;
+      if (typeof out === "string") body = out;
+      else {
+        body = await uploadToR2(
+          out.bytes,
+          `${api.botUsername}-${post.cid}-${Date.now()}.${out.ext}`,
+          out.contentType,
+        );
+        console.log(`cid=${post.cid}: uploaded ${body}`);
+      }
+      if (await reply(api, post.cid, body)) replies++;
+      else failures.push(`cid=${post.cid}: reply POST bounced`);
+    } catch (e) {
+      failures.push(`cid=${post.cid}: ${src} — ${e instanceof Error ? e.message : e}`);
     }
-    const out = await opts.transform(new Uint8Array(await imgRes.arrayBuffer()), post);
-    let body: string;
-    if (typeof out === "string") body = out;
-    else {
-      body = await uploadToR2(
-        out.bytes,
-        `${api.botUsername}-${post.cid}-${Date.now()}.${out.ext}`,
-        out.contentType,
-      );
-      console.log(`cid=${post.cid}: uploaded ${body}`);
-    }
-    await reply(api, post.cid, body);
   }
+  console.log(`Replied to ${replies} posts`);
+  // Every attempt bounced (unreachable host, transform crash, rate limit, deleted parent). A
+  // skipped mention is never marked answered, so silence here burns a full run every 5-minute
+  // tick for the whole MAX_AGE_MS window and still reports a green run to the fleet.
+  if (failures.length && !replies) {
+    throw new Error(
+      `@${api.botUsername}: ${failures.length} image mentions attempted, none landed\n  ${failures.join("\n  ")}`,
+    );
+  }
+  if (failures.length) console.error(`@${api.botUsername}: ${failures.length} failed\n  ${failures.join("\n  ")}`);
 }
 
 // One post per run, gated on time since the bot's last post. make returns the body

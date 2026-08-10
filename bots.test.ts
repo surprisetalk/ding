@@ -14,6 +14,8 @@ import {
   verdictBot,
 } from "./bots.ts";
 import grouch from "./bots/grouch.ts";
+import { toBraille } from "./bots/dither.ts";
+import sharp from "sharp";
 
 Deno.test("isLinkPost: bare url → true", () => {
   assertEquals(isLinkPost("https://example.com/foo"), true);
@@ -593,4 +595,33 @@ Deno.test("pickCandidates: excludeBots and reacted filter", async () => {
   const { api } = scanApi([scanPost(1, long, { created_by: "bot_x" }), scanPost(2, long), scanPost(3, long)]);
   const got = await pickCandidates(api, new Set(), { excludeBots: true, reacted: new Set([3]) });
   assertEquals(got.map((p) => p.cid), [2]);
+});
+
+// ---- dither ----
+
+// toBraille indexes the raw buffer as one byte per pixel, so anything sharp does to the channel
+// count garbles the art rather than failing. grayscale() drops alpha today — this pins that, so a
+// sharp upgrade that changed it trips the byte-count guard here instead of in prod.
+const halfSplitPng = async (channels: 3 | 4) => {
+  const w = 80, h = 80;
+  const raw = new Uint8Array(w * h * channels);
+  for (let y = 0; y < h; y++) {
+    for (let x = 0; x < w; x++) {
+      const i = (y * w + x) * channels;
+      raw[i] = raw[i + 1] = raw[i + 2] = y < h / 2 ? 0 : 255;
+      if (channels === 4) raw[i + 3] = 255;
+    }
+  }
+  return new Uint8Array(await sharp(raw, { raw: { width: w, height: h, channels } }).png().toBuffer());
+};
+
+Deno.test("toBraille: an RGBA source renders the same art as RGB", async () => {
+  const rgba = await toBraille(await halfSplitPng(4));
+  assertEquals(rgba, await toBraille(await halfSplitPng(3)), "alpha leaked into the gray plane");
+
+  const lines = rgba.split("\n");
+  assertEquals(lines.length, 20);
+  assertEquals(lines[0].length, 40);
+  assertEquals(lines[0], "⣿".repeat(40), "dark top half should be solid dots");
+  assertEquals(lines[19], "⠀".repeat(40), "light bottom half should be blank");
 });

@@ -188,6 +188,13 @@ signed.
   isolate **cannot fetch its own origin**. `botFetch` follows redirects the way real fetch does — a successful `POST /c`
   302s to `/c/<cid>`, so an unfollowed redirect reads as failure on every single post. Bots must never `Deno.exit` (it
   would kill the server isolate); throw instead.
+- **The self-origin rule applies to image fetches too.** `i.ding.bar` is a custom domain on the same Deploy project (the
+  `host(c) === "i"` middleware just proxies `${R2_PUBLIC_URL}/i/<seg>`), so any in-isolate fetch of a user-uploaded
+  image must be rewritten with `directImageUrl` first — `https://i.ding.bar/<id>.<ext>` →
+  `${R2_PUBLIC_URL}/i/<id>.<ext>`. That killed `dither`/`pixelsort`/`lowpoly` on every image posted through `POST /i`
+  while they kept working on external hosts (`i.redd.it` etc.), which is why it looked like the bots were fine.
+  `imageMentionBot` catches per-post so one bad image can't abort the mentions behind it, and throws when it attempted
+  work and nothing landed (a "no image found" mention is a legitimate silent decline, not an attempt).
 - Shared harnesses (each bot should be a config, not a copy): `personaBot` (LLM replies) is driven entirely by the
   `PERSONAS` table in `bots/personas.ts` — there is no per-persona file. `redditBot` powers both `reddit` and `hmmm`;
   `categoryRssBot` powers `lobsters` and `tildes`; `scanBot` (feed scan → recogniser → reply) powers `haiku` and

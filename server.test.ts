@@ -16,7 +16,7 @@ import {
   verifyRow,
 } from "./dht.ts";
 import { backfill } from "./backfill.ts";
-import { type Api, getPostedUrls, post, reply, unansweredMentions } from "./bots.ts";
+import { type Api, directImageUrl, getPostedUrls, imageMentionBot, post, reply, unansweredMentions } from "./bots.ts";
 import cowsayBot from "./bots/cowsay.ts";
 import { BOTS } from "./bots/mod.ts";
 import { jsx } from "@hono/hono/jsx";
@@ -2635,6 +2635,40 @@ via /u/someone`;
   });
 });
 
+// i.ding.bar is this same Deno Deploy project (the `host(c) === "i"` middleware proxies R2), and
+// an isolate cannot fetch its own origin — so every in-isolate image fetch must go to R2 directly.
+Deno.test("directImageUrl", async (t) => {
+  const prev = Deno.env.get("R2_PUBLIC_URL");
+  try {
+    Deno.env.set("R2_PUBLIC_URL", "https://r2-pub.example");
+
+    await t.step("rewrites i.ding.bar to the R2 origin", () => {
+      assertEquals(
+        directImageUrl("https://i.ding.bar/UUvGLX1G.png"),
+        "https://r2-pub.example/i/UUvGLX1G.png",
+      );
+    });
+
+    await t.step("leaves external hosts alone", () => {
+      assertEquals(directImageUrl("https://i.redd.it/xyz.jpg"), "https://i.redd.it/xyz.jpg");
+      assertEquals(directImageUrl("https://r2-pub.example/i/a.png"), "https://r2-pub.example/i/a.png");
+    });
+
+    await t.step("does not rewrite other ding.bar hosts", () => {
+      assertEquals(directImageUrl("https://ding.bar/c/92802"), "https://ding.bar/c/92802");
+      assertEquals(directImageUrl("https://r2.ding.bar/i/a.png"), "https://r2.ding.bar/i/a.png");
+    });
+
+    await t.step("passes through when R2_PUBLIC_URL is unset (standalone bot run)", () => {
+      Deno.env.delete("R2_PUBLIC_URL");
+      assertEquals(directImageUrl("https://i.ding.bar/UUvGLX1G.png"), "https://i.ding.bar/UUvGLX1G.png");
+    });
+  } finally {
+    if (prev) Deno.env.set("R2_PUBLIC_URL", prev);
+    else Deno.env.delete("R2_PUBLIC_URL");
+  }
+});
+
 //// EXTRACT LINKS TESTS ///////////////////////////////////////////////////////
 
 Deno.test("extractLinks", async (t) => {
@@ -3711,5 +3745,159 @@ Deno.test(
       const after = (await sql`select count(*)::int as n from com where created_by = 'bot_summoner'`)[0].n;
       assertEquals(after, before, "summoner posted despite a fresh comment — gap probe read the wrong row");
     });
+  }),
+);
+
+//// IMAGE MENTION BOTS ////////////////////////////////////////////////////////
+
+// Reproduces https://ding.bar/c/92802: bot_summoner left a bare "@bot_pixel" on a post whose image
+// was uploaded through POST /i, and the image bot never answered. i.ding.bar is a custom domain on
+// THIS Deno Deploy project, so the cron isolate was fetching its own origin. Every image fetch must
+// go straight to R2. Uses a stub transform, not the real dither, so sharp stays out of the suite.
+Deno.test(
+  "imageMentionBot fetches i.ding.bar images from R2, not from its own origin",
+  pgtest((sql) => async (t) => {
+    await sql`insert into usr (name, email, password, bio, email_verified_at, invited_by) values
+      ('bot_summoner', 'bot-summoner@ding.bar', 'hashed:sumpw!', 'beep', now(), 'john_doe'),
+      ('bot_pixel', 'bot-pixel@ding.bar', 'hashed:pixpw!', 'art', now(), 'john_doe')`;
+
+    const sumApi: Api = {
+      apiUrl: "",
+      auth: btoa("bot-summoner@ding.bar:sumpw!"),
+      botUsername: "bot_summoner",
+      fetch: (i, n) => botFetch(i, n),
+    };
+    const pixApi: Api = {
+      apiUrl: "",
+      auth: btoa("bot-pixel@ding.bar:pixpw!"),
+      botUsername: "bot_pixel",
+      fetch: (i, n) => botFetch(i, n),
+    };
+
+    // Each step starts from an empty thread. A skipped or failed mention is deliberately never
+    // marked answered, so without this the leftovers from earlier steps get retried in later ones.
+    // One statement, so the self-referencing parent_cid FK is checked only after both are gone.
+    const reset = () => sql`delete from com where created_by in ('john_doe', 'bot_summoner', 'bot_pixel')`;
+
+    // Summon on a comment, so the image has to resolve one level up from the parent root — the
+    // exact shape of the reported post.
+    const summon = async (imageUrl: string) => {
+      const fd = new FormData();
+      fd.append("body", `Holocloth\n\nhttps://holocloth.example\n\n${imageUrl}`);
+      fd.append("tags", "#pics");
+      const res = await app.request("/c", {
+        method: "POST",
+        body: fd,
+        headers: basic("john@example.com", "password1!"),
+      });
+      const cid = +res.headers.get("location")!.match(/\/c\/(\d+)/)![1];
+      assertEquals(await reply(sumApi, cid, "@bot_pixel"), true);
+      return cid;
+    };
+
+    // botFetch dispatches through app.request, so only the outbound image fetch is stubbed here.
+    const withImageFetch = async (
+      handler: (url: string) => Response,
+      body: () => Promise<void>,
+    ): Promise<string[]> => {
+      const orig = globalThis.fetch;
+      const seen: string[] = [];
+      globalThis.fetch = ((input: string | URL | Request, init?: RequestInit) => {
+        const url = typeof input === "string" ? input : input.toString();
+        if (/\.(png|jpe?g|gif|webp|svg)$/i.test(new URL(url).pathname)) {
+          seen.push(url);
+          return Promise.resolve(handler(url));
+        }
+        return orig(input as RequestInfo, init);
+      }) as typeof fetch;
+      try {
+        await body();
+      } finally {
+        globalThis.fetch = orig;
+      }
+      return seen;
+    };
+
+    const prevR2 = Deno.env.get("R2_PUBLIC_URL");
+    Deno.env.set("R2_PUBLIC_URL", "https://r2-pub.example");
+    const png = () => new Response(new Uint8Array([137, 80, 78, 71]), { status: 200 });
+
+    try {
+      await t.step("an i.ding.bar image is fetched from the R2 origin and answered", async () => {
+        await reset();
+        await summon("https://i.ding.bar/UUvGLX1G.png");
+        const seen = await withImageFetch(
+          png,
+          () => imageMentionBot(pixApi, { transform: () => Promise.resolve("⣿⣿⣿") }),
+        );
+        assertEquals(seen, ["https://r2-pub.example/i/UUvGLX1G.png"]);
+        const replies = await sql`select body from com where created_by = 'bot_pixel'`;
+        assertEquals(replies.length, 1, "image bot did not answer the summon");
+        assertEquals(replies[0].body, "⣿⣿⣿");
+      });
+
+      await t.step("an external image host is fetched unchanged", async () => {
+        await reset();
+        await summon("https://i.redd.it/xyz123.jpg");
+        const seen = await withImageFetch(
+          png,
+          () => imageMentionBot(pixApi, { transform: () => Promise.resolve("⠿") }),
+        );
+        assertEquals(seen, ["https://i.redd.it/xyz123.jpg"]);
+      });
+
+      // The old harness console.error'd and continued, so a run where every image bounced
+      // reported green to the fleet and re-burned the same work every 5-minute tick for 4h.
+      await t.step("a run where every image bounces throws", async () => {
+        await reset();
+        await summon("https://i.ding.bar/DEADBEEF.png");
+        let err: Error | null = null;
+        await withImageFetch(() => new Response("nope", { status: 500 }), async () => {
+          await imageMentionBot(pixApi, { transform: () => Promise.resolve("x") })
+            .catch((e) => err = e);
+        });
+        assertExists(err, "imageMentionBot swallowed a run where nothing landed");
+        assertStringIncludes((err as Error).message, "none landed");
+        assertStringIncludes((err as Error).message, "HTTP 500");
+        assertEquals((await sql`select cid from com where created_by = 'bot_pixel'`).length, 0);
+      });
+
+      // One unreachable image must not abort the mentions behind it.
+      await t.step("one bad image does not block the rest of the run", async () => {
+        await reset();
+        await summon("https://i.ding.bar/BADBAD01.png");
+        await summon("https://i.ding.bar/GOODGOOD.png");
+        const seen = await withImageFetch(
+          (url) =>
+            url.includes("BADBAD01")
+              ? (() => {
+                throw new TypeError("redirect count exceeded");
+              })()
+              : png(),
+          () => imageMentionBot(pixApi, { transform: () => Promise.resolve("⡇") }),
+        );
+        assertEquals(seen.length, 2);
+        const replies = await sql`select body from com where created_by = 'bot_pixel'`;
+        assertEquals(replies.length, 1, "the good mention was skipped after the bad one");
+      });
+
+      // A mention with no image anywhere is a legitimate decline, not a failure.
+      await t.step("no image found is a silent skip, not a throw", async () => {
+        await reset();
+        const fd = new FormData();
+        fd.append("body", "no pictures here @bot_pixel");
+        fd.append("tags", "#pics");
+        await app.request("/c", { method: "POST", body: fd, headers: basic("john@example.com", "password1!") });
+        const seen = await withImageFetch(
+          png,
+          () => imageMentionBot(pixApi, { transform: () => Promise.resolve("x") }),
+        );
+        assertEquals(seen, []);
+        assertEquals((await sql`select cid from com where created_by = 'bot_pixel'`).length, 0);
+      });
+    } finally {
+      if (prevR2) Deno.env.set("R2_PUBLIC_URL", prevR2);
+      else Deno.env.delete("R2_PUBLIC_URL");
+    }
   }),
 );
