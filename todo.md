@@ -11,3 +11,4 @@
 - [ ] figure out how to do calls and clubhouse-style audio rooms. maybe they only apply for orgs, and direct mentions?
       they get pinned to top of feed?
 - [ ] attract 100 daily active users
+- [ ] ios app

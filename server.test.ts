@@ -2400,6 +2400,61 @@ Deno.test(
       assertEquals(labels.some((l) => !l.startsWith("#zz_own_") && l !== "*secret"), true, "no discovery chips");
     });
 
+    // An explicit ▲ on a tag is the user naming it; `own`/`affinity` only infer interest from
+    // having posted or upvoted. So a pref must surface as a chip on its own, with no post and
+    // no upvote behind it.
+    await t.step("an explicit ▲ on a tag surfaces as a compose chip", async () => {
+      await sql`delete from pref where uid = 'jane_doe'`;
+      const cookie = await login("jane@example.com");
+      assertEquals((await frontpage(cookie)).includes(">#astronomy<"), false, "precondition: not already a chip");
+      await sql`insert into pref (uid, kind, val, vote) values ('jane_doe', 'tag', 'astronomy', 1)`;
+      assertStringIncludes(await frontpage(cookie), ">#astronomy<");
+      await sql`delete from pref where uid = 'jane_doe'`;
+    });
+
+    // top_mine caps at 12, so priority decides who gets the slots. john owns 25 z-tags; an
+    // explicitly picked tag must not have to win a recency race against them.
+    await t.step("an explicit ▲ outranks own posts for the capped personal slots", async () => {
+      await sql`delete from pref where uid = 'john_doe'`;
+      await sql`insert into pref (uid, kind, val, vote) values ('john_doe', 'tag', 'zz_picked', 1)`;
+      const chips = await frontpage(await login("john@example.com"));
+      assertStringIncludes(chips, ">#zz_picked<");
+      const labels = [...chips.matchAll(/class="tag-preset">([^<]*)/g)].map((m) => m[1]);
+      assertEquals(labels.indexOf("#zz_picked"), 1, `picked tag should sit right after *secret: ${labels.slice(0, 3)}`);
+      await sql`delete from pref where uid = 'john_doe'`;
+    });
+
+    // A ▼ is "less of this". It has to suppress the tag on every path into the row, or the
+    // chip the user just muted comes straight back through `own`.
+    await t.step("a ▼ on a tag removes it from the chips it would otherwise reach", async () => {
+      await sql`delete from pref where uid = 'john_doe'`;
+      // john's newest root post, so `own` ranks this tag first and it clears the 12-slot cap
+      // that the 25 seeded z-tags are competing for.
+      await sql`insert into com (parent_cid, created_by, body, tags)
+                values (null, 'john_doe', 'mute me', '{zz_muteme}')`;
+      const cookie = await login("john@example.com");
+      assertStringIncludes(await frontpage(cookie), ">#zz_muteme<"); // reaches the row via own
+      await sql`insert into pref (uid, kind, val, vote) values ('john_doe', 'tag', 'zz_muteme', -1)`;
+      assertEquals((await frontpage(cookie)).includes(">#zz_muteme<"), false, "a muted tag came back as a chip");
+      await sql`delete from pref where uid = 'john_doe'`;
+      await sql`delete from com where tags @> '{zz_muteme}'`;
+    });
+
+    await t.step("a ▼ on a tag also keeps it out of the discovery slice", async () => {
+      await sql`delete from pref where uid = 'jane_doe'`;
+      await sql`insert into com (parent_cid, created_by, body, tags) values
+        (null, 'SyntaxSamurai', 'mute a', '{mutedisco}'),
+        (null, 'SyntaxSamurai', 'mute b', '{mutedisco}'),
+        (null, 'SyntaxSamurai', 'mute c', '{mutedisco}')`;
+      await sql`insert into pref (uid, kind, val, vote) values ('jane_doe', 'tag', 'mutedisco', -1)`;
+      // disco is a weighted random sample, so one draw proves nothing — take many.
+      const cookie = await login("jane@example.com");
+      for (let i = 0; i < 20; i++)
+        assertEquals((await frontpage(cookie)).includes(">#mutedisco<"), false, "muted tag surfaced via discovery");
+      await sql`delete from pref where uid = 'jane_doe'`;
+      await sql`delete from com where tags @> '{mutedisco}'`;
+    });
+
     await t.step("frontpage discovery samples a rotating subset of an oversized pool", async () => {
       // The seed only has 4 tags clearing `posts_count >= 3`, which is under the 8 disco
       // slots — every load would return all 4 and the sampling would be untested. Widen the

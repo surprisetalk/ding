@@ -1804,12 +1804,26 @@ app.get("/", async (c) => {
         where r.created_by = ${me} and r.body = '▲' and p.parent_cid is null
         group by 1
     ),
+    -- An explicit ▲ on the tag itself, which outranks both implicit signals: own infers
+    -- interest from having posted, affinity from having upvoted a post that carried the
+    -- tag, but this is the user naming the tag. It gets its own priority tier so it wins
+    -- the scarce top_mine slots rather than tying with everything you ever posted.
+    picked as (
+      select val::text as t, '#' as p, created_at as recency
+        from pref where uid = ${me} and kind = 'tag' and vote = 1
+    ),
+    -- A ▼ is "less of this", so a muted tag must not come back as a chip through any of the
+    -- other three paths, nor through discovery.
+    muted as (select val::text as t from pref where uid = ${me} and kind = 'tag' and vote = -1),
     mine as (
       select distinct on (tag) tag, pri, recency from (
         select '*' || unnest(${wT}::text[]) as tag, 1 as pri, now() as recency
-        union all select p || t, 2, recency from own
-        union all select p || t, 2, recency from affinity
-      ) m order by tag, pri, recency desc
+        union all select p || t, 2, recency from picked
+        union all select p || t, 3, recency from own
+        union all select p || t, 3, recency from affinity
+      ) m
+      where not exists (select 1 from muted x where m.tag = '#' || x.t)
+      order by tag, pri, recency desc
     ),
     top_mine as (select tag, pri, recency from mine order by pri, recency desc limit 12),
     disco as (
@@ -1820,6 +1834,7 @@ app.get("/", async (c) => {
       from stat_tag
       where posts_count >= 3
         and not exists (select 1 from top_mine m where m.tag = '#' || stat_tag.tag)
+        and not exists (select 1 from muted x where x.t = stat_tag.tag)
       order by rnd limit 8
     )
     select tag from (
