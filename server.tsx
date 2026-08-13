@@ -166,7 +166,10 @@ const refreshScores = (pid: string | number) =>
 // snapshot for the duration instead of locking them out — it needs the unique index on
 // (tag) and cannot run inside a transaction. Exported so tests refresh the way the cron
 // does rather than reaching for their own SQL.
-export const refreshStats = () => sql`refresh materialized view concurrently stat_tag`;
+export const refreshStats = async () => {
+  await sql`refresh materialized view concurrently stat_tag`;
+  await sql`refresh materialized view concurrently stat_domain`;
+};
 
 const FLAG_THRESHOLD = 3;
 

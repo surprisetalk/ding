@@ -177,13 +177,20 @@ group by t.tag;
 
 create unique index stat_tag_tag_idx on stat_tag (tag);
 
-create view stat_domain as
+-- MATERIALIZED for the same reason as stat_tag: as a plain view this re-aggregated every
+-- post carrying a domain and every reaction on EVERY read (~330ms measured on prod), and
+-- refresh_score reads it on every single post and reaction. Nothing else reads it at all,
+-- so the only staleness this buys is in a slow-moving ranking term.
+-- Refreshed by refreshStats(); the unique index is what lets that run CONCURRENTLY.
+create materialized view stat_domain as
 select d.domain,
   count(*) filter (where r.body = '▲')::int as ups_received,
   count(*) filter (where r.body = '▼')::int as downs_received
 from (select unnest(domains) as domain, cid from com where domains <> '{}') d
 join com r on r.parent_cid = d.cid and char_length(r.body) = 1
 group by d.domain;
+
+create unique index stat_domain_domain_idx on stat_domain (domain);
 
 create or replace function refresh_score(cids int[]) returns void language sql as $$
   with

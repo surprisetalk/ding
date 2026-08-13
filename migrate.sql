@@ -219,3 +219,28 @@ group by t.tag;
 create unique index if not exists stat_tag_tag_idx on stat_tag (tag);
 
 commit;
+
+-- stat_domain gets the same treatment, and for a sharper reason: nothing but refresh_score
+-- reads it, and refresh_score runs on every post and every reaction — ~330ms of re-aggregation
+-- each time. Same idempotent+atomic shape as stat_tag above; see that block for why the
+-- transaction and the DO guard are both needed.
+begin;
+
+do $$
+begin
+  if exists (select 1 from pg_class where relname = 'stat_domain' and relkind = 'v') then
+    drop view stat_domain;
+  end if;
+end $$;
+
+create materialized view if not exists stat_domain as
+select d.domain,
+  count(*) filter (where r.body = '▲')::int as ups_received,
+  count(*) filter (where r.body = '▼')::int as downs_received
+from (select unnest(domains) as domain, cid from com where domains <> '{}') d
+join com r on r.parent_cid = d.cid and char_length(r.body) = 1
+group by d.domain;
+
+create unique index if not exists stat_domain_domain_idx on stat_domain (domain);
+
+commit;

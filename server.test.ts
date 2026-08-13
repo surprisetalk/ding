@@ -195,9 +195,11 @@ update com set domains = coalesce((
   from regexp_matches(body, 'https?://([^/\\s:?#]+)', 'g') as m
 ), '{}');
 
--- stat_tag is materialized, so it is an empty snapshot until refreshed — and refresh_score
--- reads it, so this has to land first or every seeded score loses its tag term.
+-- stat_tag and stat_domain are materialized, so they are empty snapshots until refreshed —
+-- and refresh_score reads both, so this has to land first or every seeded score loses its
+-- tag and domain terms.
 refresh materialized view stat_tag;
+refresh materialized view stat_domain;
 
 select refresh_score(array(select cid from com));
 `;
@@ -1641,6 +1643,10 @@ Deno.test(
       await sql`insert into com (parent_cid, created_by, body, tags) values (${pid}, ${reactor}, ${body}, '{x}')`;
       await sql`update com set c_reactions = c_reactions || hstore(${body}, (coalesce((c_reactions->${body})::int,0)+1)::text) where cid = ${pid}`;
       const [p] = await sql`select created_by, tags, domains from com where cid = ${pid}`;
+      // stat_tag/stat_domain are snapshots, so the reputation this reaction just changed is
+      // invisible to refresh_score until they are refreshed — in prod that is the cron; here
+      // it has to be explicit, or these steps would be measuring the refresh cadence.
+      await refreshStats();
       await sql`select refresh_score(array(
         select cid from com where cid = ${pid} or created_by = ${p.created_by} or tags && ${p.tags}::text[]
           ${p.domains.length ? sql`or domains && ${p.domains}::text[]` : sql``}
@@ -1650,6 +1656,10 @@ Deno.test(
       await sql`delete from com where parent_cid = ${pid} and created_by = ${reactor} and body = ${body}`;
       await sql`update com set c_reactions = c_reactions || hstore(${body}, greatest(coalesce((c_reactions->${body})::int,0)-1, 0)::text) where cid = ${pid}`;
       const [p] = await sql`select created_by, tags, domains from com where cid = ${pid}`;
+      // stat_tag/stat_domain are snapshots, so the reputation this reaction just changed is
+      // invisible to refresh_score until they are refreshed — in prod that is the cron; here
+      // it has to be explicit, or these steps would be measuring the refresh cadence.
+      await refreshStats();
       await sql`select refresh_score(array(
         select cid from com where cid = ${pid} or created_by = ${p.created_by} or tags && ${p.tags}::text[]
           ${p.domains.length ? sql`or domains && ${p.domains}::text[]` : sql``}

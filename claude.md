@@ -346,14 +346,18 @@ _offset_, not the page number, so it means the same depth at any `?limit=`. `Pag
 browser can never click into that 400. `paging` is an object so tests can shrink it — proving the link disappears
 otherwise needs 5000 seeded rows, and at the default the page is empty anyway and the assertion proves nothing.
 
-**`stat_tag` is a MATERIALIZED view**, unlike its `stat_usr`/`stat_domain` siblings. As a plain view it re-aggregated
-every public root post and every reaction on **every read** — and it is read once per logged-in frontpage load plus once
-per `refresh_score` call. `refreshStats()` refreshes it `CONCURRENTLY` (which is what `stat_tag_tag_idx`, its unique
-index, is for — without that index the refresh can't be concurrent and would lock readers out) on the
-`ding-refresh-stats` `Deno.cron`, every 10 min. **The trade: a brand-new tag doesn't reach the discovery chips until the
-next tick.** Tests must call `refreshStats()` after inserting tagged posts, exactly as the cron does — note that a test
-asserting a tag is _absent_ will pass vacuously against a stale snapshot, so those must refresh too. `stat_domain` is
-still a plain view and still costs about the same per read; only `refresh_score` reads it.
+**`stat_tag` and `stat_domain` are MATERIALIZED views**; only `stat_usr` is still a plain one. As plain views they
+re-aggregated the whole of `com` on **every read** — `stat_tag` ~350ms, `stat_domain` ~330ms measured on prod — and
+`stat_tag` is read once per logged-in frontpage load while **`stat_domain` is read by every single `refresh_score`
+call**, i.e. on every post and every reaction. `refreshStats()` refreshes both `CONCURRENTLY` (which is what their
+unique indexes, `stat_tag_tag_idx` and `stat_domain_domain_idx`, exist for — without one the refresh cannot be
+concurrent and would lock readers out) on the `ding-refresh-stats` `Deno.cron`, every 10 min.
+
+**The trade is staleness, and it is bigger than it looks for `stat_domain`:** `refresh_score` now ranks against a
+snapshot up to 10 minutes old, so a brand-new tag or domain earns no reputation term until the next tick. That is fine
+for slow-moving reputation and is why `stat_usr` was left alone (78ms, not worth the staleness). Tests must call
+`refreshStats()` after inserting content they then expect to be scored or discovered — and note that a test asserting
+something is _absent_ passes vacuously against a stale snapshot, so those must refresh too.
 
 **Both are world- or org-stranger-readable, so neither may use `visibleTo`** — they hard-filter to public root posts
 (`orgs = '{}' and usrs = '{}'`). `stat_tag` (`db.sql`) carries that same filter for the same reason: before, a tag used
