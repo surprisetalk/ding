@@ -1757,6 +1757,29 @@ const topTags = (who: string) =>
       left join com r on r.parent_cid = t.cid and char_length(r.body) = 1
      group by t.tag order by ups desc, posts desc, t.tag limit 12`;
 
+// Both feeds paginate by OFFSET, which postgres cannot skip — it walks and discards every
+// row before the window, so ?p=99999999 is a request to scan the whole table. Bound the
+// offset rather than the page number so the cap means the same thing at any ?limit=, and
+// say so plainly instead of silently serving a different page than the one asked for.
+// Pagination hides "next" at the cap, so a browser can never walk into this.
+// On an object so tests can shrink it, like signupRate/dbIngestRate — proving the cap
+// suppresses a "next" link otherwise needs 5000 seeded rows.
+export const paging = { maxOffset: 5000 };
+const pageParam = (raw: string | undefined, lim: number) => {
+  // Garbage and negatives still coerce to page 0, matching ?limit= and the behaviour the
+  // routes test pins. Only the cap throws: a page past it cannot be answered honestly, and
+  // clamping would serve one page under a URL claiming another.
+  const p = Math.max(0, Math.trunc(+(raw || 0)) || 0);
+  if (p * lim > paging.maxOffset) {
+    throw new HTTPException(400, {
+      message: `page ${p} is past the last reachable page (${
+        Math.floor(paging.maxOffset / lim)
+      }). Narrow the feed with a #tag, @user or search rather than paging deeper.`,
+    });
+  }
+  return p;
+};
+
 // The viewer's own vote on a label plus its public ▲ count. The ▼ count is deliberately
 // absent: a downvote is private, so it must have no read path off the voter's own pages.
 const prefStat = (me: string, kind: string, val: string) =>
@@ -1771,7 +1794,7 @@ const PREF_WINDOW = 300;
 
 app.get("/", async (c) => {
   const q = c.req.query(),
-    p = Math.max(0, Math.trunc(+(q.p || 0)) || 0),
+    p = pageParam(q.p, 25),
     // Normalized once, because orderBy treats any unknown sort as "hot" — reading q.sort
     // raw here would let `?sort=HOT` silently take a different branch than it orders by.
     s = q.sort === "new" || q.sort === "top" ? q.sort : "hot",
@@ -1958,7 +1981,7 @@ app.get("/", async (c) => {
           ? <p class="empty">no posts yet.</p>
           : <div class="posts">{items.map((i) => Post(i, name, cur))}</div>}
       </section>
-      <Pagination base="/" cur={cur} p={p} more={items.length === 25} />
+      <Pagination base="/" cur={cur} p={p} more={items.length === 25 && (p + 1) * 25 <= paging.maxOffset} />
     </>,
     { title: meta || undefined },
   );
@@ -3130,8 +3153,8 @@ app.get("/c/:cid?", async (c) => {
     cid = c.req.param("cid"),
     n = await viewer(c),
     s = q.sort || "hot",
-    p = Math.max(0, Math.trunc(+(q.p || 0)) || 0),
-    lim = Math.min(100, Math.max(1, Math.trunc(+(q.limit || 25)) || 25));
+    lim = Math.min(100, Math.max(1, Math.trunc(+(q.limit || 25)) || 25)),
+    p = pageParam(q.p, lim);
   const [u] = n ? await sql`select orgs_r from usr where name = ${n}` : [{ orgs_r: [] }];
   const rT = u?.orgs_r || [],
     tags = c.req.queries("tag") || [],
@@ -3327,7 +3350,7 @@ app.get("/c/:cid?", async (c) => {
             )
             : <div class="posts">{items.map((i) => Post(i, n, cur))}</div>}
         </section>
-        <Pagination base="/c" cur={cur} p={p} more={items.length === lim} />
+        <Pagination base="/c" cur={cur} p={p} more={items.length === lim && (p + 1) * lim <= paging.maxOffset} />
       </>,
       { title: meta || "search" },
     );

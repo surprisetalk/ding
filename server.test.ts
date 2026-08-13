@@ -41,6 +41,7 @@ import app, {
   formatBody,
   formatLabels,
   matchesQ,
+  paging,
   parseLabels,
   postRate,
   prefRate,
@@ -422,6 +423,44 @@ Deno.test(
     await t.step("GET / and /c tolerate malformed p/limit (no 500)", async () => {
       for (const u of ["/?p=notanumber", "/?p=-5", "/c?p=notanumber", "/c?p=-9", "/c?limit=garbage", "/c?limit=-3"])
         assertEquals((await app.request(u)).status, 200, u);
+    });
+
+    // OFFSET is a scan postgres cannot skip, so an unbounded ?p= is a request to walk the
+    // whole table. The cap is on p * limit, so it means the same depth at any page size.
+    await t.step("a page past the offset cap is refused, not silently clamped", async () => {
+      for (const u of ["/?p=99999999", "/c?p=99999999", "/?p=201", "/c?p=201"]) {
+        const res = await app.request(u);
+        assertEquals(res.status, 400, u);
+        assertStringIncludes(await res.text(), "past the last reachable page");
+      }
+      // ?limit= moves the page count but not the depth: 5000/100 = 50 pages.
+      assertEquals((await app.request("/c?limit=100&p=50")).status, 200);
+      assertEquals((await app.request("/c?limit=100&p=51")).status, 400);
+      // The last page inside the cap still works, so the bound is off-by-one clean.
+      assertEquals((await app.request("/?p=200")).status, 200);
+    });
+
+    // A browser must never be able to click its way into that 400. Shrink the cap rather
+    // than seeding 5000 rows: at the default a page that deep returns nothing, so `more`
+    // would be false anyway and the assertion would prove nothing.
+    await t.step("the next link disappears at the cap", async () => {
+      // Two full pages of public roots, so `more` turns on the item count and the cap is
+      // the only thing that can turn it back off.
+      await sql`insert into com (created_by, body, tags, created_at, score)
+                select 'BugHunter42', 'pagecap ' || g, '{pagecap}', now(), now()
+                  from generate_series(1, 30) g`;
+      try {
+        paging.maxOffset = 25; // last reachable page is p=1
+        assertStringIncludes(await (await app.request("/")).text(), "p=1", "page 0 should still offer next");
+        const atCap = await (await app.request("/?p=1")).text();
+        assertStringIncludes(atCap, 'class="posts"'); // still a full page of results...
+        assertEquals(atCap.includes("p=2"), false, "rendered a next link past the cap");
+        // ...and the page it would have linked to is exactly what the handler refuses.
+        assertEquals((await app.request("/?p=2")).status, 400);
+      } finally {
+        paging.maxOffset = 5000;
+        await sql`delete from com where tags @> '{pagecap}'`;
+      }
     });
 
     await t.step("GET /verify invalid token", async () => {

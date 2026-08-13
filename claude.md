@@ -312,6 +312,14 @@ Two surfaces, both rendered as `.tag-preset` chips (`public/style.css`):
 - **Profile top tags** (`User` component, both `GET /u/:name` and `GET /u`): `topTags(name)`, ranked by upvotes received
   with post count as tiebreak, chips link to the global `/c?tag=<tag>` feed.
 
+**Pagination is offset-based and therefore bounded.** `pageParam` is the single definition of `?p=` for both feeds:
+malformed and negative values coerce to page 0 (matching `?limit=`, pinned by the routes test), but `p * limit` past
+`paging.maxOffset` (5000) is a **400**, not a clamp — postgres cannot skip an OFFSET, so `?p=99999999` is a request to
+walk the whole table, and serving page 200 under a URL claiming page 99999999 would be a lie. The cap is on the
+_offset_, not the page number, so it means the same depth at any `?limit=`. `Pagination` hides "next" at the cap, so a
+browser can never click into that 400. `paging` is an object so tests can shrink it — proving the link disappears
+otherwise needs 5000 seeded rows, and at the default the page is empty anyway and the assertion proves nothing.
+
 **`stat_tag` is a MATERIALIZED view**, unlike its `stat_usr`/`stat_domain` siblings. As a plain view it re-aggregated
 every public root post and every reaction on **every read** — and it is read once per logged-in frontpage load plus once
 per `refresh_score` call. `refreshStats()` refreshes it `CONCURRENTLY` (which is what `stat_tag_tag_idx`, its unique
