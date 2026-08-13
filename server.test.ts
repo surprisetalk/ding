@@ -1,6 +1,6 @@
 //// IMPORTS ///////////////////////////////////////////////////////////////////
 
-import { assertEquals, assertExists, assertStringIncludes, assertThrows } from "@std/assert";
+import { assertEquals, assertExists, assertRejects, assertStringIncludes, assertThrows } from "@std/assert";
 import {
   buildMark,
   buildMsg,
@@ -16,7 +16,7 @@ import {
   verifyRow,
 } from "./dht.ts";
 import { backfill } from "./backfill.ts";
-import { type Api, directImageUrl, getPostedUrls, imageMentionBot, post, reply, unansweredMentions } from "./bots.ts";
+import { directImageUrl, getPostedUrls, imageMentionBot, post, reply, unansweredMentions } from "./bots.ts";
 import cowsayBot from "./bots/cowsay.ts";
 import { BOTS } from "./bots/mod.ts";
 import { jsx } from "@hono/hono/jsx";
@@ -30,7 +30,7 @@ import dbSql from "./db.sql" with { type: "text" };
 import app, {
   AI_CRAWLERS,
   badSignupEmail,
-  botFetch,
+  botApi,
   dbIngestRate,
   decodeLabels,
   discoverPeers,
@@ -3633,16 +3633,17 @@ Deno.test(
 // This pins that seam — Basic Auth, form POST, and JSON GET all have to work in-process,
 // because a Deno Deploy isolate cannot fetch its own origin.
 Deno.test(
-  "bot fleet in-process transport (app.request)",
+  "bot fleet direct transport (feedPosts/createPost)",
   pgtest(() => async (t) => {
-    const api: Api = {
-      apiUrl: "",
-      auth: btoa("john@example.com:password1!"),
-      botUsername: "john_doe",
-      fetch: (input, init) => botFetch(input, init),
-    };
+    Deno.env.set("BOT_JOHN_EMAIL", "john@example.com");
+    Deno.env.set("BOT_JOHN_PASSWORD", "password1!");
+    const api = (await botApi("JOHN"))!;
 
-    await t.step("post() writes through app.request with Basic Auth", async () => {
+    await t.step("botApi resolves the real usr.name, not a guess from the email", () => {
+      assertEquals(api.botUsername, "john_doe");
+    });
+
+    await t.step("post() writes straight to the database", async () => {
       assertEquals(await post(api, "transport check https://example.com/xyz", "#bot"), true);
     });
 
@@ -3650,17 +3651,25 @@ Deno.test(
       assertEquals((await getPostedUrls(api)).has("https://example.com/xyz"), true);
     });
 
-    await t.step("bad credentials cannot post", async () => {
-      const bad = { ...api, auth: btoa("john@example.com:wrong!") };
-      assertEquals(await post(bad, "should never land https://example.com/nope", "#bot"), false);
-      assertEquals((await getPostedUrls(api)).has("https://example.com/nope"), false);
+    // The password is still verified — once per run instead of once per request. It is what
+    // stops a mistyped BOT_<N>_EMAIL from posting as somebody else.
+    await t.step("bad credentials cannot build an Api at all", async () => {
+      Deno.env.set("BOT_BADCRED_EMAIL", "john@example.com");
+      Deno.env.set("BOT_BADCRED_PASSWORD", "wrong!");
+      await assertRejects(() => botApi("BADCRED"), Error, "do not match any user");
+      Deno.env.delete("BOT_BADCRED_EMAIL");
+      Deno.env.delete("BOT_BADCRED_PASSWORD");
+    });
+
+    await t.step("a missing credential is a skip, not a throw", async () => {
+      assertEquals(await botApi("NOSUCHBOT"), null);
     });
 
     // The mocked bots.test.ts harness can't see this: only the real `/c` knows that
     // `comments=1` selects `parent_cid is not null` — comments INSTEAD OF roots. A
     // single-query unansweredMentions silently answers one kind and drops the other.
     await t.step("unansweredMentions sees BOTH a root mention and a reply mention", async () => {
-      const botApi = { ...api, botUsername: "jane_doe" };
+      const janeApi = { ...api, botUsername: "jane_doe" };
       const rootBody = new FormData();
       rootBody.append("body", "summoning the bot from a brand new post");
       rootBody.append("tags", "@jane_doe #bots");
@@ -3679,7 +3688,7 @@ Deno.test(
         headers: basic("john@example.com", "password1!"),
       });
 
-      const seen = await unansweredMentions(botApi);
+      const seen = await unansweredMentions(janeApi);
       const bodies = seen.map((p) => p.body);
       assertEquals(bodies.some((b) => b.includes("brand new post")), true, `root mention dropped: ${bodies}`);
       assertEquals(bodies.some((b) => b.includes("from a reply")), true, `reply mention dropped: ${bodies}`);
@@ -3975,18 +3984,12 @@ Deno.test(
     });
     const rootCid = Number(new URL(rootRes.headers.get("location")!, "http://x").pathname.split("/")[2]);
 
-    const sumApi: Api = {
-      apiUrl: "",
-      auth: btoa("bot-summoner@ding.bar:sumpw!"),
-      botUsername: "bot_summoner",
-      fetch: (i, n) => botFetch(i, n),
-    };
-    const cowApi: Api = {
-      apiUrl: "",
-      auth: btoa("bot-cowsay@ding.bar:cowpw!"),
-      botUsername: "bot_cowsay",
-      fetch: (i, n) => botFetch(i, n),
-    };
+    Deno.env.set("BOT_SUMMONER_EMAIL", "bot-summoner@ding.bar");
+    Deno.env.set("BOT_SUMMONER_PASSWORD", "sumpw!");
+    const sumApi = (await botApi("SUMMONER"))!;
+    Deno.env.set("BOT_COWSAY_EMAIL", "bot-cowsay@ding.bar");
+    Deno.env.set("BOT_COWSAY_PASSWORD", "cowpw!");
+    const cowApi = (await botApi("COWSAY"))!;
 
     await t.step("summon comment lands and carries the mention", async () => {
       assertEquals(await reply(sumApi, rootCid, "@bot_cowsay"), true);
@@ -4018,12 +4021,9 @@ Deno.test(
     await sql`insert into com (parent_cid, created_by, body, created_at, score)
       values (302, 'bot_summoner', '@bot_cowsay', now() - interval '1 minute', now() - interval '2 days')`;
 
-    const api: Api = {
-      apiUrl: "",
-      auth: btoa("bot-summoner@ding.bar:sumpw!"),
-      botUsername: "bot_summoner",
-      fetch: (i, n) => botFetch(i, n),
-    };
+    Deno.env.set("BOT_SUMMONER_EMAIL", "bot-summoner@ding.bar");
+    Deno.env.set("BOT_SUMMONER_PASSWORD", "sumpw!");
+    const api = (await botApi("SUMMONER"))!;
 
     await t.step("a 1-minute-old comment means the run skips", async () => {
       const before = (await sql`select count(*)::int as n from com where created_by = 'bot_summoner'`)[0].n;
@@ -4047,18 +4047,12 @@ Deno.test(
       ('bot_summoner', 'bot-summoner@ding.bar', 'hashed:sumpw!', 'beep', now(), 'john_doe'),
       ('bot_pixel', 'bot-pixel@ding.bar', 'hashed:pixpw!', 'art', now(), 'john_doe')`;
 
-    const sumApi: Api = {
-      apiUrl: "",
-      auth: btoa("bot-summoner@ding.bar:sumpw!"),
-      botUsername: "bot_summoner",
-      fetch: (i, n) => botFetch(i, n),
-    };
-    const pixApi: Api = {
-      apiUrl: "",
-      auth: btoa("bot-pixel@ding.bar:pixpw!"),
-      botUsername: "bot_pixel",
-      fetch: (i, n) => botFetch(i, n),
-    };
+    Deno.env.set("BOT_SUMMONER_EMAIL", "bot-summoner@ding.bar");
+    Deno.env.set("BOT_SUMMONER_PASSWORD", "sumpw!");
+    const sumApi = (await botApi("SUMMONER"))!;
+    Deno.env.set("BOT_PIXEL_EMAIL", "bot-pixel@ding.bar");
+    Deno.env.set("BOT_PIXEL_PASSWORD", "pixpw!");
+    const pixApi = (await botApi("PIXEL"))!;
 
     // Each step starts from an empty thread. A skipped or failed mention is deliberately never
     // marked answered, so without this the leftovers from earlier steps get retried in later ones.
@@ -4081,7 +4075,7 @@ Deno.test(
       return cid;
     };
 
-    // botFetch dispatches through app.request, so only the outbound image fetch is stubbed here.
+    // The bot Api goes straight at the database, so only the outbound image fetch is stubbed here.
     const withImageFetch = async (
       handler: (url: string) => Response,
       body: () => Promise<void>,

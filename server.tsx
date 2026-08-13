@@ -1838,6 +1838,76 @@ const pageParam = (raw: string | undefined, lim: number) => {
   return p;
 };
 
+// The ONE definition of the /c feed read. GET /c parses a query string into this; the bot
+// fleet calls it directly, skipping HTTP, routing, middleware and a bcrypt auth per request.
+// Everything that gates visibility lives here (visibleTo at every nesting level), so a caller
+// cannot opt out of the ACL by not going through the route.
+export type FeedQuery = {
+  cid?: string | number | null;
+  viewer?: string; // "" = anonymous; drives visibleTo and user_reactions
+  orgsR?: string[];
+  tags?: string[];
+  orgs?: string[];
+  usrs?: string[]; // AUTHORS, not dm recipients — matches ?usr= on /c, unlike ?usr= on /
+  mentions?: string[];
+  www?: string[];
+  q?: string;
+  repliesTo?: string;
+  reactionsOnly?: boolean;
+  commentsOnly?: boolean;
+  sort?: string;
+  limit?: number;
+  offset?: number;
+};
+
+export const feedPosts = (o: FeedQuery) => {
+  const me = o.viewer ?? "",
+    rT = o.orgsR ?? [],
+    tags = o.tags ?? [],
+    orgs = o.orgs ?? [],
+    usrs = o.usrs ?? [],
+    mens = o.mentions ?? [],
+    www = (o.www ?? []).map(normHost);
+  return sql<Com[]>`
+    select c.*, ${
+    DING_ORG_PK
+      ? sql`exists(select 1 from dht m where m.kind='mark' and m.target = c.author_id and m.pubkey = ${DING_ORG_PK} and m.val->'mark'->>'v' in ('email','payment','human') and (m.val->'mark'->>'exp')::bigint > extract(epoch from now()))`
+      : sql`false`
+  } as checked,
+      ${aggCols("c", me)},
+      array(select jsonb_build_object('body', ch.body, 'created_by', ch.created_by, 'cid', ch.cid, 'parent_cid', ch.parent_cid, 'created_at', ch.created_at, 'tags', ch.tags, 'orgs', ch.orgs, 'usrs', ch.usrs, 'c_flags', ch.c_flags,
+        ${aggPairs("ch", me)},
+        'child_comments', array(select jsonb_build_object('body', gc.body, 'created_by', gc.created_by, 'cid', gc.cid, 'parent_cid', gc.parent_cid, 'created_at', gc.created_at, 'tags', gc.tags, 'orgs', gc.orgs, 'usrs', gc.usrs, 'c_flags', gc.c_flags,
+          ${aggPairs("gc", me)}
+        ) from com gc where gc.parent_cid = ch.cid and char_length(gc.body) > 1 and ${
+    visibleTo(rT, me)
+  } order by gc.created_at desc)
+      ) from com ch where ch.parent_cid = c.cid and char_length(ch.body) > 1 and ${
+    visibleTo(rT, me)
+  } order by ch.created_at desc) as child_comments
+    from com c where ${
+    o.cid
+      ? sql`cid = ${o.cid}`
+      : o.reactionsOnly || o.repliesTo || o.commentsOnly
+      ? sql`parent_cid is not null`
+      : sql`parent_cid is null`
+  }
+    ${usrs.length ? sql`and created_by = any(${usrs}::citext[])` : sql``}
+    and tags @> ${tags}::text[] and ${visibleTo(rT, me)}
+    ${orgs.length ? sql`and orgs && ${orgs}::text[]` : sql``}
+    ${
+    mens.length ? sql`and (usrs && ${mens}::text[] or mentions && ${mens.map((m) => m.toLowerCase())}::text[])` : sql``
+  }
+    ${www.length ? sql`and domains && ${www}::text[]` : sql``}
+    ${o.repliesTo ? sql`and parent_cid in (select cid from com where created_by = ${o.repliesTo})` : sql``}
+    ${o.reactionsOnly ? sql`and char_length(body) = 1` : sql``}
+    ${o.commentsOnly ? sql`and char_length(body) > 1` : sql``}
+    ${o.q ? sql`and to_tsvector('english', body) @@ plainto_tsquery('english', ${o.q})` : sql``}
+    order by ${orderBy(o.sort ?? "hot")}
+    offset ${o.offset ?? 0} limit ${o.limit ?? 25}
+  `;
+};
+
 // The viewer's own vote on a label plus its public ▲ count. The ▼ count is deliberately
 // absent: a downvote is private, so it must have no read path off the voter's own pages.
 const prefStat = (me: string, kind: string, val: string) =>
@@ -2998,18 +3068,29 @@ const refBack = (c: Context): string | null => {
   }
 };
 
-app.post("/c/:p?", async (c) => {
-  const pid = c.req.param("p") || null;
-  const n = await viewer(c);
-  if (!n)
-    return c.redirect(`/u?next=${encodeURIComponent(pid ? `/c/${pid}` : "/")}`);
+// The ONE definition of "someone posts something". POST /c parses a form into this; the bot
+// fleet calls it directly, skipping HTTP, routing, middleware and a bcrypt auth per request.
+// Every check the route used to do lives here — rate limit, parent ACL, org write permission,
+// self-react/self-flag, reaction toggle, dht signing — so calling it directly cannot bypass
+// one. Outcomes are returned rather than redirected: the route turns them into redirects, the
+// bots turn them into a boolean.
+export type PostOutcome =
+  | { kind: "created"; cid: number; parentCid: number | null; grandparent: number | null }
+  | { kind: "unreacted"; parentCid: number; grandparent: number | null }
+  | { kind: "flagged"; parentCid: number; grandparent: number | null }
+  | { kind: "self"; what: "react" | "flag"; parentCid: number; grandparent: number | null };
 
-  if (!rateHit(postRate, n, POST_RATE_MAX, POST_RATE_MS))
+export const createPost = async (
+  author: string,
+  body: string,
+  opts: { parentCid?: number | string | null; labels?: string } = {},
+): Promise<PostOutcome> => {
+  const pid = opts.parentCid ?? null;
+  if (!rateHit(postRate, author, POST_RATE_MAX, POST_RATE_MS))
     throw new HTTPException(429, { message: "slow down. try again in a minute." });
 
-  const f = await c.req.formData(),
-    b = f.get("body")?.toString() || "",
-    [usr] = await sql`select orgs_w, orgs_r from usr where name = ${n}`;
+  const [usr] = await sql`select orgs_w, orgs_r from usr where name = ${author}`;
+  if (!usr) throw new HTTPException(401, { message: `no such user @${author}.` });
   let tags: string[], orgs: string[], usrs: string[];
   type Prm = {
     tags: string[];
@@ -3027,74 +3108,56 @@ app.post("/c/:p?", async (c) => {
     [prm] = await sql<
       Prm[]
     >`select tags, orgs, usrs, created_by, parent_cid as prm_parent, hash as prm_hash, domains, flaggers from com where cid = ${pid}`;
-    if (!prm)
-      throw new HTTPException(404, { message: "Parent post not found." });
+    if (!prm) throw new HTTPException(404, { message: "Parent post not found." });
     if (
       !prm.orgs.every((t) => usr.orgs_r.includes(t)) ||
-      (prm.usrs.length && !prm.usrs.includes(n) && prm.created_by !== n)
+      (prm.usrs.length && !prm.usrs.includes(author) && prm.created_by !== author)
     ) {
-      throw new HTTPException(403, {
-        message: "You don't have access to that thread.",
-      });
+      throw new HTTPException(403, { message: "You don't have access to that thread." });
     }
     tags = prm.tags;
     orgs = prm.orgs;
     usrs = prm.usrs;
 
-    if (isReaction(b)) {
-      if (prm.created_by === n) {
-        return c.redirect(
-          threadUrl(prm.prm_parent, pid) + "?err=self-react",
-        );
-      }
+    if (isReaction(body)) {
+      if (prm.created_by === author)
+        return { kind: "self", what: "react", parentCid: +pid, grandparent: prm.prm_parent };
       const [existing] =
-        await sql`select cid from com where parent_cid = ${pid} and created_by = ${n} and body = ${b} and char_length(body) = 1 limit 1`;
+        await sql`select cid from com where parent_cid = ${pid} and created_by = ${author} and body = ${body} and char_length(body) = 1 limit 1`;
       if (existing) {
         await sql.begin((tx) => {
           const sql = tx;
           return Promise.all([
             sql`delete from com where cid = ${existing.cid}`,
-            sql`update com set c_reactions = c_reactions || hstore(${b}, greatest(coalesce((c_reactions->${b})::int,0)-1, 0)::text) where cid = ${pid}`,
+            sql`update com set c_reactions = c_reactions || hstore(${body}, greatest(coalesce((c_reactions->${body})::int,0)-1, 0)::text) where cid = ${pid}`,
           ]);
         });
         await refreshScores(pid);
-        const r = refBack(c);
-        return c.redirect(
-          r ? `${r}#${pid}` : threadUrl(prm.prm_parent, pid),
-        );
+        return { kind: "unreacted", parentCid: +pid, grandparent: prm.prm_parent };
       }
     }
   } else {
-    const l = parseLabels(f.get("tags")?.toString() || "");
-    if (!l.tag.length && !l.usr.length && !l.org.length) {
-      throw new HTTPException(400, {
-        message: "post needs at least one #tag, *org, or @user recipient",
-      });
-    }
+    const l = parseLabels(opts.labels ?? "");
+    if (!l.tag.length && !l.usr.length && !l.org.length)
+      throw new HTTPException(400, { message: "post needs at least one #tag, *org, or @user recipient" });
     const badOrg = l.org.find((t) => !usr.orgs_w.includes(t));
-    if (badOrg) {
-      throw new HTTPException(403, {
-        message: `you cannot write to org *${badOrg}`,
-      });
-    }
+    if (badOrg) throw new HTTPException(403, { message: `you cannot write to org *${badOrg}` });
     tags = l.tag;
     orgs = l.org;
     usrs = l.usr;
   }
 
-  if (pid && prm && b === "flag") {
-    const back = threadUrl(prm.prm_parent, pid);
-    if (prm.created_by === n) return c.redirect(`${back}?err=self-flag`);
+  if (pid && prm && body === "flag") {
+    if (prm.created_by === author)
+      return { kind: "self", what: "flag", parentCid: +pid, grandparent: prm.prm_parent };
     if (prm.prm_hash) {
-      // signed post → sign a flag row; ingestMsg recomputes c_flags from distinct flaggers
-      const key = await ensureKey(n);
-      await ingestMsg(
-        await signRow("flag", nowSec(), { target: prm.prm_hash }, key.priv, key.pub),
-      );
-    } else if (!prm.flaggers.includes(n)) {
-      await sql`update com set c_flags = c_flags + 1, flaggers = array_append(flaggers, ${n}) where cid = ${pid}`;
+      // signed post -> sign a flag row; ingestMsg recomputes c_flags from distinct flaggers
+      const key = await ensureKey(author);
+      await ingestMsg(await signRow("flag", nowSec(), { target: prm.prm_hash }, key.priv, key.pub));
+    } else if (!prm.flaggers.includes(author)) {
+      await sql`update com set c_flags = c_flags + 1, flaggers = array_append(flaggers, ${author}) where cid = ${pid}`;
     }
-    return c.redirect(back);
+    return { kind: "flagged", parentCid: +pid, grandparent: prm.prm_parent };
   }
 
   // Sign PUBLIC root posts and public replies-to-signed-parents into the dht log.
@@ -3102,32 +3165,54 @@ app.post("/c/:p?", async (c) => {
   // unsigned com path so private bodies never enter the public log (Phase 1 scope).
   const parentHash = pid ? prm?.prm_hash ?? null : null;
   let cm: { cid: number };
-  if (!isReaction(b) && !orgs.length && !usrs.length && (!pid || parentHash)) {
-    const key = await ensureKey(n);
-    const payload = buildMsg({ parent: parentHash ?? undefined, tags, orgs, usrs, body: b });
+  if (!isReaction(body) && !orgs.length && !usrs.length && (!pid || parentHash)) {
+    const key = await ensureKey(author);
+    const payload = buildMsg({ parent: parentHash ?? undefined, tags, orgs, usrs, body });
     const row = await signRow("msg", nowSec(), payload, key.priv, key.pub);
     const { cid } = await ingestMsg(row, { parentCid: pid ? +pid : null, comTags: tags });
     if (cid == null) throw new HTTPException(500, { message: "post was logged but its com projection is missing." });
     cm = { cid };
   } else {
-    const { mentions, links, domains, thumb } = await deriveBody(b, !pid);
+    const { mentions, links, domains, thumb } = await deriveBody(body, !pid);
     [cm] =
-      await sql`insert into com (parent_cid, created_by, body, tags, orgs, usrs, mentions, links, thumb, domains) values (${pid}, ${n}, ${b}, ${tags}, ${orgs}, ${usrs}, ${mentions}, ${links}, ${thumb}, ${domains}) returning cid`;
+      await sql`insert into com (parent_cid, created_by, body, tags, orgs, usrs, mentions, links, thumb, domains) values (${pid}, ${author}, ${body}, ${tags}, ${orgs}, ${usrs}, ${mentions}, ${links}, ${thumb}, ${domains}) returning cid`;
     if (pid) {
-      await bumpCounts(sql, pid, b);
+      await bumpCounts(sql, pid, body);
       await refreshScores(pid);
     } else {
       await refreshScores(cm.cid);
     }
   }
+  return { kind: "created", cid: cm.cid, parentCid: pid ? +pid : null, grandparent: prm?.prm_parent ?? null };
+};
 
-  if (pid && isReaction(b)) {
-    const r = refBack(c);
-    if (r) return c.redirect(`${r}#${pid}`);
+app.post("/c/:p?", async (c) => {
+  const pid = c.req.param("p") || null;
+  const n = await viewer(c);
+  if (!n)
+    return c.redirect(`/u?next=${encodeURIComponent(pid ? `/c/${pid}` : "/")}`);
+
+  const f = await c.req.formData();
+  const r = await createPost(n, f.get("body")?.toString() || "", {
+    parentCid: pid,
+    labels: f.get("tags")?.toString() || "",
+  });
+
+  // Redirect shapes are unchanged from when this logic lived inline; only their inputs
+  // now come from the outcome instead of local state.
+  const thread = () => threadUrl(r.grandparent, String(r.parentCid));
+  if (r.kind === "self") return c.redirect(`${thread()}?err=self-${r.what}`);
+  if (r.kind === "flagged") return c.redirect(thread());
+  if (r.kind === "unreacted") {
+    const ref = refBack(c);
+    return c.redirect(ref ? `${ref}#${r.parentCid}` : thread());
   }
-  return c.redirect(
-    pid ? prm?.prm_parent ? threadUrl(prm.prm_parent, pid) : `/c/${pid}#${cm.cid}` : `/c/${cm.cid}`,
-  );
+  if (r.parentCid === null) return c.redirect(`/c/${r.cid}`);
+  if (isReaction(f.get("body")?.toString() || "")) {
+    const ref = refBack(c);
+    if (ref) return c.redirect(`${ref}#${r.parentCid}`);
+  }
+  return c.redirect(r.grandparent ? thread() : `/c/${r.parentCid}#${r.cid}`);
 });
 
 // Tuning a row of chips is a handful of clicks, so postRate's 10/min would break it.
@@ -3223,44 +3308,23 @@ app.get("/c/:cid?", async (c) => {
     // fixes the filter and keeps the ~domain vote button reading the same key POST /p writes.
     www = (c.req.queries("www") || []).map(normHost);
 
-  const items = await sql<Com[]>`
-    select c.*, ${
-    DING_ORG_PK
-      ? sql`exists(select 1 from dht m where m.kind='mark' and m.target = c.author_id and m.pubkey = ${DING_ORG_PK} and m.val->'mark'->>'v' in ('email','payment','human') and (m.val->'mark'->>'exp')::bigint > extract(epoch from now()))`
-      : sql`false`
-  } as checked,
-      ${aggCols("c", n || "")},
-      array(select jsonb_build_object('body', ch.body, 'created_by', ch.created_by, 'cid', ch.cid, 'parent_cid', ch.parent_cid, 'created_at', ch.created_at, 'tags', ch.tags, 'orgs', ch.orgs, 'usrs', ch.usrs, 'c_flags', ch.c_flags,
-        ${aggPairs("ch", n || "")},
-        'child_comments', array(select jsonb_build_object('body', gc.body, 'created_by', gc.created_by, 'cid', gc.cid, 'parent_cid', gc.parent_cid, 'created_at', gc.created_at, 'tags', gc.tags, 'orgs', gc.orgs, 'usrs', gc.usrs, 'c_flags', gc.c_flags,
-          ${aggPairs("gc", n || "")}
-        ) from com gc where gc.parent_cid = ch.cid and char_length(gc.body) > 1 and ${
-    visibleTo(rT, n || "")
-  } order by gc.created_at desc)
-      ) from com ch where ch.parent_cid = c.cid and char_length(ch.body) > 1 and ${
-    visibleTo(rT, n || "")
-  } order by ch.created_at desc) as child_comments
-    from com c where ${
-    cid
-      ? sql`cid = ${cid}`
-      : q.reactions || q.replies_to || q.comments
-      ? sql`parent_cid is not null`
-      : sql`parent_cid is null`
-  }
-    ${usrs.length ? sql`and created_by = any(${usrs}::citext[])` : sql``}
-    and tags @> ${tags}::text[] and ${visibleTo(rT, n || "")}
-    ${orgs.length ? sql`and orgs && ${orgs}::text[]` : sql``}
-    ${
-    mens.length ? sql`and (usrs && ${mens}::text[] or mentions && ${mens.map((m) => m.toLowerCase())}::text[])` : sql``
-  }
-    ${www.length ? sql`and domains && ${www}::text[]` : sql``}
-    ${q.replies_to ? sql`and parent_cid in (select cid from com where created_by = ${q.replies_to})` : sql``}
-    ${q.reactions ? sql`and char_length(body) = 1` : sql``}
-    ${q.comments ? sql`and char_length(body) > 1` : sql``}
-    ${q.q ? sql`and to_tsvector('english', body) @@ plainto_tsquery('english', ${q.q})` : sql``}
-    order by ${orderBy(s)}
-    offset ${p * lim} limit ${lim}
-  `;
+  const items = await feedPosts({
+    cid,
+    viewer: n || "",
+    orgsR: rT,
+    tags,
+    orgs,
+    usrs,
+    mentions: mens,
+    www,
+    q: q.q,
+    repliesTo: q.replies_to,
+    reactionsOnly: !!q.reactions,
+    commentsOnly: !!q.comments,
+    sort: s,
+    limit: lim,
+    offset: p * lim,
+  });
 
   if (host(c) === "api") return c.json(items);
   if (host(c) === "rss") {
@@ -3653,27 +3717,49 @@ app.use("/*", serveStatic({ root: "./public" }));
 
 //// BOT FLEET ////
 
-// Bots used to run as a GitHub Actions matrix, one process per bot, POSTing to https://ding.bar.
-// They now run in-process on a Deno.cron tick. Requests go through `app.request` rather than the
-// network: a Deno Deploy isolate cannot fetch its own origin (the same trap documented on the
-// checkmark cron below), and in-process dispatch keeps the exact middleware/ACL/auth semantics
-// the HTTP path had — Basic Auth included, so each bot still posts as its own `usr`.
+// Bots used to run as a GitHub Actions matrix POSTing to https://ding.bar, then in-process
+// through `app.request`. They now call the database directly via feedPosts/createPost.
+//
+// The in-process HTTP hop was not free: every bot action re-ran routing, the whole middleware
+// chain, and Basic Auth — and Basic Auth is a bcrypt comparison inside Postgres, measured at
+// ~49ms of database CPU per request. Across 46 bots on a 5-minute tick that was the single
+// largest source of load on the database, spent re-proving credentials the process already had.
+//
+// The ACL did NOT come from the HTTP layer, which is why this is safe: visibleTo lives inside
+// feedPosts and every parent/org/self check lives inside createPost, so the direct callers are
+// gated by the same code the route is. The password is still verified — once per bot per run,
+// in botApi — because that is what stops a mistyped BOT_<N>_EMAIL from posting as someone else.
 const BOT_CONCURRENCY = 4;
 const BOT_TIMEOUT_MS = 90_000;
 
-// `app.request` returns redirects instead of following them, but the bot helpers were written
-// against real fetch, which follows. A successful POST /c 302s to /c/<cid>, so leaving the
-// redirect unfollowed reports every successful post as a failure (and a failed auth 302s to
-// /u, which then 401s — exactly the distinction the helpers rely on). Follow like fetch does:
-// 303/302 after a POST become GET, and the Authorization header is preserved (same origin).
-export const botFetch = async (input: string, init?: RequestInit): Promise<Response> => {
-  let res = await app.request(input, init);
-  for (let hop = 0; hop < 5 && res.status >= 300 && res.status < 400; hop++) {
-    const location = res.headers.get("location");
-    if (!location) break;
-    res = await app.request(location, { headers: init?.headers });
-  }
-  return res;
+export const botApi = async (envPrefix: string): Promise<Api | null> => {
+  const email = Deno.env.get(`BOT_${envPrefix}_EMAIL`), password = Deno.env.get(`BOT_${envPrefix}_PASSWORD`);
+  if (!email || !password) return null;
+  const [usr] = await sql<{ name: string; orgs_r: string[] }[]>`
+    select name, orgs_r from usr where email = ${email} and password = crypt(${password}, password)`;
+  if (!usr) throw new Error(`bot ${envPrefix}: BOT_${envPrefix}_EMAIL/_PASSWORD do not match any user`);
+  return {
+    botUsername: usr.name,
+    orgsR: usr.orgs_r,
+    feed: async (q) => {
+      const rows = await feedPosts(q as FeedQuery);
+      // Bots were written against JSON responses, so hand them JSON-shaped rows: postgres.js
+      // returns Date objects where the wire returned ISO strings, and a bot comparing those
+      // as text would silently stop matching.
+      return JSON.parse(JSON.stringify(rows));
+    },
+    post: async (body, o) => {
+      try {
+        await createPost(usr.name, body, o);
+        return true;
+      } catch (e) {
+        // Same contract as the old postForm: log and report failure, never throw, so one
+        // rejected post cannot abort the rest of a bot's run.
+        console.error(`bot ${usr.name}: post failed — ${e instanceof Error ? e.message : e}`);
+        return false;
+      }
+    },
+  };
 };
 
 export async function runBotFleet(names: string[] = Object.keys(BOTS)) {
@@ -3681,21 +3767,19 @@ export async function runBotFleet(names: string[] = Object.keys(BOTS)) {
   let ok = 0, failed = 0, skipped = 0;
   const worker = async () => {
     for (let name = queue.shift(); name; name = queue.shift()) {
-      const env = name.toUpperCase();
-      const email = Deno.env.get(`BOT_${env}_EMAIL`),
-        password = Deno.env.get(`BOT_${env}_PASSWORD`);
-      if (!email || !password) {
-        skipped++;
-        console.warn(`bot ${name}: no BOT_${env}_EMAIL/_PASSWORD, skipping`);
+      let api: Api | null;
+      try {
+        api = await botApi(name.toUpperCase());
+      } catch (e) {
+        failed++;
+        console.error(`bot ${name}: ${e instanceof Error ? e.message : e}`);
         continue;
       }
-      // apiUrl is "" so helpers build bare paths ("/c?…") — app.request takes a path directly.
-      const api: Api = {
-        apiUrl: "",
-        auth: btoa(`${email}:${password}`),
-        botUsername: email.split("@")[0].replace(/-/g, "_"),
-        fetch: (input, init) => botFetch(input, init),
-      };
+      if (!api) {
+        skipped++;
+        console.warn(`bot ${name}: no BOT_${name.toUpperCase()}_EMAIL/_PASSWORD, skipping`);
+        continue;
+      }
       // One wedged bot must not hold the slot forever: Deno.cron skips a tick while the previous
       // run is still going, so an un-timed-out hang would silently stop the whole fleet.
       let timer: ReturnType<typeof setTimeout> | undefined;

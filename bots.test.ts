@@ -10,6 +10,7 @@ import {
   paginate,
   pickCandidates,
   type Post,
+  reply,
   scanBot,
   verdictBot,
 } from "./bots.ts";
@@ -123,16 +124,10 @@ Deno.test("decodeEntities: plain string unchanged", () => {
 const fakeApi = (pages: unknown[][]): Api => {
   let i = 0;
   return {
-    apiUrl: "http://x",
-    auth: "auth",
     botUsername: "bot_test",
-    fetch: () =>
-      Promise.resolve(
-        new Response(JSON.stringify(pages[i++] ?? []), {
-          status: 200,
-          headers: { "content-type": "application/json" },
-        }),
-      ),
+    orgsR: [],
+    feed: () => Promise.resolve(pages[i++] ?? []),
+    post: () => Promise.resolve(true),
   };
 };
 
@@ -187,25 +182,19 @@ const mentionApi = (opts: {
 }) => {
   const replies: number[] = [];
   const api: Api = {
-    apiUrl: "http://x",
-    auth: "auth",
     botUsername: "bot_test",
-    fetch: (input, init) => {
-      const url = new URL(input);
-      if (init?.method === "POST") {
-        const cid = Number(url.pathname.split("/")[2]);
-        if (opts.replyFails?.includes(cid)) return Promise.resolve(new Response("nope", { status: 500 }));
-        replies.push(cid);
-        return Promise.resolve(new Response("", { status: 200 }));
-      }
-      // The real `/c` treats `comments=1` as comments INSTEAD OF roots, so the harness must
-      // issue both queries; serving mentions from only the root call proves it does.
-      const rows = url.searchParams.has("mention")
-        ? (url.searchParams.has("comments") ? [] : opts.mentions)
-        : (opts.answered ?? []);
-      return Promise.resolve(
-        new Response(JSON.stringify(rows), { status: 200, headers: { "content-type": "application/json" } }),
-      );
+    orgsR: [],
+    // The real `/c` treats `comments=1` as comments INSTEAD OF roots, so the harness must
+    // issue both queries; serving mentions from only the root call proves it does.
+    feed: (q) =>
+      Promise.resolve(
+        q.mentions?.length ? (q.commentsOnly ? [] : opts.mentions) : (opts.answered ?? []),
+      ),
+    post: (_body, o) => {
+      const cid = Number(o.parentCid);
+      if (opts.replyFails?.includes(cid)) return Promise.resolve(false);
+      replies.push(cid);
+      return Promise.resolve(true);
     },
   };
   return { api, replies };
@@ -323,26 +312,15 @@ const verdictApi = (opts: {
 }) => {
   const posts: { cid: number; body: string }[] = [];
   const api: Api = {
-    apiUrl: "http://x",
-    auth: "auth",
     botUsername: "bot_test",
-    fetch: (input, init) => {
-      const url = new URL(input);
-      if (init?.method === "POST") {
-        posts.push({
-          cid: Number(url.pathname.split("/")[2]),
-          body: (init.body as FormData).get("body")?.toString() ?? "",
-        });
-        return Promise.resolve(new Response("", { status: 200 }));
-      }
-      const rows = url.searchParams.has("reactions")
-        ? (opts.reacted ?? [])
-        : url.searchParams.has("usr") || url.searchParams.has("comments")
-        ? []
-        : opts.fresh;
-      return Promise.resolve(
-        new Response(JSON.stringify(rows), { status: 200, headers: { "content-type": "application/json" } }),
-      );
+    orgsR: [],
+    feed: (q) =>
+      Promise.resolve(
+        q.reactionsOnly ? (opts.reacted ?? []) : q.usrs?.length || q.commentsOnly ? [] : opts.fresh,
+      ),
+    post: (body, o) => {
+      posts.push({ cid: Number(o.parentCid), body });
+      return Promise.resolve(true);
     },
   };
   return { api, posts };
@@ -382,19 +360,13 @@ Deno.test("verdictBot: dispatches verdicts to actions", async () => {
       system: "judge",
       verdicts: {
         hype: async (api2, p, note) => {
-          await (api2.fetch(`http://x/c/${p.cid}`, { method: "POST", body: toForm({ body: "▲" }) }));
-          if (note) await api2.fetch(`http://x/c/${p.cid}`, { method: "POST", body: toForm({ body: note }) });
+          await (reply(api2, p.cid, "▲"));
+          if (note) await reply(api2, p.cid, note);
         },
       },
     }));
   assertEquals(posts, [{ cid: 1, body: "▲" }, { cid: 1, body: "WOW" }]);
 });
-
-const toForm = (fields: Record<string, string>) => {
-  const fd = new FormData();
-  for (const [k, v] of Object.entries(fields)) fd.append(k, v);
-  return fd;
-};
 
 // Pins the critic toggle-bug fix: a cid the bot already REACTED to (single-grapheme
 // reply, invisible to the comments=1 dedup) must never be judged again.
@@ -415,7 +387,7 @@ Deno.test("verdictBot: reacted cids are excluded from candidates", async () => {
       await verdictBot(api, {
         system: "judge",
         verdicts: {
-          up: (api2, p) => api2.fetch(`http://x/c/${p.cid}`, { method: "POST", body: toForm({ body: "▲" }) }),
+          up: (api2, p) => reply(api2, p.cid, "▲"),
         },
       });
     } finally {
@@ -450,7 +422,7 @@ Deno.test("verdictBot: duplicate cids in one batch act only once", async () => {
   await withClaude('[{"cid":1,"verdict":"up"},{"cid":1,"verdict":"up"}]', () =>
     verdictBot(api, {
       system: "judge",
-      verdicts: { up: (api2, p) => api2.fetch(`http://x/c/${p.cid}`, { method: "POST", body: toForm({ body: "▲" }) }) },
+      verdicts: { up: (api2, p) => reply(api2, p.cid, "▲") },
     }));
   assertEquals(posts, [{ cid: 1, body: "▲" }]);
 });
@@ -482,7 +454,7 @@ Deno.test("verdictBot: string cid is coerced", async () => {
   await withClaude('[{"cid":"7","verdict":"up"}]', () =>
     verdictBot(api, {
       system: "judge",
-      verdicts: { up: (api2, p) => api2.fetch(`http://x/c/${p.cid}`, { method: "POST", body: toForm({ body: "▲" }) }) },
+      verdicts: { up: (api2, p) => reply(api2, p.cid, "▲") },
     }));
   assertEquals(posts, [{ cid: 7, body: "▲" }]);
 });
@@ -495,7 +467,7 @@ Deno.test("verdictBot: bot-authored candidates are excluded", async () => {
   await withClaude('[{"cid":1,"verdict":"up"},{"cid":2,"verdict":"up"}]', () =>
     verdictBot(api, {
       system: "judge",
-      verdicts: { up: (api2, p) => api2.fetch(`http://x/c/${p.cid}`, { method: "POST", body: toForm({ body: "▲" }) }) },
+      verdicts: { up: (api2, p) => reply(api2, p.cid, "▲") },
     }));
   assertEquals(posts, [{ cid: 2, body: "▲" }]);
 });
@@ -506,22 +478,13 @@ Deno.test("verdictBot: bot-authored candidates are excluded", async () => {
 const scanApi = (fresh: Partial<Post>[]) => {
   const replies: { cid: number; body: string }[] = [];
   const api: Api = {
-    apiUrl: "http://x",
-    auth: "auth",
     botUsername: "bot_test",
-    fetch: (input, init) => {
-      const url = new URL(input);
-      if (init?.method === "POST") {
-        replies.push({
-          cid: Number(url.pathname.split("/")[2]),
-          body: (init.body as FormData).get("body")?.toString() ?? "",
-        });
-        return Promise.resolve(new Response("", { status: 200 }));
-      }
-      const rows = url.searchParams.has("usr") ? [] : fresh;
-      return Promise.resolve(
-        new Response(JSON.stringify(rows), { status: 200, headers: { "content-type": "application/json" } }),
-      );
+    orgsR: [],
+    // The answered walk (usr + comments=1) returns nothing; everything else is the fresh feed.
+    feed: (q) => Promise.resolve(q.usrs?.length ? [] : fresh),
+    post: (body, o) => {
+      replies.push({ cid: Number(o.parentCid), body });
+      return Promise.resolve(true);
     },
   };
   return { api, replies };

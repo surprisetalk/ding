@@ -1,8 +1,9 @@
-// Manual single-bot runner: `deno task bot hn`. The fleet normally runs from the
-// Deno.cron in server.tsx; this is the debugging path and talks real HTTP to DING_API_URL.
+// Manual single-bot runner: `deno task bot hn`. The fleet normally runs from the Deno.cron
+// in server.tsx; this is the debugging path. It goes straight at the database like the cron
+// does, so it needs DATABASE_URL (and the server's other env) rather than DING_API_URL.
 
-import { botInit } from "./bots.ts";
 import { BOTS } from "./bots/mod.ts";
+import { botApi } from "./server.tsx";
 
 const name = Deno.args[0] ?? "";
 const run = BOTS[name];
@@ -15,4 +16,9 @@ if (!run) {
   );
   Deno.exit(1);
 }
-await run(botInit(name.toUpperCase()));
+const api = await botApi(name.toUpperCase());
+if (!api) {
+  console.error(`Set BOT_${name.toUpperCase()}_EMAIL and BOT_${name.toUpperCase()}_PASSWORD in the environment.`);
+  Deno.exit(1);
+}
+await run(api);

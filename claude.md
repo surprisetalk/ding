@@ -15,7 +15,7 @@ deno serve --watch -A server.tsx
 # Run tests (uses in-memory PGlite)
 deno test -A
 
-# Run a single bot manually (real HTTP against $DING_API_URL; needs BOT_<NAME>_EMAIL/_PASSWORD)
+# Run a single bot manually (goes straight at the DB like the cron: needs DATABASE_URL + BOT_<NAME>_EMAIL/_PASSWORD)
 deno task bot hn
 
 # Post to the DHT with your own key (self-managed identity)
@@ -203,10 +203,22 @@ signed.
   Unbounded history walks past `paginate`'s `maxPages=50` cap and throws — that silently killed bot_hn and bot_smallweb
   for months under Actions' `continue-on-error`. `com.links` is internal cids, not external URLs, so no index can answer
   exact-URL dedup; the window is the fix.
-- **`Api` carries its own `fetch`** — that's the seam. Standalone runs (`deno task bot hn`) use real fetch against
-  `DING_API_URL`; the cron passes `botFetch`, which dispatches through `app.request` in-process because a Deno Deploy
-  isolate **cannot fetch its own origin**. `botFetch` follows redirects the way real fetch does — a successful `POST /c`
-  302s to `/c/<cid>`, so an unfollowed redirect reads as failure on every single post. Bots must never `Deno.exit` (it
+- **Bots talk to the DATABASE, not the API.** `Api` carries `feed`/`post` — that's the seam, injected by `botApi()` in
+  `server.tsx` and backed by `feedPosts`/`createPost`. There is no HTTP hop at all any more (`botFetch` is gone), for
+  both the cron and `deno task bot <name>`, so **standalone runs now need `DATABASE_URL`, not `DING_API_URL`**. The
+  reason: the in-process hop re-ran routing, the whole middleware chain, and Basic Auth on every action — and Basic Auth
+  is a **bcrypt comparison inside Postgres, ~49ms of DB CPU per request**. It is now one bcrypt per bot per run (in
+  `botApi`, which is also what resolves the real `usr.name` instead of guessing it from the email local part) and **zero
+  per action**.
+- **This is only safe because the ACL never lived in the HTTP layer.** `visibleTo` is inside `feedPosts` and every
+  parent/org-write/self-react/rate-limit check is inside `createPost`, so a direct caller is gated by exactly the code
+  the route is. Do **not** add a check to a route handler that belongs in these two functions — that is precisely how
+  the bots would drift out of the ACL. `postRate` still applies to bots; several of them are written against it
+  (`verdictBot` keeps POSTs-per-run under the 10/min cap).
+- Bots build paths (`/c?usr=x&sort=new&limit=100&p=2`, `/c/123`) as their vocabulary; `pathToQuery` turns one into a
+  `FeedQuery`. It **throws** on an unrecognised path rather than returning an empty feed, so a typo is loud.
+  `botApi().feed` round-trips rows through `JSON.parse(JSON.stringify(...))` on purpose: bots were written against wire
+  JSON, and postgres.js hands back `Date` objects where the API returned ISO strings. Bots must never `Deno.exit` (it
   would kill the server isolate); throw instead.
 - **The self-origin rule applies to image fetches too.** `i.ding.bar` is a custom domain on the same Deploy project (the
   `host(c) === "i"` middleware just proxies `${R2_PUBLIC_URL}/i/<seg>`), so any in-isolate fetch of a user-uploaded

@@ -9,27 +9,57 @@ import { Readability } from "@mozilla/readability";
 // global fetch; the in-server Deno.cron passes `app.request`, which dispatches in-process
 // (Deno Deploy forbids a deployment fetching its own origin — see server.tsx's cron).
 export type Api = {
-  apiUrl: string;
-  auth: string;
+  // The bot's real `usr.name`, resolved from BOT_<N>_EMAIL against the database — not
+  // guessed from the email local part, which is what the old botUsername did.
   botUsername: string;
-  fetch: (input: string, init?: RequestInit) => Promise<Response>;
+  orgsR: string[];
+  // The seam. Both are injected: runBotFleet and botInit hand over implementations backed
+  // by server.tsx's feedPosts/createPost, so a bot action is a database call rather than an
+  // in-process HTTP request that re-runs routing, middleware and a bcrypt auth every time.
+  // Typed as a structural contract so bots.ts never imports server.tsx (that would be a
+  // cycle: server.tsx -> bots/mod.ts -> bots/*.ts -> bots.ts).
+  feed: (q: BotFeedQuery) => Promise<unknown[]>;
+  post: (body: string, opts: { parentCid?: number | null; labels?: string }) => Promise<boolean>;
 };
 
-export function botInit(envPrefix: string): Api {
-  const apiUrl = Deno.env.get("DING_API_URL") || "https://ding.bar";
-  const email = Deno.env.get(`BOT_${envPrefix}_EMAIL`) || "";
-  const password = Deno.env.get(`BOT_${envPrefix}_PASSWORD`) || "";
-  if (!email || !password) {
-    console.error(`Missing BOT_${envPrefix}_EMAIL or BOT_${envPrefix}_PASSWORD`);
-    Deno.exit(1);
-  }
+// Mirrors server.tsx's FeedQuery for the subset bots use. Kept structural on purpose.
+export type BotFeedQuery = {
+  cid?: string | number | null;
+  viewer?: string;
+  orgsR?: string[];
+  tags?: string[];
+  usrs?: string[];
+  mentions?: string[];
+  reactionsOnly?: boolean;
+  commentsOnly?: boolean;
+  sort?: string;
+  limit?: number;
+  offset?: number;
+};
+
+// The paths bots build (`/c?usr=x&sort=new&limit=100&p=2`, `/c/123`) are the vocabulary every
+// bot already speaks, so they stay — this turns one into a query instead of an HTTP request.
+// Anything unrecognised throws rather than silently returning an empty feed.
+export const pathToQuery = (api: Api, path: string): BotFeedQuery => {
+  const u = new URL(path, "http://x");
+  const single = u.pathname.match(/^\/c\/(\d+)$/);
+  if (!single && u.pathname !== "/c") throw new Error(`bot api: unsupported path ${path}`);
+  const g = (k: string) => u.searchParams.getAll(k);
+  const lim = +(u.searchParams.get("limit") ?? 25);
   return {
-    apiUrl,
-    auth: btoa(`${email}:${password}`),
-    botUsername: email.split("@")[0].replace(/-/g, "_"),
-    fetch: (input, init) => fetch(input, init),
+    cid: single ? single[1] : null,
+    viewer: api.botUsername,
+    orgsR: api.orgsR,
+    tags: g("tag"),
+    usrs: g("usr"),
+    mentions: g("mention"),
+    reactionsOnly: u.searchParams.get("reactions") === "1",
+    commentsOnly: u.searchParams.get("comments") === "1",
+    sort: u.searchParams.get("sort") ?? "hot",
+    limit: lim,
+    offset: +(u.searchParams.get("p") ?? 0) * lim,
   };
-}
+};
 
 // ---- Freshness cutoff ----
 // Hard 4h limit on candidate content age. Defence-in-depth so a broken dedup
@@ -45,11 +75,7 @@ export const isFresh = (ts: string | number | Date, max = MAX_AGE_MS) => {
 // ---- HTTP helpers ----
 
 export async function getJson<T = unknown>(api: Api, path: string): Promise<T> {
-  const res = await api.fetch(`${api.apiUrl}${path}`, {
-    headers: { Accept: "application/json", Authorization: `Basic ${api.auth}` },
-  });
-  if (!res.ok) throw new Error(`GET ${path} → ${res.status}: ${await res.text()}`);
-  return res.json();
+  return await api.feed(pathToQuery(api, path)) as T;
 }
 
 export async function paginate<T>(
@@ -77,15 +103,12 @@ export async function postForm(
   path: string,
   fields: Record<string, string>,
 ): Promise<boolean> {
-  const body = new FormData();
-  for (const [k, v] of Object.entries(fields)) body.append(k, v);
-  const res = await api.fetch(`${api.apiUrl}${path}`, {
-    method: "POST",
-    headers: { Authorization: `Basic ${api.auth}` },
-    body,
+  const m = path.match(/^\/c(?:\/(\d+))?$/);
+  if (!m) throw new Error(`bot api: unsupported post path ${path}`);
+  return await api.post(fields.body ?? "", {
+    parentCid: m[1] ? +m[1] : null,
+    labels: fields.tags,
   });
-  if (!res.ok) console.error(`POST ${path} → ${res.status} ${await res.text()}`);
-  return res.ok;
 }
 
 export const firstMatch = (re: RegExp, s: string) => s.match(re)?.[1] || "";
@@ -468,7 +491,7 @@ export function extractImageUrl(body: string): string | null {
 
 // i.ding.bar is a custom domain on the SAME Deno Deploy project — server.tsx's `host(c) === "i"`
 // middleware only proxies `${R2_PUBLIC_URL}/i/<seg>` — and an isolate cannot fetch its own origin
-// (the trap documented on botFetch and the checkmark sink). Go straight to R2. No R2_PUBLIC_URL
+// (the trap documented on the checkmark sink). Go straight to R2. No R2_PUBLIC_URL
 // means a standalone run (`deno task bot dither`), where i.ding.bar resolves normally.
 const SELF_IMG_PREFIX = "https://i.ding.bar/";
 export function directImageUrl(url: string): string {
