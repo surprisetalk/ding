@@ -335,15 +335,26 @@ const DING_ORG_PK = Deno.env.get("DING_ORG_PK") ?? null;
 // Verified handles (local names with a live trust-root identity mark), cached ~60s so a ✓ can
 // render beside a username anywhere without a per-render query. Refreshed in the "*" middleware.
 export const verified = { at: 0, names: new Set<string>() };
+// Runs in the middleware on every HTML request, so it is on the critical path for the whole
+// site. Two rules follow from that, and both were learned the hard way:
+//   - Stamp `at` BEFORE the query, not after. On failure the old code left `at` untouched, so
+//     every subsequent request retried immediately — a thundering herd against a database
+//     that was already struggling, with each request blocking on its own attempt.
+//   - Fail OPEN. A stale (or empty) checkmark set is a cosmetic loss; a throwing or hanging
+//     middleware is the entire site down, including routes that need no database at all.
 const refreshVerified = async () => {
   if (!DING_ORG_PK || Date.now() - verified.at < 60_000) return;
-  const rows = await sql<{ name: string }[]>`
-    select u.name from usr u where exists(
-      select 1 from dht m where m.kind = 'mark' and m.target = u.id and m.pubkey = ${DING_ORG_PK}
-        and m.val->'mark'->>'v' in ('email','payment','human')
-        and (m.val->'mark'->>'exp')::bigint > extract(epoch from now()))`;
-  verified.names = new Set(rows.map((r) => r.name.toLowerCase())); // names are citext
   verified.at = Date.now();
+  try {
+    const rows = await sql<{ name: string }[]>`
+      select u.name from usr u where exists(
+        select 1 from dht m where m.kind = 'mark' and m.target = u.id and m.pubkey = ${DING_ORG_PK}
+          and m.val->'mark'->>'v' in ('email','payment','human')
+          and (m.val->'mark'->>'exp')::bigint > extract(epoch from now()))`;
+    verified.names = new Set(rows.map((r) => r.name.toLowerCase())); // names are citext
+  } catch (e) {
+    console.error(`refreshVerified failed; serving the previous set: ${e instanceof Error ? e.message : e}`);
+  }
 };
 
 // Custodial signer for a local user (see ensureCustodialKey in dht.ts).
@@ -1582,7 +1593,10 @@ export const AI_CRAWLERS = [
 const aiBotRe = new RegExp(AI_CRAWLERS.join("|"), "i");
 
 // Static assets need no cookie, no verified-set refresh, no unread count and no renderer.
-const assetRe = /\.(css|js|ico|png|svg|webmanifest)$/;
+// `txt` is in here for /robots.txt and /sitemap.txt: both are constants, and routing them
+// through the middleware made a plain string response depend on the database — during a
+// database wobble even robots.txt hung, which is how a partial outage became a total one.
+const assetRe = /\.(css|js|ico|png|svg|webmanifest|txt)$/;
 
 // style.css and client.js carry no content hash in their path, so a long max-age would serve
 // stale JS after a deploy. Version the URL instead: DENO_DEPLOYMENT_ID changes every deploy,

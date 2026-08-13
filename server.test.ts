@@ -466,6 +466,50 @@ Deno.test(
 
     // This file shipped as one string containing "\\n", i.e. LITERAL backslash-n, so every
     // crawler saw a single unparseable line and ding had no rules at all.
+    // 2026-08-13: a database wobble took the WHOLE site down, robots.txt included, because
+    // the middleware awaited refreshVerified() on every request with no error handling. These
+    // two steps are the regression guard: a failing database must cost checkmarks, not the site.
+    await t.step("robots.txt touches the database zero times", async () => {
+      let calls = 0;
+      verified.at = 0; // force the state where the middleware WOULD query, if it ran at all
+      try {
+        setSql(new Proxy(sql, { apply: (t, self, a) => (calls++, Reflect.apply(t as never, self, a)) }));
+        const res = await app.request("/robots.txt");
+        assertEquals(res.status, 200);
+        assertStringIncludes(await res.text(), "User-agent: *");
+        assertEquals(calls, 0, "a constant response should never depend on the database");
+      } finally {
+        setSql(sql);
+      }
+    });
+
+    await t.step("a failing refreshVerified degrades to no checkmarks, not a 500", async () => {
+      let calls = 0;
+      verified.at = 0; // else the 60s cache from earlier steps means it never re-runs
+      try {
+        // Only the verified-set query fails; every other query is served normally.
+        setSql(
+          new Proxy(sql, {
+            apply: (t, self, a) => {
+              const q = String((a[0] as string[])?.join?.("|") ?? "");
+              if (q.includes("kind = 'mark'") && q.includes("from usr u")) {
+                calls++;
+                return Promise.reject(new Error("connection refused"));
+              }
+              return Reflect.apply(t as never, self, a);
+            },
+          }),
+        );
+        assertEquals((await app.request("/c/301")).status, 200, "a failed verified refresh 500'd the page");
+        // ...and it must not retry on every request — that herd is what turns a slow
+        // database into a dead site.
+        for (let i = 0; i < 5; i++) await app.request("/c/301");
+        assertEquals(calls, 1, `refreshVerified ran ${calls} times instead of backing off after the failure`);
+      } finally {
+        setSql(sql);
+      }
+    });
+
     await t.step("robots.txt is a real multi-line file", async () => {
       const res = await app.request("/robots.txt");
       assertEquals(res.status, 200);
