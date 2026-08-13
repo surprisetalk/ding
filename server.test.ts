@@ -43,6 +43,7 @@ import app, {
   matchesQ,
   parseLabels,
   postRate,
+  prefRate,
   publishPeer,
   r2,
   replicate,
@@ -255,6 +256,7 @@ const pgtest = (f: (sql: pg.Sql) => (t: Deno.TestContext) => Promise<void>) => a
 
   setSql(db.sql);
   postRate.clear();
+  prefRate.clear();
   dbIngestRate.ip.clear();
   dbIngestRate.key.clear();
   signupRate.ip.clear();
@@ -3899,5 +3901,391 @@ Deno.test(
       if (prevR2) Deno.env.set("R2_PUBLIC_URL", prevR2);
       else Deno.env.delete("R2_PUBLIC_URL");
     }
+  }),
+);
+
+//// LABEL PREF TESTS //////////////////////////////////////////////////////////
+
+// A pref is a label plus a vote: (uid, kind, val) is the primary key, so re-sending the
+// same vote clears it and the opposite vote replaces it. ▲ is public (follower counts,
+// mutuals); ▼ is private to the voter and must not surface anywhere else.
+Deno.test(
+  "label prefs",
+  pgtest((sql) => async (t) => {
+    const jAuth = basic("john@example.com", "password1!");
+    const janeAuth = basic("jane@example.com", "password1!");
+    const vote = (label: string, v: string, headers: Record<string, string> = jAuth) => {
+      const f = new FormData();
+      f.append("label", label);
+      f.append("vote", v);
+      return app.request("/p", { method: "POST", body: f, headers });
+    };
+    const rows = (uid = "john_doe") =>
+      sql`select kind, val::text, vote from pref where uid = ${uid} order by kind, val`;
+
+    await t.step("▲ a #tag, @user and ~domain writes one row each", async () => {
+      for (const [l, v] of [["#humor", "1"], ["@jane_doe", "1"], ["~arxiv.org", "-1"]])
+        assertEquals((await vote(l, v)).status, 302);
+      assertEquals([...await rows()], [
+        { kind: "tag", val: "humor", vote: 1 },
+        { kind: "usr", val: "jane_doe", vote: 1 },
+        { kind: "www", val: "arxiv.org", vote: -1 },
+      ]);
+    });
+
+    await t.step("re-sending the same vote toggles it off", async () => {
+      await vote("#toggleme", "1");
+      assertEquals((await sql`select vote from pref where uid = 'john_doe' and val = 'toggleme'`).length, 1);
+      await vote("#toggleme", "1");
+      assertEquals((await sql`select vote from pref where uid = 'john_doe' and val = 'toggleme'`).length, 0);
+    });
+
+    // The reaction path lets a user hold ▲ and ▼ at once; a pref is a single preference,
+    // and the primary key is what enforces that.
+    await t.step("the opposite vote replaces rather than stacks", async () => {
+      await vote("#flipme", "1");
+      await vote("#flipme", "-1");
+      assertEquals([...await sql`select vote from pref where uid = 'john_doe' and val = 'flipme'`], [{ vote: -1 }]);
+    });
+
+    // The write path normalizes `www.`, so the read path must too — otherwise the button on
+    // /c?www=www.arxiv.org renders un-voted, and clicking the ▲ silently DELETES the pref.
+    await t.step("a ~domain vote reads back the same on both host spellings", async () => {
+      await sql`delete from pref where uid = 'john_doe' and kind = 'www'`;
+      await vote("~www.arxiv.org", "1");
+      for (const q of ["arxiv.org", "www.arxiv.org"]) {
+        const html = await (await app.request(`/c?www=${q}`, { headers: jAuth })).text();
+        assertStringIncludes(html, "reaction reacted", `?www=${q} showed the vote as unset`);
+      }
+    });
+
+    await t.step("~www.host and ~host collapse to the same row", async () => {
+      await vote("~www.example.org", "1");
+      assertEquals(
+        [...await sql`select val::text, vote from pref where uid = 'john_doe' and kind = 'www' and val = 'example.org'`],
+        [{ val: "example.org", vote: 1 }],
+      );
+      await vote("~example.org", "1"); // same row -> toggles the first one off
+      assertEquals(
+        (await sql`select 1 from pref where uid = 'john_doe' and kind = 'www' and val = 'example.org'`).length,
+        0,
+      );
+    });
+
+    await t.step("@user prefs are case-insensitive (citext), like usr.name", async () => {
+      await sql`delete from pref where uid = 'john_doe' and kind = 'usr'`;
+      await vote("@jane_doe", "1");
+      await vote("@JANE_DOE", "-1"); // same row, so this replaces rather than adding a second
+      assertEquals(
+        [...await sql`select val::text, vote from pref where uid = 'john_doe' and kind = 'usr'`],
+        [{ val: "jane_doe", vote: -1 }],
+      );
+    });
+
+    // `kind = 'org'` could never appear (the check constraint forbids it), so asserting its
+    // absence proves nothing — assert instead that the table did not move at all.
+    await t.step("*org and bare text are rejected with a message naming the input", async () => {
+      const before = [...await rows()];
+      for (const bad of ["*secret", "hello", "", "#humor @jane_doe", "#"]) {
+        const res = await vote(bad, "1");
+        assertEquals(res.status, 400, `expected 400 for label "${bad}"`);
+        assertStringIncludes(await res.text(), bad || "exactly one");
+      }
+      // A NUL would otherwise reach the driver and surface as an opaque 500.
+      const nul = await vote("#a\u0000b", "1");
+      assertEquals(nul.status, 400);
+      assertStringIncludes(await nul.text(), "NUL byte");
+      assertEquals([...await rows()], before, "a rejected label still wrote a row");
+    });
+
+    // ~domain has a closed vocabulary: extractDomains only ever produces bare hostnames, so a
+    // URL/path/scheme pref would be accepted and then never match anything.
+    await t.step("~domain must be a bare hostname", async () => {
+      const before = [...await rows()];
+      for (const bad of ["~https://arxiv.org", "~arxiv.org/abs/1", "~.", "~-", "~localhost"]) {
+        const res = await vote(bad, "1");
+        assertEquals(res.status, 400, `expected 400 for label "${bad}"`);
+        assertStringIncludes(await res.text(), "is not a hostname");
+      }
+      assertEquals([...await rows()], before);
+    });
+
+    await t.step("a vote other than 1 / -1 is rejected", async () => {
+      for (const v of ["0", "5", "up", ""]) {
+        const res = await vote("#votecheck", v);
+        assertEquals(res.status, 400, `expected 400 for vote "${v}"`);
+        assertStringIncludes(await res.text(), "▲");
+      }
+      assertEquals((await sql`select 1 from pref where val = 'votecheck'`).length, 0);
+    });
+
+    await t.step("voting on yourself is refused; an unknown @user 404s", async () => {
+      const self = await vote("@JOHN_DOE", "1"); // citext, so the check can't be case-dodged
+      assertEquals(self.status, 400);
+      assertStringIncludes(await self.text(), "cannot follow or mute yourself");
+      const missing = await vote("@nosuchuser", "1");
+      assertEquals(missing.status, 404);
+      assertStringIncludes(await missing.text(), "no user named @nosuchuser");
+      assertEquals((await sql`select 1 from pref where uid = 'john_doe' and val = 'john_doe'`).length, 0);
+    });
+
+    // refBack sanitizes the Referer, and `https://host//evil.com` passes a bare host check
+    // while its pathname is a protocol-relative URL browsers follow off-site.
+    await t.step("a protocol-relative Referer cannot redirect off-site", async () => {
+      const f = new FormData();
+      f.append("label", "#refcheck");
+      f.append("vote", "1");
+      const res = await app.request("/p", {
+        method: "POST",
+        body: f,
+        headers: { ...jAuth, referer: "http://localhost//evil.example", host: "localhost" },
+      });
+      assertEquals(res.status, 302);
+      assertEquals(res.headers.get("location"), "/", "an off-site redirect escaped refBack");
+    });
+
+    // #tag is free-form by design — it names content, not an account. A 302 alone would also
+    // be returned by a write that silently did nothing, so assert the rows.
+    await t.step("unknown #tags and ~domains are accepted and stored", async () => {
+      assertEquals((await vote("#nobodyhasusedthis", "1")).status, 302);
+      assertEquals((await vote("~nowhere.invalid", "1")).status, 302);
+      assertEquals(
+        [
+          ...await sql`select kind, val::text from pref
+                       where uid = 'john_doe' and val in ('nobodyhasusedthis', 'nowhere.invalid') order by kind`,
+        ],
+        [{ kind: "tag", val: "nobodyhasusedthis" }, { kind: "www", val: "nowhere.invalid" }],
+      );
+    });
+
+    await t.step("anonymous POST /p redirects to login and writes nothing", async () => {
+      const f = new FormData();
+      f.append("label", "#anonshouldnotwrite");
+      f.append("vote", "1");
+      const res = await app.request("/p", { method: "POST", body: f });
+      assertEquals(res.status, 302);
+      assertStringIncludes(res.headers.get("location") ?? "", "/u");
+      // pref.uid is NOT NULL, so `where uid is null` could never match. Use a label no other
+      // step touches, so this measures the anonymous write and not leftover state.
+      assertEquals((await sql`select 1 from pref where val = 'anonshouldnotwrite'`).length, 0);
+    });
+
+    // pref.val has no FK (a partial one isn't expressible), so following an account that is
+    // later deleted — ding-prune-unverified does exactly that — leaves the row behind. If the
+    // un-follow also validated existence, the chip on /u would 404 forever and "N following"
+    // would never settle. Only creating a pref may require the target to exist.
+    await t.step("a follow of a since-deleted user can still be removed", async () => {
+      await sql`delete from pref where uid = 'john_doe' and kind = 'usr'`;
+      await sql`insert into usr (name, email, password, bio, email_verified_at, invited_by)
+                values ('ghostuser', 'ghost@example.com', 'x', 'x', now(), 'john_doe')`;
+      assertEquals((await vote("@ghostuser", "1")).status, 302);
+      await sql`delete from usr where name = 'ghostuser'`;
+      assertEquals((await sql`select 1 from pref where uid = 'john_doe' and val = 'ghostuser'`).length, 1);
+      assertEquals((await vote("@ghostuser", "1")).status, 302, "the un-follow was rejected");
+      assertEquals((await sql`select 1 from pref where uid = 'john_doe' and val = 'ghostuser'`).length, 0);
+    });
+
+    await t.step("deleting a user cascades their prefs away", async () => {
+      await sql`insert into usr (name, email, password, bio, email_verified_at, invited_by)
+                values ('pref_goner', 'goner@x.com', 'x', 'x', now(), 'john_doe')`;
+      await sql`insert into pref (uid, kind, val, vote) values ('pref_goner', 'tag', 'humor', 1)`;
+      await sql`delete from usr where name = 'pref_goner'`;
+      assertEquals((await sql`select 1 from pref where uid = 'pref_goner'`).length, 0);
+    });
+
+    await t.step("mutuals appear only when both sides ▲, and vanish on un-follow", async () => {
+      await sql`delete from pref`;
+      const mutualsOf = async (cookie: string) => {
+        const html = await (await app.request("/u", { headers: { cookie } })).text();
+        return html.slice(html.indexOf("<h2>people</h2>"), html.indexOf("<h2>interests</h2>"));
+      };
+      const login = async (email: string) => {
+        const body = new FormData();
+        body.append("email", email);
+        body.append("password", "password1!");
+        const boot = await app.request("/login", { method: "POST", body });
+        return boot.headers.get("set-cookie")!.split(";")[0];
+      };
+      const [jCookie, janeCookie] = [await login("john@example.com"), await login("jane@example.com")];
+
+      await vote("@jane_doe", "1");
+      assertStringIncludes(await mutualsOf(jCookie), "no mutuals yet", "one-sided follow is not a mutual");
+      assertStringIncludes(await (await app.request("/u/jane_doe")).text(), "1 follower");
+
+      await vote("@john_doe", "1", janeAuth);
+      assertStringIncludes(await mutualsOf(jCookie), "/u/jane_doe");
+      assertStringIncludes(await mutualsOf(janeCookie), "/u/john_doe");
+      const profile = await (await app.request("/u/jane_doe", { headers: { cookie: jCookie } })).text();
+      assertStringIncludes(profile, "mutual");
+      // The hub shows your own counts, so you never have to visit /u/<yourself> to read them.
+      const hub = await (await app.request("/u", { headers: { cookie: jCookie } })).text();
+      assertStringIncludes(hub, "1 follower");
+      assertStringIncludes(hub, "1 following");
+
+      await vote("@jane_doe", "1"); // toggle off
+      assertStringIncludes(await mutualsOf(jCookie), "no mutuals yet");
+      assertStringIncludes(await mutualsOf(janeCookie), "no mutuals yet");
+    });
+
+    // ▼ is private: it must not move a follower count and must not render on the target's
+    // profile for anyone but the voter. The owner and an anonymous visitor both get no vote
+    // control at all, so testing only those would be vacuous — a logged-in THIRD PARTY is
+    // the viewer that can actually leak, and john is the positive control.
+    await t.step("a ▼ on a user is invisible to everyone else", async () => {
+      await sql`delete from pref`;
+      await sql`insert into usr (name, email, password, bio, email_verified_at, invited_by)
+                values ('third_party', 'third@example.com', 'hashed:password1!', 'x', now(), 'john_doe')
+                on conflict do nothing`;
+      await vote("@jane_doe", "-1");
+
+      const seenBy = async (headers: Record<string, string>) =>
+        await (await app.request("/u/jane_doe", { headers })).text();
+      for (
+        const [who, headers] of [["anon", {}], ["owner", janeAuth], [
+          "third party",
+          basic("third@example.com", "password1!"),
+        ]] as const
+      ) {
+        const html = await seenBy(headers);
+        assertStringIncludes(html, "0 followers");
+        assertEquals(html.includes("reaction reacted"), false, `john's ▼ leaked to ${who}`);
+      }
+      // Positive control: the voter DOES see their own ▼ latched, so the check above is
+      // measuring privacy rather than a vote control that never renders.
+      assertStringIncludes(await seenBy(jAuth), "reaction reacted");
+    });
+  }),
+);
+
+// The frontpage takes a window of the global ranking and re-sorts it by the viewer's prefs.
+// Everything here is about what that must NOT disturb: anonymous viewers, other users,
+// `sort=new`/`sort=top`, and deep pages.
+Deno.test(
+  "pref-personalized frontpage",
+  pgtest((sql) => async (t) => {
+    const login = async (email: string) => {
+      const body = new FormData();
+      body.append("email", email);
+      body.append("password", "password1!");
+      const boot = await app.request("/login", { method: "POST", body });
+      return boot.headers.get("set-cookie")!.split(";")[0];
+    };
+    // Post titles are the first body line and each renders as `>title</a>`, so reading the
+    // order off the rendered feed is what actually proves the ORDER BY.
+    const feed = async (qs = "", cookie?: string) => {
+      const html = await (await app.request(`/${qs}`, cookie ? { headers: { cookie } } : {})).text();
+      return [...html.matchAll(/>(prefpost-[a-z]+)</g)].map((m) => m[1]);
+    };
+
+    // Three posts with distinct tags/domains/authors, scored an hour apart and a day ahead of
+    // everything seeded, so they sit at the top of page 1 in a fixed order. Equal scores would
+    // make the baseline a tie, and ties are ordered arbitrarily — the assertions below would
+    // then be measuring the planner, not the prefs.
+    const top = sql`now() + interval '1 day'`;
+    await sql`insert into com (cid, created_by, body, tags, domains, created_at, score) values
+      (901, 'BugHunter42', 'prefpost-alpha', '{alphatag}', '{alpha.example}', ${top},                          ${top}),
+      (902, 'BugHunter42', 'prefpost-beta',  '{betatag}',  '{beta.example}',  ${top} - interval '1 hour',  ${top} - interval '1 hour'),
+      (903, 'jane_doe',    'prefpost-gamma', '{gammatag}', '{gamma.example}', ${top} - interval '2 hours', ${top} - interval '2 hours')`;
+    const jCookie = await login("john@example.com");
+    const janeCookie = await login("jane@example.com");
+    const baseline = ["prefpost-alpha", "prefpost-beta", "prefpost-gamma"];
+
+    await t.step("a viewer with no prefs sees the global ranking", async () => {
+      assertEquals(await feed(), baseline, "anonymous");
+      assertEquals(await feed("", jCookie), baseline, "logged in, no prefs");
+    });
+
+    await t.step("▲ on a #tag lifts its posts, and toggling off restores the order", async () => {
+      const f = new FormData();
+      f.append("label", "#betatag");
+      f.append("vote", "1");
+      await app.request("/p", { method: "POST", body: f, headers: { cookie: jCookie } });
+      // The full array, not a relative rank: indexOf returns -1 for a missing post and
+      // -1 < 0 is true, so a rank comparison passes when the boosted post has vanished.
+      assertEquals(await feed("", jCookie), ["prefpost-beta", "prefpost-alpha", "prefpost-gamma"]);
+      await app.request("/p", { method: "POST", body: f, headers: { cookie: jCookie } });
+      assertEquals(await feed("", jCookie), baseline);
+    });
+
+    await t.step("▼ on a ~domain sinks its posts", async () => {
+      await sql`insert into pref (uid, kind, val, vote) values ('john_doe', 'www', 'alpha.example', -1)`;
+      assertEquals(await feed("", jCookie), ["prefpost-beta", "prefpost-gamma", "prefpost-alpha"]);
+      await sql`delete from pref where uid = 'john_doe'`;
+    });
+
+    await t.step("▲ on a @user lifts their posts (upvoting a user is following)", async () => {
+      await sql`insert into pref (uid, kind, val, vote) values ('john_doe', 'usr', 'jane_doe', 1)`;
+      assertEquals(await feed("", jCookie), ["prefpost-gamma", "prefpost-alpha", "prefpost-beta"]);
+      await sql`delete from pref where uid = 'john_doe'`;
+    });
+
+    await t.step("one user's prefs never move another viewer's feed", async () => {
+      await sql`insert into pref (uid, kind, val, vote) values ('john_doe', 'tag', 'betatag', 1)`;
+      assertEquals(await feed(), baseline, "anonymous feed shifted");
+      assertEquals(await feed("", janeCookie), baseline, "jane's feed shifted");
+      assertEquals((await feed("", jCookie))[0], "prefpost-beta", "john's own feed did not shift");
+      await sql`delete from pref where uid = 'john_doe'`;
+    });
+
+    // `new` is chronological and `top` is most-voted. Re-ranking either would be a lie, so
+    // prefs must only touch the default `hot` sort.
+    // An unknown sort must behave exactly like `hot`: orderBy falls through to `score desc`
+    // for anything it doesn't recognize, so the personalization branch has to agree or the
+    // two silently disagree about what page the user is looking at.
+    await t.step("sort=new/top ignore prefs; an unknown sort is still personalized", async () => {
+      await sql`insert into pref (uid, kind, val, vote) values ('john_doe', 'tag', 'betatag', 1)`;
+      for (const s of ["new", "top"])
+        assertEquals(await feed(`?sort=${s}`, jCookie), baseline, `sort=${s} was re-ranked`);
+      const boosted = ["prefpost-beta", "prefpost-alpha", "prefpost-gamma"];
+      for (const qs of ["", "?sort=hot", "?sort=HOT", "?sort=banana"])
+        assertEquals(await feed(qs, jCookie), boosted, `${qs || "(default)"} took the wrong branch`);
+      await sql`delete from pref where uid = 'john_doe'`;
+    });
+
+    // Paging must be a stable slice of ONE ordered list. A window whose membership grows with
+    // the page is not: a row that only enters at page p sorts to the top of that page's window,
+    // into a slot page p-1 already used — so it is emitted on no page at all, and the row it
+    // displaced is emitted twice. Walking every page is the only way to see that.
+    await t.step("walking every page yields each post exactly once", async () => {
+      await sql`delete from pref`;
+      await sql`insert into com (created_by, body, tags, created_at, score)
+                select 'BugHunter42', 'walk-' || lpad(g::text, 3, '0'), '{walktag}',
+                       now() + interval '9 days' + (g || ' seconds')::interval,
+                       now() + interval '9 days' + (g || ' seconds')::interval
+                  from generate_series(1, 400) g`;
+      // Deep enough to sit outside a 300-row window at page 0, tagged so a ▲ lifts it.
+      await sql`update com set tags = '{walktag,liftme}' where body = 'walk-089'`;
+      await sql`insert into pref (uid, kind, val, vote) values ('john_doe', 'tag', 'liftme', 1)`;
+
+      const seen: string[] = [];
+      for (let page = 0; page < 17; page++) {
+        const html = await (await app.request(`/?p=${page}`, { headers: { cookie: jCookie } })).text();
+        seen.push(...[...html.matchAll(/>(walk-\d+)</g)].map((m) => m[1]));
+      }
+      assertEquals(seen.filter((x, i) => seen.indexOf(x) !== i), [], "a post was shown on two pages");
+      assertEquals(seen.includes("walk-089"), true, "the boosted post appeared on no page at all");
+      assertEquals(new Set(seen).size, 400, "some posts were unreachable");
+    });
+
+    // Past the window the feed falls back to the global order — which is exactly where the
+    // personalized list's tail lives — so a deep page must still return rows.
+    await t.step("deep pages still return rows with prefs set", async () => {
+      await sql`insert into pref (uid, kind, val, vote) values ('john_doe', 'tag', 'walktag', 1)
+                on conflict (uid, kind, val) do update set vote = 1`;
+      const html = await (await app.request("/?p=14", { headers: { cookie: jCookie } })).text();
+      assertStringIncludes(html, 'class="posts"');
+      assertEquals(html.includes("no posts yet"), false, "deep page fell off the candidate window");
+      await sql`delete from pref`;
+      await sql`delete from com where body like 'walk-%'`;
+    });
+
+    await t.step("private posts stay private under personalized ranking", async () => {
+      await sql`insert into pref (uid, kind, val, vote) values ('jane_doe', 'tag', 'general', 1)
+                on conflict do nothing`;
+      // 357 is a DM to BugHunter42/DebuggerDiva; jane is neither, so no boost may reveal it.
+      const html = await (await app.request("/", { headers: { cookie: janeCookie } })).text();
+      const [dm] = await sql`select body from com where cid = 357`;
+      assertEquals(html.includes(dm.body.split("\n")[0]), false, "a DM leaked into a personalized feed");
+    });
   }),
 );

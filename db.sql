@@ -33,6 +33,26 @@ create table org (
   created_at timestamptz not null default current_timestamp
 );
 
+-- A pref is a label plus a vote: the same #tag / @usr / ~www vocabulary the feed already
+-- speaks (dht.ts PFX), scoped to one user. ▲ is public (follower counts, mutuals); ▼ is
+-- private to the voter and must never be selected on another user's behalf.
+-- *org is deliberately absent: org access is already orgs_r/orgs_w membership.
+-- Read per-viewer at render time; refresh_score and the stat_* views stay global.
+create table pref (
+  uid  citext not null references usr (name) on delete cascade,
+  kind text not null check (kind in ('tag','usr','www')),
+  val  citext not null,  -- citext so @JohnDoe = @johndoe and com.created_by compares cleanly
+  vote smallint not null check (vote in (-1, 1)),
+  created_at timestamptz not null default current_timestamp,
+  -- one vote per label per user: the PK is the toggle's uniqueness, so no read-then-write
+  -- race can stack two rows (the reaction path has no such constraint and can).
+  primary key (uid, kind, val)
+);
+
+-- Reverse lookup: who follows @x / #y. The vote column is in the index so the public
+-- ▲-only counts never touch a heap row.
+create index pref_target_idx on pref (kind, val, vote);
+
 create table com (
   cid serial primary key,
   parent_cid int references com (cid),

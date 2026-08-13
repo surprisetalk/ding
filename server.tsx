@@ -68,6 +68,11 @@ export type Usr = {
 
 export type TagStat = { tag: string; posts: number; ups: number };
 
+// A profile's follow state. `vote` is the VIEWER's ▲/▼ on this profile (null = no vote,
+// and -1 only ever reaches the viewer's own render — a mute is private). `followers`
+// counts ▲ only, so a downvote is invisible in every count.
+export type Follow = { vote: number | null; followers: number; following: number; follows_me: boolean };
+
 export type ChildCom = {
   cid: number;
   parent_cid: number | null;
@@ -130,11 +135,17 @@ export const extractImageUrl = (b: string) =>
   b.match(/https?:\/\/[^\s]+\.(?:jpe?g|png|gif|webp|svg)(?:\?[^\s]*)?/i)?.[0] ||
   null;
 
+// `com.domains` holds bare lowercase hostnames with `www.` stripped, so every path that
+// compares against it — the ?www= filter, a ~domain pref — must speak the same form or it
+// silently matches nothing. normHost is that single definition; HOST_RE is what it accepts.
+export const normHost = (h: string) => h.trim().toLowerCase().replace(/^www\./, "");
+export const HOST_RE = /^[a-z0-9]([a-z0-9-]*[a-z0-9])?(\.[a-z0-9]([a-z0-9-]*[a-z0-9])?)+$/;
+
 export const extractDomains = (b: string): string[] => {
   const out = new Set<string>();
   for (const m of b.matchAll(/https?:\/\/[^\s]+/g)) {
     try {
-      out.add(new URL(m[0]).hostname.toLowerCase().replace(/^www\./, ""));
+      out.add(normHost(new URL(m[0]).hostname));
     } catch {
       /**/
     }
@@ -773,11 +784,26 @@ const isVerified = (name?: string | null | false) => !!name && verified.names.ha
 const checkSpan = () => <span class="check" title="verified">✓</span>;
 const Check = (name?: string | null) => isVerified(name) ? checkSpan() : null;
 
-const User = (u: Usr, viewerName?: string, tags: TagStat[] = []) => {
+const User = (u: Usr, viewerName?: string, tags: TagStat[] = [], follow?: Follow) => {
   const isOwner = viewerName && viewerName == u.name;
+  const mutual = follow && follow.vote === 1 && follow.follows_me;
   return (
     <section class="user">
       <h2>{Check(u.name)}@{u.name}</h2>
+      {
+        /* LabelVote is a <form>, so it can live in neither the <h2> nor a <p>. It is gated on
+          a viewer the way /c's InfoBlocks are — an anonymous click would bounce through
+          login and silently discard the vote. */
+      }
+      {follow && (
+        <div class="follow-line">
+          {viewerName && !isOwner && <LabelVote label={`@${u.name}`} vote={follow.vote} ups={follow.followers} />}
+          <span class="note-sm">
+            {follow.followers} follower{follow.followers === 1 ? "" : "s"} · {follow.following} following
+            {mutual ? " · mutual" : follow.follows_me ? " · follows you" : ""}
+          </span>
+        </div>
+      )}
       <div class="user-links">
         {u.name !== u.invited_by || <a href={`/u/${u.invited_by}`}>invited by {Check(u.invited_by)}@{u.invited_by}</a>}
         <a href={`/c?usr=${u.name}`}>posts</a>
@@ -838,12 +864,17 @@ const SortToggle = ({
   );
 };
 
-// The #tag / *org / @user header above a filtered feed: same skeleton, different subject.
+// The #tag / *org / @user / ~domain header above a filtered feed: same skeleton, different
+// subject. `vote` is its own slot rather than part of `head`/`note` because LabelVote is a
+// <form>, which is valid in neither an <h2> nor a <p>.
 const InfoBlock = (
-  { head, note, postTo }: { head: BodyNode; note: BodyNode; postTo: BodyNode },
+  { head, note, postTo, vote }: { head: BodyNode; note: BodyNode; postTo: BodyNode; vote?: BodyNode },
 ) => (
   <div class="info-block">
-    <h2>{head}</h2>
+    <div class="follow-line">
+      <h2>{head}</h2>
+      {vote}
+    </div>
     <p class="note">{note}</p>
     <p class="note-sm">{postTo}</p>
   </div>
@@ -946,6 +977,28 @@ const Reactions = (c: Com | ChildCom, votesOnly?: boolean) =>
       </button>
     </form>
   ));
+
+// The ▲/▼ pair for a label (#tag / @usr / ~www), deliberately the same markup and classes
+// as Reactions so a vote looks like a vote everywhere. `ups` is the public follower count;
+// the ▼ count is never rendered — a downvote is private to the voter.
+const LabelVote = (
+  { label, vote, ups }: { label: string; vote: number | null; ups: number },
+) => (
+  <span class="reactions-group">
+    {[1, -1].map((v) => (
+      <form key={v} method="post" action="/p" class={`reaction${vote === v ? " reacted" : ""}`}>
+        <input type="hidden" name="label" value={label} />
+        <input type="hidden" name="vote" value={String(v)} />
+        <button
+          type="submit"
+          aria-label={`${v === 1 ? "upvote" : "downvote"} ${label}${vote === v ? " (undo)" : ""}`}
+        >
+          {v === 1 ? `▲ ${ups}` : "▼"}
+        </button>
+      </form>
+    ))}
+  </span>
+);
 
 // deno-lint-ignore no-explicit-any
 type BodyNode = any;
@@ -1698,10 +1751,24 @@ const topTags = (who: string) =>
       left join com r on r.parent_cid = t.cid and char_length(r.body) = 1
      group by t.tag order by ups desc, posts desc, t.tag limit 12`;
 
+// The viewer's own vote on a label plus its public ▲ count. The ▼ count is deliberately
+// absent: a downvote is private, so it must have no read path off the voter's own pages.
+const prefStat = (me: string, kind: string, val: string) =>
+  sql<{ vote: number | null; ups: number }[]>`
+    select (select vote from pref where uid = ${me} and kind = ${kind} and val = ${val}) as vote,
+           (select count(*)::int from pref where kind = ${kind} and val = ${val} and vote = 1) as ups`;
+
+// The personalized window. A page must never straddle it, so it is a multiple of the 25-row
+// page size: pages inside it are a slice of the re-ranked window, pages past it are a slice
+// of the global order, and the two meet exactly on a page boundary.
+const PREF_WINDOW = 300;
+
 app.get("/", async (c) => {
   const q = c.req.query(),
     p = Math.max(0, Math.trunc(+(q.p || 0)) || 0),
-    s = q.sort || "hot",
+    // Normalized once, because orderBy treats any unknown sort as "hot" — reading q.sort
+    // raw here would let `?sort=HOT` silently take a different branch than it orders by.
+    s = q.sort === "new" || q.sort === "top" ? q.sort : "hot",
     name = c.get("name");
   const [viewer] = name ? await sql`select orgs_r, orgs_w from usr where name = ${name}` : [{ orgs_r: [], orgs_w: [] }];
   const rT = viewer?.orgs_r || [],
@@ -1711,6 +1778,12 @@ app.get("/", async (c) => {
     usrs = c.req.queries("usr") || [];
 
   const me = name || "";
+  // One definition of "what this feed selects", shared by the global and personalized
+  // branches below so the two can't drift.
+  const feedWhere = sql`parent_cid is null and char_length(c.body) > 0 and ${visibleTo(rT, me)}
+    ${tags.length ? sql`and tags @> ${tags}::text[]` : sql``}
+    ${orgs.length ? sql`and orgs @> ${orgs}::text[]` : sql``}
+    ${usrs.length ? sql`and usrs @> ${usrs}::text[]` : sql``}`;
   // Only rendered inside the logged-in compose form, so anonymous hits must not pay for it.
   const [presets, items] = await Promise.all([
     !name ? [] : sql<{ tag: string }[]>`
@@ -1754,15 +1827,58 @@ app.get("/", async (c) => {
       union all select tag, 1, 0, now(), rnd from disco
     ) t order by ord, pri, recency desc, rnd
   `,
-    sql<Com[]>`
-    select c.*, ${aggCols("c", me)}
-    from com c where parent_cid is null and char_length(c.body) > 0 and ${visibleTo(rT, me)}
-    ${tags.length ? sql`and tags @> ${tags}::text[]` : sql``}
-    ${orgs.length ? sql`and orgs @> ${orgs}::text[]` : sql``}
-    ${usrs.length ? sql`and usrs @> ${usrs}::text[]` : sql``}
-    order by ${orderBy(s)}
-    offset ${p * 25} limit 25
-  `,
+    !me || s !== "hot" || (p + 1) * 25 > PREF_WINDOW
+      // Anonymous, an explicit chronological/most-voted sort, or a page past the window:
+      // one global ranking. Keeps com_feed_idx driving the anonymous case exactly as before.
+      ? sql<Com[]>`
+        select c.*, ${aggCols("c", me)}
+        from com c where ${feedWhere}
+        order by ${orderBy(s)}
+        offset ${p * 25} limit 25
+      `
+      // Personalized "hot": take a FIXED window of the global ranking, then re-sort it by
+      // the viewer's label prefs. `cand` still orders on bare score, so the same index
+      // drives it and only the window is re-sorted.
+      //
+      // The window must not depend on `p`. A growing window is not a stable ordered list:
+      // a row that first enters at page p sorts to the top of that page's window, into a
+      // slot page p-1 already emitted — so it appears on no page at all, and the row it
+      // displaced appears on two. `cid desc` breaks score ties for the same reason: without
+      // it, window membership at the boundary varies between requests.
+      //
+      // Weights mirror refresh_score's asymmetry — a ▼ weighs ~3x a ▲ — and `&&`/`= any`
+      // against a null array is null, so a viewer with no prefs (or none of one kind)
+      // scores exactly as the global ranking does.
+      : sql<Com[]>`
+        with mine as (
+          select array_agg(val::text)   filter (where kind = 'tag' and vote =  1) as up_tag,
+                 array_agg(val::text)   filter (where kind = 'tag' and vote = -1) as dn_tag,
+                 array_agg(val::citext) filter (where kind = 'usr' and vote =  1) as up_usr,
+                 array_agg(val::citext) filter (where kind = 'usr' and vote = -1) as dn_usr,
+                 array_agg(val::text)   filter (where kind = 'www' and vote =  1) as up_www,
+                 array_agg(val::text)   filter (where kind = 'www' and vote = -1) as dn_www
+            from pref where uid = ${me}
+        ),
+        cand as (
+          select cid, score, tags, domains, created_by from com c where ${feedWhere}
+          order by score desc, cid desc limit ${PREF_WINDOW}
+        ),
+        pick as (
+          select cand.cid, cand.score
+            + interval '8 hours'  * (case when cand.tags       && m.up_tag        then 1 else 0 end)
+            - interval '24 hours' * (case when cand.tags       && m.dn_tag        then 1 else 0 end)
+            + interval '12 hours' * (case when cand.created_by = any(m.up_usr)    then 1 else 0 end)
+            - interval '36 hours' * (case when cand.created_by = any(m.dn_usr)    then 1 else 0 end)
+            + interval '4 hours'  * (case when cand.domains    && m.up_www        then 1 else 0 end)
+            - interval '12 hours' * (case when cand.domains    && m.dn_www        then 1 else 0 end) as pscore
+          from cand cross join mine m
+          order by pscore desc, cand.cid desc offset ${p * 25} limit 25
+        )
+        -- aggCols is three correlated subqueries per row, so it must sit above the window:
+        -- selecting it inside pick would run them for every candidate, not the 25 returned.
+        select c.*, ${aggCols("c", me)} from com c join pick on pick.cid = c.cid
+        order by pick.pscore desc, c.cid desc
+      `,
   ]);
 
   const cur = new URL(c.req.url).searchParams,
@@ -2160,7 +2276,7 @@ app.get("/u", async (c) => {
     );
   }
 
-  const [[usr], invited, tags] = await Promise.all([
+  const [[usr], invited, tags, prefs, mutuals, [follow]] = await Promise.all([
     sql`
       select name, bio, invited_by, password, orgs_r, orgs_w, pubkey,
              (seckey_enc is not null) as custodial
@@ -2172,6 +2288,22 @@ app.get("/u", async (c) => {
       order by created_at desc
     `,
     topTags(name),
+    // The owner's own prefs — the only page where a ▼ of theirs is visible.
+    sql<{ kind: string; val: string; vote: number }[]>`
+      select kind, val::text, vote from pref where uid = ${name}
+      order by vote desc, kind, val`,
+    // Mutual follows: both of us ▲'d the other.
+    sql<{ name: string }[]>`
+      select p.val::text as name from pref p
+        join pref q on q.uid = p.val and q.val = p.uid and q.kind = 'usr' and q.vote = 1
+       where p.uid = ${name} and p.kind = 'usr' and p.vote = 1
+       order by p.created_at desc limit 50`,
+    // Your own counts. User() suppresses the vote control for the owner but still shows
+    // these, so the hub doesn't send you to /u/<yourself> to read your follower count.
+    sql<Follow[]>`
+      select null::smallint as vote, false as follows_me,
+             (select count(*)::int from pref where kind = 'usr' and val = ${name} and vote = 1) as followers,
+             (select count(*)::int from pref where uid = ${name} and kind = 'usr' and vote = 1) as following`,
   ]);
   if (!usr) return notFound();
   if (!usr.password) return c.redirect("/password");
@@ -2183,7 +2315,7 @@ app.get("/u", async (c) => {
           <p class="error">{accountErr}</p>
         </section>
       )}
-      <section>{User(usr as unknown as Usr, name, tags)}</section>
+      <section>{User(usr as unknown as Usr, name, tags, follow)}</section>
       <section>
         <h2>bio</h2>
         <form method="post" action="/u">
@@ -2192,6 +2324,41 @@ app.get("/u", async (c) => {
           </textarea>
           <button type="submit">save</button>
         </form>
+      </section>
+      <section>
+        <h2>people</h2>
+        {mutuals.length === 0
+          ? <p class="note-sm">no mutuals yet — upvote someone from their profile to follow them.</p>
+          : (
+            <div class="user-links">
+              {mutuals.map((m) => <a key={m.name} href={`/u/${m.name}`}>{Check(m.name)}@{m.name}</a>)}
+            </div>
+          )}
+      </section>
+      <section>
+        <h2>interests</h2>
+        {prefs.length === 0
+          ? <p class="note-sm">no prefs yet — upvote a #tag, @user or ~domain to weight your frontpage.</p>
+          : (
+            <div class="tag-presets">
+              {prefs.map((x) => {
+                const label = SYM[x.kind] + x.val;
+                return (
+                  <form key={label} method="post" action="/p">
+                    <input type="hidden" name="label" value={label} />
+                    <input type="hidden" name="vote" value={String(x.vote)} />
+                    <button
+                      type="submit"
+                      class="tag-preset"
+                      aria-label={`remove ${x.vote === 1 ? "▲" : "▼"} ${label}`}
+                    >
+                      {x.vote === 1 ? "▲" : "▼"} {label} x
+                    </button>
+                  </form>
+                );
+              })}
+            </div>
+          )}
       </section>
       <section>
         <h2>orgs</h2>
@@ -2342,19 +2509,25 @@ app.get("/u/:name", async (c) => {
   const viewerName = await viewer(c);
   if (viewerName) c.set("name", viewerName);
   const isOwner = viewerName && viewerName == profileName;
-  const [[usr], tags] = await Promise.all([
+  const me = viewerName || "";
+  const [[usr], tags, [follow]] = await Promise.all([
     sql`
       select name, bio, invited_by
         ${isOwner ? sql`, orgs_r, orgs_w` : sql``}
       from usr where name = ${profileName}
     `,
     topTags(profileName),
+    sql<Follow[]>`
+      select (select vote from pref where uid = ${me} and kind = 'usr' and val = ${profileName}) as vote,
+             (select count(*)::int from pref where kind = 'usr' and val = ${profileName} and vote = 1) as followers,
+             (select count(*)::int from pref where uid = ${profileName} and kind = 'usr' and vote = 1) as following,
+             exists(select 1 from pref where uid = ${profileName} and kind = 'usr' and val = ${me} and vote = 1) as follows_me`,
   ]);
   if (!usr) return notFound();
   if (host(c) === "api") return c.json(usr, 200);
   return c.render(
     <>
-      <section>{User(usr as Usr, viewerName, tags)}</section>
+      <section>{User(usr as Usr, viewerName, tags, follow)}</section>
       {isOwner && (
         <section>
           <p class="note-sm">
@@ -2693,23 +2866,27 @@ export const postRate = new Map<string, number[]>();
 const POST_RATE_MAX = 10,
   POST_RATE_MS = 60_000;
 
+// Where a form POST sends the browser back to. Same-host only — an attacker-supplied
+// Referer must not turn our 302 into an open redirect. A leading `//` is rejected too:
+// `https://ding.bar//evil.com` passes the host check but its pathname is a
+// protocol-relative URL, and browsers follow that off-site.
+const refBack = (c: Context): string | null => {
+  const ref = c.req.header("referer");
+  if (!ref) return null;
+  try {
+    const u = new URL(ref);
+    if (u.host !== c.req.header("host") || u.pathname.startsWith("//")) return null;
+    return u.pathname + u.search;
+  } catch {
+    return null;
+  }
+};
+
 app.post("/c/:p?", async (c) => {
   const pid = c.req.param("p") || null;
   const n = await viewer(c);
   if (!n)
     return c.redirect(`/u?next=${encodeURIComponent(pid ? `/c/${pid}` : "/")}`);
-
-  const refBack = (): string | null => {
-    const ref = c.req.header("referer");
-    if (!ref) return null;
-    try {
-      const u = new URL(ref);
-      if (u.host !== c.req.header("host")) return null;
-      return u.pathname + u.search;
-    } catch {
-      return null;
-    }
-  };
 
   if (!rateHit(postRate, n, POST_RATE_MAX, POST_RATE_MS))
     throw new HTTPException(429, { message: "slow down. try again in a minute." });
@@ -2765,7 +2942,7 @@ app.post("/c/:p?", async (c) => {
           ]);
         });
         await refreshScores(pid);
-        const r = refBack();
+        const r = refBack(c);
         return c.redirect(
           r ? `${r}#${pid}` : threadUrl(prm.prm_parent, pid),
         );
@@ -2829,12 +3006,88 @@ app.post("/c/:p?", async (c) => {
   }
 
   if (pid && isReaction(b)) {
-    const r = refBack();
+    const r = refBack(c);
     if (r) return c.redirect(`${r}#${pid}`);
   }
   return c.redirect(
     pid ? prm?.prm_parent ? threadUrl(prm.prm_parent, pid) : `/c/${pid}#${cm.cid}` : `/c/${cm.cid}`,
   );
+});
+
+// Tuning a row of chips is a handful of clicks, so postRate's 10/min would break it.
+export const prefRate = new Map<string, number[]>();
+const PREF_RATE_MAX = 60,
+  PREF_RATE_MS = 60_000;
+
+// The one write path for prefs. A pref is a label plus a vote, so the form carries the
+// label as a sigil string (`#humor`, `@jane_doe`, `~arxiv.org`) and parseLabels does the
+// parsing — same vocabulary the feed and search box already speak. `*org` is rejected:
+// org access is orgs_r/orgs_w membership, not a preference.
+app.post("/p", async (c) => {
+  const n = await viewer(c);
+  const back = refBack(c) ?? "/";
+  if (!n) return c.redirect(`/u?next=${encodeURIComponent(back)}`);
+  if (!rateHit(prefRate, n, PREF_RATE_MAX, PREF_RATE_MS))
+    throw new HTTPException(429, { message: "slow down. try again in a minute." });
+
+  const f = await form(c),
+    raw = (f.label ?? "").trim(),
+    vote = f.vote === "1" ? 1 : f.vote === "-1" ? -1 : null;
+  if (vote === null) {
+    throw new HTTPException(400, {
+      message: `vote must be "1" (▲) or "-1" (▼), got "${f.vote ?? ""}".`,
+    });
+  }
+  // Postgres text cannot hold a NUL; without this the driver raises and the user gets an
+  // opaque 500 instead of the one thing they could act on.
+  if (raw.includes("\0"))
+    throw new HTTPException(400, { message: "label contains a NUL byte." });
+
+  const l = parseLabels(raw),
+    picked = (["tag", "usr", "www"] as const).filter((k) => l[k].length);
+  if (l.text || l.org.length || picked.length !== 1 || l[picked[0]].length !== 1) {
+    throw new HTTPException(400, {
+      message:
+        `cannot vote on "${raw}" — send exactly one label: #tag, @user, or ~domain. (*org is not votable: org access is membership.)`,
+    });
+  }
+  const kind = picked[0];
+  let val = kind === "www" ? normHost(l.www[0]) : l[kind][0];
+  if (!val) throw new HTTPException(400, { message: `"${raw}" has a sigil but no label after it.` });
+
+  // ~domain has a closed vocabulary — extractDomains only ever produces bare hostnames — so
+  // anything else is a pref that could never match a post. #tag is free-form by design.
+  if (kind === "www" && !HOST_RE.test(val)) {
+    throw new HTTPException(400, {
+      message: `~${val} is not a hostname. Use the bare host, e.g. ~arxiv.org — not a URL, path, or scheme.`,
+    });
+  }
+
+  if (kind === "usr") {
+    // LabelVote is never rendered on your own profile, so reaching here means a hand-made
+    // request. Say so plainly rather than redirecting to a page that renders no error.
+    if (val.toLowerCase() === n.toLowerCase())
+      throw new HTTPException(400, { message: `you cannot follow or mute yourself (@${n}).` });
+    // Only validate when this will INSERT. pref.val has no FK (a partial one isn't
+    // expressible), so a followed account that is later deleted leaves the row behind —
+    // and rejecting the removal too would strand it on /u forever.
+    const [have] = await sql`select 1 from pref where uid = ${n} and kind = 'usr' and val = ${val}`;
+    if (!have) {
+      const [u] = await sql<{ name: string }[]>`select name from usr where name = ${val}`;
+      if (!u) throw new HTTPException(404, { message: `no user named @${val}.` });
+      val = u.name; // store the canonical casing, not whatever the form carried
+    }
+  }
+
+  // Toggle in one statement: re-sending the same vote clears it, the opposite vote
+  // replaces it. `del` is a data-modifying CTE, so postgres runs it to completion even
+  // when the insert is skipped, and the primary key makes a concurrent double-click safe.
+  await sql`
+    with del as (delete from pref where uid = ${n} and kind = ${kind} and val = ${val} and vote = ${vote} returning 1)
+    insert into pref (uid, kind, val, vote)
+    select ${n}, ${kind}, ${val}, ${vote} where not exists (select 1 from del)
+    on conflict (uid, kind, val) do update set vote = excluded.vote, created_at = current_timestamp`;
+  return c.redirect(back);
 });
 
 app.get("/c/:cid?", async (c) => {
@@ -2850,7 +3103,9 @@ app.get("/c/:cid?", async (c) => {
     orgs = c.req.queries("org") || [],
     usrs = c.req.queries("usr") || [],
     mens = c.req.queries("mention") || [],
-    www = c.req.queries("www") || [];
+    // com.domains holds bare hosts, so ?www=www.arxiv.org matched nothing. Normalizing here
+    // fixes the filter and keeps the ~domain vote button reading the same key POST /p writes.
+    www = (c.req.queries("www") || []).map(normHost);
 
   const items = await sql<Com[]>`
     select c.*, ${
@@ -2914,15 +3169,24 @@ app.get("/c/:cid?", async (c) => {
   if (!cid) {
     const cur = new URL(c.req.url).searchParams,
       meta = buildFilterTitle(cur);
-    const onlyFilter = !mens.length &&
-      !www.length &&
-      !q.q &&
-      !q.reactions &&
-      !q.replies_to &&
-      !q.comments;
-    const singleTag = onlyFilter && tags.length === 1 && !orgs.length && !usrs.length ? tags[0] : null;
-    const singleOrg = onlyFilter && orgs.length === 1 && !tags.length && !usrs.length ? orgs[0] : null;
-    const singleUsr = onlyFilter && usrs.length === 1 && !tags.length && !orgs.length ? usrs[0] : null;
+    // An InfoBlock describes ONE subject, so it only renders when exactly one label filter
+    // is active and nothing else narrows the feed. www joins tag/org/usr here — it used to
+    // be part of the "nothing else" set, so ?www= had no header at all.
+    const onlyFilter = !mens.length && !q.q && !q.reactions && !q.replies_to && !q.comments &&
+      tags.length + orgs.length + usrs.length + www.length === 1;
+    const singleTag = onlyFilter && tags.length === 1 ? tags[0] : null;
+    const singleOrg = onlyFilter && orgs.length === 1 ? orgs[0] : null;
+    const singleUsr = onlyFilter && usrs.length === 1 ? usrs[0] : null;
+    // A hostname the feed could actually hold — otherwise the block would present an
+    // attacker-chosen `?www=` value as "the domain this page is about", link to it, and
+    // offer follow buttons for something that can never match a post.
+    const singleWww = onlyFilter && www.length === 1 && HOST_RE.test(www[0]) ? www[0] : null;
+    // The viewer's ▲/▼ on whichever single label this page is about (tags/users/domains
+    // only — *org access is membership, not a preference). Every consumer is gated on a
+    // logged-in viewer, so anonymous hits — i.e. crawlers — must not pay for this.
+    const [labelPref] = n && (singleTag || singleUsr || singleWww)
+      ? await prefStat(n, singleTag ? "tag" : singleUsr ? "usr" : "www", (singleTag || singleUsr || singleWww)!)
+      : [null];
     const tagCount = singleTag
       ? (
         await sql`select count(*)::int as count from com where ${singleTag} = any(tags) and ${visibleTo(rT, n || "")}`
@@ -2959,6 +3223,7 @@ app.get("/c/:cid?", async (c) => {
           {singleTag && (
             <InfoBlock
               head={<>#{singleTag}</>}
+              vote={n && labelPref && <LabelVote label={`#${singleTag}`} vote={labelPref.vote} ups={labelPref.ups} />}
               note={<>{tagCount} post{tagCount === 1 ? "" : "s"}</>}
               postTo={<a href={`/?tag=${singleTag}`}>post to #{singleTag}</a>}
             />
@@ -2985,6 +3250,9 @@ app.get("/c/:cid?", async (c) => {
           {singleUsr && usrRow && (
             <InfoBlock
               head={<>{Check(singleUsr)}@{singleUsr}</>}
+              vote={n && labelPref && n.toLowerCase() !== singleUsr.toLowerCase() && (
+                <LabelVote label={`@${singleUsr}`} vote={labelPref.vote} ups={labelPref.ups} />
+              )}
               note={
                 <>
                   {usrRow.post_count} post{usrRow.post_count === 1 ? "" : "s"}
@@ -2995,7 +3263,15 @@ app.get("/c/:cid?", async (c) => {
               postTo={<a href={`/?usr=${singleUsr}`}>post to {Check(singleUsr)}@{singleUsr}</a>}
             />
           )}
-          {!singleTag && !singleOrg && !singleUsr && meta && <h2>{meta}</h2>}
+          {singleWww && (
+            <InfoBlock
+              head={<>~{singleWww}</>}
+              vote={n && labelPref && <LabelVote label={`~${singleWww}`} vote={labelPref.vote} ups={labelPref.ups} />}
+              note={<a href={`https://${singleWww}`} rel="noopener nofollow">{singleWww}</a>}
+              postTo={<a href={`/?body=https://${singleWww}/`}>post a {singleWww} link</a>}
+            />
+          )}
+          {!singleTag && !singleOrg && !singleUsr && !singleWww && meta && <h2>{meta}</h2>}
           {q.q && userMatches.length > 0 && (
             <div class="user-matches">
               {userMatches.map((u) => (

@@ -533,6 +533,18 @@ details.danger[open] > summary {
   opacity: 0.6;
 }
 
+/* The /u interest chips are submit buttons, not links. Drop the form's full width and the
+   button defaults that .tag-preset can't override, so they sit flush with the anchors. */
+.tag-presets form {
+  width: initial;
+}
+
+button.tag-preset {
+  min-height: 0;
+  font-weight: inherit;
+  font-size: var(--text-xs);
+}
+
 .tag-preset:hover,
 .filter-pill:hover {
   color: var(--fg);
@@ -700,8 +712,17 @@ a .check {
   margin: var(--space-4) 0;
 }
 
-.info-block > h2 {
+.info-block h2 {
   margin: 0;
+}
+
+/* A heading with its ▲/▼ pair beside it. LabelVote is a <form>, so it sits next to the
+   heading rather than inside it. */
+.follow-line {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  gap: var(--space-2);
 }
 
 .info-block > .note,

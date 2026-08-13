@@ -163,6 +163,22 @@ alter table com
   drop column if exists domain_downs,
   drop column if exists repost_ups;
 
+-- pref: per-user ▲/▼ on a label (#tag / @usr / ~www). Purely additive — old code never
+-- reads it, so this is safe to apply ahead of the deploy and safe to leave in place on a
+-- code rollback. NOTE: this table is duplicated verbatim in db.sql — changes touch both.
+-- New + empty, so plain CREATE INDEX is instant. CONCURRENTLY would buy nothing here and
+-- costs two table scans plus a wait on every open transaction — and if it were interrupted
+-- it would leave an INVALID index that `if not exists` then silently skips forever.
+create table if not exists pref (
+  uid  citext not null references usr (name) on delete cascade,
+  kind text not null check (kind in ('tag','usr','www')),
+  val  citext not null,
+  vote smallint not null check (vote in (-1, 1)),
+  created_at timestamptz not null default current_timestamp,
+  primary key (uid, kind, val)
+);
+create index if not exists pref_target_idx on pref (kind, val, vote);
+
 -- stat_tag: restrict the tag rollup to PUBLIC root posts. Previously it aggregated
 -- *org and @user rows too, so a tag used only inside a private post could surface as a
 -- public frontpage chip. Column list is unchanged, so this replace is idempotent.

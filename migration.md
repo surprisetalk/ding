@@ -55,6 +55,18 @@ select st.tag from stat_tag st
                        where parent_cid is null and orgs = '{}' and usrs = '{}');
 ```
 
+`migrate.sql` also creates the **`pref`** table (per-user ▲/▼ on a `#tag` / `@usr` / `~www` label). New and empty, read
+by nothing until the new code ships, so it is safe to apply early and safe to leave behind on a rollback. Smoke check —
+**must return one row**:
+
+```sql
+select count(*) from pg_index i join pg_class c on c.oid = i.indexrelid
+ where c.relname = 'pref_target_idx' and i.indisvalid;
+```
+
+(`pg_indexes` would also list an INVALID index, which `create index if not exists` then skips forever — check
+`indisvalid`, not mere existence.)
+
 ## 2. Deploy the new code
 
 **Deno Deploy auto-deploys on push to `main`.** So the schema migration (step 1) MUST already be done — otherwise the

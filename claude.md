@@ -78,6 +78,8 @@ pool), `idle_timeout: 20`, `statement_timeout: 15s`.
 - `usr` - Users with bcrypt passwords, email verification, org memberships (`orgs_r`/`orgs_w` arrays). `pubkey` +
   `seckey_enc` hold the user's Ed25519 identity (custodial key = AES-256-GCM(JWK, `KEY_WRAP_SECRET`); null =
   self-custody)
+- `pref` - Per-user ▲/▼ on a label: `(uid, kind in ('tag','usr','www'), val, vote)`, PK `(uid, kind, val)`. See **Label
+  Prefs** below
 - `com` - Comments with threading (parent_cid), tags/orgs/usrs arrays, full-text search. Index rules: `com_feed_idx` is
   the partial index the default feed rides (`score desc where parent_cid is null and orgs = '{}' and usrs = '{}'`);
   `com_by_created_idx` serves the bots' `?usr=X&sort=new` hot path. `= any(array_col)` cannot use a gin index — write
@@ -242,6 +244,49 @@ Search and tagging use a unified label syntax:
 
 Exported functions: `parseLabels()`, `encodeLabels()`, `decodeLabels()`, `formatLabels()`
 
+## Label Prefs (per-viewer ▲/▼)
+
+**A pref is a label plus a vote.** The `pref` table is `(uid, kind, val, vote)` where `kind` is one of `tag`/`usr`/`www`
+— the same `PFX` vocabulary the feed speaks — so `POST /p` takes a sigil string (`#humor`, `@jane_doe`, `~arxiv.org`)
+and `parseLabels` does the parsing. `*org` is rejected: org access is `orgs_r`/`orgs_w` membership, not a preference.
+
+`normHost`/`HOST_RE` are the single definition of the `~domain` vocabulary — `com.domains` only ever holds bare
+lowercase hosts (`extractDomains`), so `POST /p`, the `?www=` filter parse, and the `~domain` `InfoBlock` all normalize
+through `normHost`. Normalizing on write but not read is a trap: the ▲ renders un-voted on `?www=www.arxiv.org` and
+clicking it **deletes** the pref. `~` values that aren't hostnames (a URL, a path, `~.`) are rejected rather than stored
+as a pref that could never match.
+
+- **▲ is public, ▼ is private.** `prefStat` selects the ▲ count and the viewer's own vote, never the ▼ count. ▲ on a
+  user is a follow; mutual = both sides ▲. A mute has no read path off the voter's own `/u`.
+- **The primary key is the toggle.** Re-sending the same vote deletes the row, the opposite vote replaces it. Done in
+  one statement with a data-modifying `del` CTE (postgres always runs it to completion), so a double-click can't stack
+  rows — unlike post reactions, which have no uniqueness constraint and where ▲/▼ are independent toggles a user can
+  hold both of.
+- **`pref` is invisible to `refresh_score`** and to `stat_tag`/`stat_usr`/`stat_domain`. Those stay global reputation;
+  `pref` is per-viewer. That split is why personalization is a separate ranking stage, not a new term in the polynomial.
+- **Only a `usr` pref that will INSERT is validated.** `pref.val` has no FK (a partial one isn't expressible), so a
+  followed account that is later deleted — `ding-prune-unverified` does exactly that — leaves the row behind. Rejecting
+  the removal too would strand a dead chip on `/u` and permanently inflate "N following".
+- **`GET /` only** — and only on the default `hot` sort. A logged-in `hot` feed runs a `mine`/`cand`/`pick` CTE chain:
+  `cand` takes `PREF_WINDOW` (300) rows on `score desc, cid desc` (an Incremental Sort on `com_score_idx`, so the index
+  still drives it), `pick` re-sorts that window by score + pref boost, and `aggCols` is applied **above** the window —
+  selecting it inside `pick` would run its three correlated subqueries for every candidate instead of the 25 returned.
+  `&&`/`= any` against a null array is null, so a viewer with no prefs scores exactly as the global ranking does.
+  `feedWhere` is the single definition of what the feed selects, shared by both branches.
+- **The window must NOT depend on the page**, and `PREF_WINDOW` must stay a multiple of 25. Paging is a slice of one
+  ordered list; with a `p * 25 + 300` window (the first cut of this) a row entering at page `p` sorted to the top of
+  that page's window — into a slot page `p-1` already emitted — so it appeared on **no** page and the row it displaced
+  appeared on two. Past the window the feed falls back to the plain global branch, which is exactly where the
+  personalized list's tail lives; the two meet on a page boundary. `cid desc` breaks score ties for the same reason.
+- **`s` is normalized once** (`new`/`top`/else `hot`) because `orderBy` treats any unknown sort as hot — reading
+  `q.sort` raw in the branch condition let `?sort=HOT` order one way and take the other branch.
+- Explicit 70% cuts: `/c` search is **not** personalized (you already expressed intent there — re-ranking fights you),
+  and `sort=new`/`sort=top` are not either (chronological and most-voted mean what they say). Weights are constants;
+  `todo.md`'s personalization slider is the follow-up.
+- Surfaces: `LabelVote` (same markup/classes as `Reactions`) on the `/c?tag=`, `/c?usr=` and `/c?www=` `InfoBlock`s and
+  on `/u/:name`; `/u` gains **people** (mutuals) and **interests** (your prefs, with toggle-off chips). `/c?www=` had no
+  header before — adding one required `onlyFilter` to move `www` from "nothing else is set" into the single-label count.
+
 ## Tag Discovery
 
 Two surfaces, both rendered as `.tag-preset` chips (`public/style.css`):
@@ -280,11 +325,12 @@ view (`/`) stays one level deep.
 
 ## Account hub (/u)
 
-`GET /u` is the owner's hub: identity (`User` component), bio edit, orgs (from `orgs_r`, "(read-only)" when not in
-`orgs_w`), invites (`POST /invite`, "N of 4 used", pending list), and account actions — logout, custodial `/key`
-download, and a `<details class="danger">` confirm around the irreversible `POST /key/delete`. All three POST targets
-already redirect back to `/u`, so the hub needed no handler changes. `/u/:name` stays lean and shares the `User`
-component (owners get a pointer line back to `/u`). `/n` stays a separate page on purpose — no notif preview on `/u`.
+`GET /u` is the owner's hub: identity (`User` component), bio edit, **people** (mutual follows), **interests** (your
+label prefs, each chip a toggle-off `POST /p`), orgs (from `orgs_r`, "(read-only)" when not in `orgs_w`), invites
+(`POST /invite`, "N of 4 used", pending list), and account actions — logout, custodial `/key` download, and a
+`<details class="danger">` confirm around the irreversible `POST /key/delete`. All three POST targets already redirect
+back to `/u`, so the hub needed no handler changes. `/u/:name` stays lean and shares the `User` component (owners get a
+pointer line back to `/u`). `/n` stays a separate page on purpose — no notif preview on `/u`.
 
 ## Embeddable comments (/embed)
 
