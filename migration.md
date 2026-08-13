@@ -67,6 +67,20 @@ select count(*) from pg_index i join pg_class c on c.oid = i.indexrelid
 (`pg_indexes` would also list an INVALID index, which `create index if not exists` then skips forever — check
 `indisvalid`, not mere existence.)
 
+`migrate.sql` also adds **`com_root_score_idx`** (the logged-in feed's partial index — `CONCURRENTLY`, `com` is large
+and live) and converts **`stat_tag` from a plain view to a MATERIALIZED view** (~350ms/read → ~2ms; it is read once per
+logged-in frontpage load plus once per `refresh_score`). The conversion is wrapped in an explicit transaction, the one
+exception to this file's no-`BEGIN` rule: nothing in that block is `CONCURRENTLY`, and without the transaction there is
+a window where `stat_tag` does not exist and every logged-in frontpage 500s.
+
+⚠️ **The matview is a snapshot with no self-refresh.** It is populated at migration time and then frozen until the
+`ding-refresh-stats` `Deno.cron` ships — so run this migration _close to_ the deploy, not days ahead, or tag discovery
+silently stops seeing new tags. Smoke check — **must return `m`**:
+
+```sql
+select relkind from pg_class where relname = 'stat_tag';
+```
+
 ## 2. Deploy the new code
 
 **Deno Deploy auto-deploys on push to `main`.** So the schema migration (step 1) MUST already be done — otherwise the

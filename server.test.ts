@@ -46,6 +46,7 @@ import app, {
   prefRate,
   publishPeer,
   r2,
+  refreshStats,
   replicate,
   resend,
   resolveName,
@@ -191,6 +192,10 @@ update com set domains = coalesce((
   select array_agg(distinct regexp_replace(lower(rtrim(m[1], '.,;:)]}>')), '^www\\.', ''))
   from regexp_matches(body, 'https?://([^/\\s:?#]+)', 'g') as m
 ), '{}');
+
+-- stat_tag is materialized, so it is an empty snapshot until refreshed — and refresh_score
+-- reads it, so this has to land first or every seeded score loses its tag term.
+refresh materialized view stat_tag;
 
 select refresh_score(array(select cid from com));
 `;
@@ -2355,6 +2360,25 @@ Deno.test(
       assertEquals(html.includes("▲0"), false, "zero-up tags should render no count");
     });
 
+    // stat_tag is a snapshot, so a brand-new tag is invisible to discovery until the cron
+    // refreshes. That is the trade this materialization buys, and it should stay deliberate:
+    // if someone reverts it to a plain view this step starts failing on the first assertion.
+    await t.step("a new tag reaches discovery only after refreshStats", async () => {
+      await sql`insert into com (parent_cid, created_by, body, tags) values
+        (null, 'SyntaxSamurai', 'fresh a', '{freshtag}'),
+        (null, 'SyntaxSamurai', 'fresh b', '{freshtag}'),
+        (null, 'SyntaxSamurai', 'fresh c', '{freshtag}')`;
+      assertEquals(
+        (await sql`select 1 from stat_tag where tag = 'freshtag'`).length,
+        0,
+        "stat_tag is not a snapshot — the refresh cron is now pointless",
+      );
+      await refreshStats();
+      assertEquals((await sql`select posts_count from stat_tag where tag = 'freshtag'`)[0].posts_count, 3);
+      await sql`delete from com where tags @> '{freshtag}'`;
+      await refreshStats();
+    });
+
     await t.step("GET /u/:name for a user with no posts renders no tag chips", async () => {
       const html = await (await app.request("/u/jane_doe")).text();
       assertEquals(html.includes("tag-preset"), false);
@@ -2379,6 +2403,7 @@ Deno.test(
         (null, 'BugHunter42', 'roadmap a', '{roadmap}', '{secret}'),
         (null, 'BugHunter42', 'roadmap b', '{roadmap}', '{secret}'),
         (null, 'BugHunter42', 'roadmap c', '{roadmap}', '{secret}')`;
+      await refreshStats(); // else a stale snapshot hides #roadmap and the step proves nothing
       // jane_doe reads no orgs, so #roadmap must be invisible to her however the dice fall.
       const cookie = await login("jane@example.com");
       for (let i = 0; i < 12; i++) {
@@ -2446,6 +2471,7 @@ Deno.test(
         (null, 'SyntaxSamurai', 'mute a', '{mutedisco}'),
         (null, 'SyntaxSamurai', 'mute b', '{mutedisco}'),
         (null, 'SyntaxSamurai', 'mute c', '{mutedisco}')`;
+      await refreshStats();
       await sql`insert into pref (uid, kind, val, vote) values ('jane_doe', 'tag', 'mutedisco', -1)`;
       // disco is a weighted random sample, so one draw proves nothing — take many.
       const cookie = await login("jane@example.com");
@@ -2453,6 +2479,7 @@ Deno.test(
         assertEquals((await frontpage(cookie)).includes(">#mutedisco<"), false, "muted tag surfaced via discovery");
       await sql`delete from pref where uid = 'jane_doe'`;
       await sql`delete from com where tags @> '{mutedisco}'`;
+      await refreshStats();
     });
 
     await t.step("frontpage discovery samples a rotating subset of an oversized pool", async () => {
@@ -2466,6 +2493,7 @@ Deno.test(
           (null, 'SyntaxSamurai', ${"b " + tg}, ${[tg]}),
           (null, 'SyntaxSamurai', ${"c " + tg}, ${[tg]})`;
       }
+      await refreshStats();
       // jane_doe has no posts, orgs or upvotes, so every chip she sees is a discovery chip.
       const cookie = await login("jane@example.com");
       const union = new Set<string>();
@@ -3495,6 +3523,20 @@ Deno.test(
       assertEquals(html.includes(`href="/key"`), false);
       assertEquals(html.includes("1 of 4 used"), true); // jane_doe is seeded as john's invitee
       assertEquals(html.includes(`href="/u/jane_doe"`), true);
+    });
+
+    // The hub folds prefs, mutuals and both counts into one query via `counts left join mine
+    // on true`. With no prefs of your own that join is the only thing keeping a row — and so
+    // the only thing keeping a follower count that isn't yours to zero out.
+    await t.step("hub counts survive a user with followers but no prefs of their own", async () => {
+      await sql`delete from pref`;
+      await sql`insert into pref (uid, kind, val, vote) values ('jane_doe', 'usr', 'john_doe', 1)`;
+      const html = await (await app.request("/u", { headers: { cookie } })).text();
+      assertStringIncludes(html, "1 follower");
+      assertStringIncludes(html, "0 following");
+      assertStringIncludes(html, "no prefs yet");
+      assertStringIncludes(html, "no mutuals yet");
+      await sql`delete from pref`;
     });
 
     await t.step("custodial user sees key download and delete confirm", async () => {

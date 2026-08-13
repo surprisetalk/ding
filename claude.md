@@ -81,12 +81,16 @@ pool), `idle_timeout: 20`, `statement_timeout: 15s`.
 - `pref` - Per-user ▲/▼ on a label: `(uid, kind in ('tag','usr','www'), val, vote)`, PK `(uid, kind, val)`. See **Label
   Prefs** below
 - `com` - Comments with threading (parent_cid), tags/orgs/usrs arrays, full-text search. Index rules: `com_feed_idx` is
-  the partial index the default feed rides (`score desc where parent_cid is null and orgs = '{}' and usrs = '{}'`);
-  `com_by_created_idx` serves the bots' `?usr=X&sort=new` hot path. `= any(array_col)` cannot use a gin index — write
-  `links @> array[$1]` (that was a full table scan on every write and every thread view). `refresh_score` maintains only
-  `score`; the eight `author_ups`/`tag_ups`/… columns it used to write were never read and are dropped.
-  `hash`/`author_id`/`sig`/ `parent_hash`/`t` carry the signed DHT identity; `created_by` is null for foreign authors
-  (rendered by short hash)
+  the partial index the ANONYMOUS default feed rides
+  (`score desc where parent_cid is null and orgs = '{}' and usrs =
+  '{}'`); `com_root_score_idx`
+  (`score desc where parent_cid is null`) is the logged-in one, whose `usrs` predicate is a disjunct and so can never
+  satisfy a partial index built on the equality — without it those requests fall back to `com_score_idx` and walk every
+  comment row to find roots (measured 1738 buffers vs 301). `com_by_created_idx` serves the bots' `?usr=X&sort=new` hot
+  path. `= any(array_col)` cannot use a gin index — write `links @> array[$1]` (that was a full table scan on every
+  write and every thread view). `refresh_score` maintains only `score`; the eight `author_ups`/`tag_ups`/… columns it
+  used to write were never read and are dropped. `hash`/`author_id`/`sig`/ `parent_hash`/`t` carry the signed DHT
+  identity; `created_by` is null for foreign authors (rendered by short hash)
 - `dht` - The signed, content-addressed, append-only log (source of truth; `com`/`usr`/`org` are a rebuildable
   projection). `seen_at` (local arrival) is the replication cursor, never the attacker-controlled signed `ts`
 
@@ -308,6 +312,15 @@ Two surfaces, both rendered as `.tag-preset` chips (`public/style.css`):
 - **Profile top tags** (`User` component, both `GET /u/:name` and `GET /u`): `topTags(name)`, ranked by upvotes received
   with post count as tiebreak, chips link to the global `/c?tag=<tag>` feed.
 
+**`stat_tag` is a MATERIALIZED view**, unlike its `stat_usr`/`stat_domain` siblings. As a plain view it re-aggregated
+every public root post and every reaction on **every read** — and it is read once per logged-in frontpage load plus once
+per `refresh_score` call. `refreshStats()` refreshes it `CONCURRENTLY` (which is what `stat_tag_tag_idx`, its unique
+index, is for — without that index the refresh can't be concurrent and would lock readers out) on the
+`ding-refresh-stats` `Deno.cron`, every 10 min. **The trade: a brand-new tag doesn't reach the discovery chips until the
+next tick.** Tests must call `refreshStats()` after inserting tagged posts, exactly as the cron does — note that a test
+asserting a tag is _absent_ will pass vacuously against a stale snapshot, so those must refresh too. `stat_domain` is
+still a plain view and still costs about the same per read; only `refresh_score` reads it.
+
 **Both are world- or org-stranger-readable, so neither may use `visibleTo`** — they hard-filter to public root posts
 (`orgs = '{}' and usrs = '{}'`). `stat_tag` (`db.sql`) carries that same filter for the same reason: before, a tag used
 only inside a `*org` post could surface as a public frontpage chip. Side effect: `refresh_score`'s `tag_ups`/`tag_downs`
@@ -337,6 +350,13 @@ label prefs, each chip a toggle-off `POST /p`), orgs (from `orgs_r`, "(read-only
 `<details class="danger">` confirm around the irreversible `POST /key/delete`. All three POST targets already redirect
 back to `/u`, so the hub needed no handler changes. `/u/:name` stays lean and shares the `User` component (owners get a
 pointer line back to `/u`). `/n` stays a separate page on purpose — no notif preview on `/u`.
+
+It runs **three** queries, not six: the postgres.js pool is `max: 3` per isolate, so a wider `Promise.all` doesn't fan
+out — it queues into a second round trip. The invite list rides along with the `usr` row as a `json_agg` subquery (same
+table), and prefs + mutuals + both follow counts collapse into one pass. That last one is
+`counts left join mine on true` on purpose: with no prefs of your own the join is the only thing keeping a row, and so
+the only thing keeping a follower count that isn't yours from reading as zero. The all-null sentinel row is dropped in
+JS.
 
 ## Embeddable comments (/embed)
 

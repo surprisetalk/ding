@@ -95,6 +95,10 @@ create index com_score_idx on com (score desc);
 -- The default feed: public root posts by score. A bare score index makes the planner walk
 -- every comment row, and comments outgrow posts.
 create index com_feed_idx on com (score desc) where parent_cid is null and orgs = '{}' and usrs = '{}';
+-- Same idea for a LOGGED-IN viewer, whose usrs predicate is a disjunct and so can never
+-- satisfy com_feed_idx's. Without this they fall back to com_score_idx and the scan walks
+-- every comment row to find roots.
+create index com_root_score_idx on com (score desc) where parent_cid is null;
 create index com_domains_idx on com using gin (domains);
 create index com_parent_hash_idx on com (parent_hash);
 
@@ -155,7 +159,13 @@ from usr u
 left join posts p on p.uid = u.name
 left join rx r on r.uid = u.name;
 
-create view stat_tag as
+-- MATERIALIZED, unlike its stat_usr/stat_domain siblings: as a plain view this aggregates
+-- every public root post and every reaction on EVERY read, and it is read once per
+-- logged-in frontpage load (the `disco` chip sample) plus once per refresh_score call.
+-- The numbers are slow-moving reputation, so a periodic snapshot is the right shape.
+-- Refreshed by refreshStats() on a Deno.cron; the unique index below is what lets that
+-- refresh run CONCURRENTLY and not lock readers out.
+create materialized view stat_tag as
 select t.tag,
   count(distinct t.cid)::int as posts_count,
   count(*) filter (where r.body = '▲')::int as ups_received,
@@ -164,6 +174,8 @@ from (select unnest(tags) tag, cid from com
        where tags <> '{}' and parent_cid is null and orgs = '{}' and usrs = '{}') t
 left join com r on r.parent_cid = t.cid and char_length(r.body) = 1
 group by t.tag;
+
+create unique index stat_tag_tag_idx on stat_tag (tag);
 
 create view stat_domain as
 select d.domain,

@@ -179,11 +179,33 @@ create table if not exists pref (
 );
 create index if not exists pref_target_idx on pref (kind, val, vote);
 
--- stat_tag: restrict the tag rollup to PUBLIC root posts. Previously it aggregated
--- *org and @user rows too, so a tag used only inside a private post could surface as a
--- public frontpage chip. Column list is unchanged, so this replace is idempotent.
--- Side effect: refresh_score's tag_ups/tag_downs signal no longer counts private posts.
-create or replace view stat_tag as
+-- The logged-in feed. com_feed_idx's predicate requires `usrs = '{}'`, but a logged-in
+-- viewer's predicate is a disjunct (`usrs = '{}' or me = any(usrs) or created_by = me`) and
+-- a disjunct can never satisfy a partial index, so those requests fell back to com_score_idx
+-- and walked ~26k comment rows to find 300 roots. CONCURRENTLY: com is large and live.
+create index concurrently if not exists com_root_score_idx on com (score desc) where parent_cid is null;
+
+-- stat_tag becomes MATERIALIZED. As a plain view it re-aggregated every public root post and
+-- every reaction on EVERY read — ~350ms measured on prod — and it is read once per logged-in
+-- frontpage load (the disco chip sample) plus once per refresh_score call. Refreshed every
+-- 10 min by the ding-refresh-stats Deno.cron; the unique index is what lets that run
+-- CONCURRENTLY. Trade: a brand-new tag doesn't reach the discovery chips until the next tick.
+--
+-- Idempotent AND atomic, deliberately in a transaction (the file's no-BEGIN rule exists only
+-- because CREATE INDEX CONCURRENTLY forbids one, and nothing here is concurrent). Without
+-- the transaction there is a window where stat_tag does not exist and every logged-in
+-- frontpage 500s. `drop view if exists` is not enough on its own: on a re-run stat_tag is a
+-- MATVIEW, and `drop view` on a matview errors rather than skipping.
+begin;
+
+do $$
+begin
+  if exists (select 1 from pg_class where relname = 'stat_tag' and relkind = 'v') then
+    drop view stat_tag;
+  end if;
+end $$;
+
+create materialized view if not exists stat_tag as
 select t.tag,
   count(distinct t.cid)::int as posts_count,
   count(*) filter (where r.body = '▲')::int as ups_received,
@@ -192,3 +214,8 @@ from (select unnest(tags) tag, cid from com
        where tags <> '{}' and parent_cid is null and orgs = '{}' and usrs = '{}') t
 left join com r on r.parent_cid = t.cid and char_length(r.body) = 1
 group by t.tag;
+
+-- Required by REFRESH MATERIALIZED VIEW CONCURRENTLY.
+create unique index if not exists stat_tag_tag_idx on stat_tag (tag);
+
+commit;

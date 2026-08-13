@@ -162,6 +162,12 @@ const refreshScores = (pid: string | number) =>
     select cid from com where cid = ${pid} or links @> array[${pid}::int]
   ))`.then(() => {}, (err) => console.error(`refresh_score failed for cid=${pid}:`, err));
 
+// stat_tag is materialized, so it needs a hand. CONCURRENTLY keeps readers on the old
+// snapshot for the duration instead of locking them out — it needs the unique index on
+// (tag) and cannot run inside a transaction. Exported so tests refresh the way the cron
+// does rather than reaching for their own SQL.
+export const refreshStats = () => sql`refresh materialized view concurrently stat_tag`;
+
 const FLAG_THRESHOLD = 3;
 
 const resolveThumbnail = async (url: string) => {
@@ -2291,36 +2297,50 @@ app.get("/u", async (c) => {
     );
   }
 
-  const [[usr], invited, tags, prefs, mutuals, [follow]] = await Promise.all([
+  // THREE queries, not six: the pool is `max: 3` per isolate, so a wider Promise.all doesn't
+  // fan out — it queues into a second round trip. The invite list rides along with the usr
+  // row (same table), and the three pref reads collapse into one pass over the same rows.
+  const [[usr], tags, prefRows] = await Promise.all([
     sql`
-      select name, bio, invited_by, password, orgs_r, orgs_w, pubkey,
-             (seckey_enc is not null) as custodial
-      from usr where name = ${name}
-    `,
-    sql`
-      select name, (email_verified_at is not null) as verified
-      from usr where invited_by = ${name} and name != ${name}
-      order by created_at desc
+      select u.name, u.bio, u.invited_by, u.password, u.orgs_r, u.orgs_w, u.pubkey,
+             (u.seckey_enc is not null) as custodial,
+             coalesce((
+               select json_agg(json_build_object('name', i.name, 'verified', i.email_verified_at is not null)
+                               order by i.created_at desc)
+                 from usr i where i.invited_by = u.name and i.name <> u.name
+             ), '[]'::json) as invited
+      from usr u where u.name = ${name}
     `,
     topTags(name),
-    // The owner's own prefs — the only page where a ▼ of theirs is visible.
-    sql<{ kind: string; val: string; vote: number }[]>`
-      select kind, val::text, vote from pref where uid = ${name}
-      order by vote desc, kind, val`,
-    // Mutual follows: both of us ▲'d the other.
-    sql<{ name: string }[]>`
-      select p.val::text as name from pref p
-        join pref q on q.uid = p.val and q.val = p.uid and q.kind = 'usr' and q.vote = 1
-       where p.uid = ${name} and p.kind = 'usr' and p.vote = 1
-       order by p.created_at desc limit 50`,
-    // Your own counts. User() suppresses the vote control for the owner but still shows
-    // these, so the hub doesn't send you to /u/<yourself> to read your follower count.
-    sql<Follow[]>`
-      select null::smallint as vote, false as follows_me,
-             (select count(*)::int from pref where kind = 'usr' and val = ${name} and vote = 1) as followers,
-             (select count(*)::int from pref where uid = ${name} and kind = 'usr' and vote = 1) as following`,
+    // Your prefs (the only page where a ▼ of yours is visible), each flagged mutual, plus the
+    // two counts. `counts left join mine on true` always yields a row, so the counts survive
+    // a user with no prefs of their own but followers of their own.
+    sql<
+      { followers: number; following: number; kind: string | null; val: string | null; vote: number; mutual: boolean }[]
+    >`
+      with mine as (select kind, val, vote, created_at from pref where uid = ${name}),
+      counts as (
+        select (select count(*)::int from pref where kind = 'usr' and val = ${name} and vote = 1) as followers,
+               (select count(*)::int from pref where uid = ${name} and kind = 'usr' and vote = 1) as following
+      )
+      select c.followers, c.following, m.kind, m.val::text, m.vote,
+             coalesce(m.kind = 'usr' and m.vote = 1 and exists(
+               select 1 from pref q
+                where q.uid = m.val and q.val = ${name} and q.kind = 'usr' and q.vote = 1), false) as mutual
+        from counts c left join mine m on true
+       order by m.vote desc nulls last, m.kind, m.val`,
   ]);
   if (!usr) return notFound();
+  const invited = usr.invited as { name: string; verified: boolean }[];
+  // The left join emits one all-null pref row when you have none; drop it and the rest are whole.
+  const prefs = prefRows.filter((r) => r.kind) as { kind: string; val: string; vote: number; mutual: boolean }[];
+  const mutuals = prefs.filter((r) => r.mutual).map((r) => ({ name: r.val }));
+  const follow: Follow = {
+    vote: null,
+    follows_me: false,
+    followers: prefRows[0].followers,
+    following: prefRows[0].following,
+  };
   if (!usr.password) return c.redirect("/password");
   const accountErr = uErrMsg[c.req.query("error") ?? ""];
   return c.render(
@@ -3624,6 +3644,18 @@ if (Deno.env.get("DENO_DEPLOYMENT_ID")) {
   });
 
   Deno.cron("ding-bots", "*/5 * * * *", () => runBotFleet());
+
+  // stat_tag is a snapshot now, so something has to take it. Every 10 minutes: the chips it
+  // feeds are discovery, and its refresh_score term is slow-moving reputation, so staleness
+  // of that order is invisible. pg_cron is available on Neon but this repo already schedules
+  // everything here — one scheduler to reason about beats two.
+  Deno.cron("ding-refresh-stats", "*/10 * * * *", async () => {
+    try {
+      await refreshStats();
+    } catch (e) {
+      console.error(`stat refresh cron failed: ${e instanceof Error ? e.message : e}`);
+    }
+  });
 }
 
 export default app;
