@@ -28,6 +28,7 @@ import "./test_env.ts"; // sets env BEFORE server.tsx module evaluation (ES impo
 import dbSql from "./db.sql" with { type: "text" };
 
 import app, {
+  AI_CRAWLERS,
   badSignupEmail,
   botFetch,
   dbIngestRate,
@@ -460,6 +461,52 @@ Deno.test(
       } finally {
         paging.maxOffset = 5000;
         await sql`delete from com where tags @> '{pagecap}'`;
+      }
+    });
+
+    // This file shipped as one string containing "\\n", i.e. LITERAL backslash-n, so every
+    // crawler saw a single unparseable line and ding had no rules at all.
+    await t.step("robots.txt is a real multi-line file", async () => {
+      const res = await app.request("/robots.txt");
+      assertEquals(res.status, 200);
+      const txt = await res.text();
+      assertEquals(txt.includes("\\n"), false, "robots.txt contains a literal backslash-n again");
+      const lines = txt.split("\n").map((l) => l.trim());
+      assertEquals(lines[0], "User-agent: *");
+      assertEquals(lines.includes("Disallow: /*?"), true);
+      assertEquals(lines.includes("Sitemap: https://ding.bar/sitemap.txt"), true);
+      // Every blocked crawler needs its own User-agent line followed by a Disallow.
+      for (const ua of AI_CRAWLERS) {
+        const at = lines.indexOf(`User-agent: ${ua}`);
+        assertEquals(at >= 0, true, `${ua} missing from robots.txt`);
+        assertEquals(lines[at + 1], "Disallow: /", `${ua} has no Disallow`);
+      }
+    });
+
+    // robots.txt is advisory and the heaviest scrapers ignore it, so the same policy is
+    // enforced in the middleware — unlike botRe's, this block is not query-string-only.
+    await t.step("training scrapers are refused on every path", async () => {
+      for (const ua of AI_CRAWLERS) {
+        for (const path of ["/", "/c", "/c/301", "/u/BugHunter42"]) {
+          const res = await app.request(path, { headers: { "User-Agent": `Mozilla/5.0 (compatible; ${ua}/1.0)` } });
+          assertEquals(res.status, 403, `${ua} got ${res.status} on ${path}`);
+        }
+      }
+    });
+
+    // A 403 to a search engine delists the site, so the hard block must never catch one.
+    await t.step("search engines still reach content URLs", async () => {
+      for (
+        const ua of [
+          "Mozilla/5.0 (compatible; Googlebot/2.1; +http://www.google.com/bot.html)",
+          "Mozilla/5.0 (compatible; bingbot/2.0; +http://www.bing.com/bingbot.htm)",
+          "Mozilla/5.0 (compatible; DuckDuckBot/1.1)",
+        ]
+      ) {
+        assertEquals((await app.request("/", { headers: { "User-Agent": ua } })).status, 200, ua);
+        assertEquals((await app.request("/c/301", { headers: { "User-Agent": ua } })).status, 200, ua);
+        // ...but the infinite filter space still costs them a 403, as before.
+        assertEquals((await app.request("/c?tag=humor", { headers: { "User-Agent": ua } })).status, 403, ua);
       }
     });
 
@@ -2264,6 +2311,63 @@ Deno.test(
         fd.append("file", new Blob([big], { type: "image/png" }), "big.png");
         const res = await app.request("/i", { method: "POST", body: fd, headers: jAuth });
         assertEquals(res.status, 413);
+      });
+
+      // The reported prod 500: a client that goes away mid-upload makes formData() throw
+      // "error reading a body from connection", which became a bare 500 and a stack trace.
+      // It is a truncated request, so it must read as one.
+      await t.step("POST /i names a truncated upload instead of 500ing", async () => {
+        const body = new ReadableStream({
+          start(ctrl) {
+            ctrl.enqueue(new TextEncoder().encode('--x\r\nContent-Disposition: form-data; name="id"\r\n\r\n'));
+            ctrl.error(new Error("connection reset"));
+          },
+        });
+        const res = await app.request("/i", {
+          method: "POST",
+          body,
+          headers: { ...jAuth, "content-type": "multipart/form-data; boundary=x" },
+          // @ts-expect-error: required by fetch whenever the body is a stream
+          duplex: "half",
+        });
+        assertEquals(res.status, 400, "a dropped upload must not be a 500");
+        assertStringIncludes(await res.text(), "upload did not finish");
+      });
+
+      // The size checks all run after the body is buffered, so a caller that skips the
+      // client-side guard would otherwise make the isolate read the whole thing to refuse it.
+      // The size checks all run after the body is buffered, so a caller that skips the
+      // client-side guard would otherwise make the isolate read the whole thing to refuse it.
+      // The body here fails if read, so 413 (rather than the truncated-upload 400 above) is
+      // what proves the declared-length check ran first.
+      await t.step("POST /i refuses an oversized declared length before reading the body", async () => {
+        const body = new ReadableStream({
+          pull: (ctrl) => ctrl.error(new Error("body should never have been read")),
+        });
+        const res = await app.request("/i", {
+          method: "POST",
+          body,
+          headers: {
+            ...jAuth,
+            "content-type": "multipart/form-data; boundary=x",
+            "content-length": String(500 * 1024 * 1024),
+          },
+          // @ts-expect-error: required by fetch whenever the body is a stream
+          duplex: "half",
+        });
+        assertEquals(res.status, 413, "the body was read before the declared length was checked");
+        assertStringIncludes(await res.text(), "the limit is 25 MB");
+      });
+
+      await t.step("POST /i bad id says what shape it wanted", async () => {
+        const fd = new FormData();
+        fd.append("id", "nope.exe");
+        fd.append("file", new Blob([new Uint8Array([1])], { type: "image/png" }), "x.png");
+        const res = await app.request("/i", { method: "POST", body: fd, headers: jAuth });
+        assertEquals(res.status, 400);
+        const msg = await res.text();
+        assertStringIncludes(msg, "nope.exe");
+        assertStringIncludes(msg, "a1b2c3d4.png");
       });
 
       await t.step("POST /i unauthed 401", async () => {

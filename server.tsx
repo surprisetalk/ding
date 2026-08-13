@@ -1554,7 +1554,32 @@ app.use("*", async (c, next) => {
   throw new HTTPException(405, { message: `db.ding.bar accepts GET (drain) and POST (ingest), not ${c.req.method}.` });
 });
 
+// Search-engine-ish crawlers. These are welcome on content URLs but not on the infinite
+// filter space, so they get a 403 only when the request carries a query string.
 const botRe = /bot|crawl|spider|slurp|bing|facebook|google|yandex|baidu|duck|sogou|semrush|ahref/i;
+
+// Training scrapers. robots.txt is advisory and the heaviest of these ignore it, so the same
+// policy is enforced in the middleware. Kept as UA substrings that actually appear in the
+// wild — `Google-Extended` and `Applebot-Extended` are robots.txt tokens, not real UAs, so
+// they belong in ROBOTS only. Nothing here may overlap a search engine: a 403 to Googlebot
+// delists the site. Order matters — this is a hard block, botRe's is query-string-only.
+export const AI_CRAWLERS = [
+  "GPTBot",
+  "ClaudeBot",
+  "anthropic-ai",
+  "CCBot",
+  "PerplexityBot",
+  "Bytespider",
+  "Amazonbot",
+  "ImagesiftBot",
+  "Diffbot",
+  "Omgilibot",
+  "cohere-ai",
+  "YouBot",
+  "Timpibot",
+  "meta-externalagent",
+];
+const aiBotRe = new RegExp(AI_CRAWLERS.join("|"), "i");
 
 // Static assets need no cookie, no verified-set refresh, no unread count and no renderer.
 const assetRe = /\.(css|js|ico|png|svg|webmanifest)$/;
@@ -1578,6 +1603,8 @@ app.use("*", async (c, next) => {
       c.res.headers.set("cache-control", "public, max-age=31536000, immutable");
     return;
   }
+  // Training scrapers are refused everywhere, matching what robots.txt asks of them.
+  if (aiBotRe.test(ua)) return c.text("Forbidden", 403);
   if (url.searchParams.getAll("tag").length > 3)
     throw new HTTPException(400, { message: "Too many tags. Use 3 or fewer." });
   if (url.search && botRe.test(ua)) return c.text("Forbidden", 403);
@@ -1660,7 +1687,24 @@ app.use("*", async (c, next) => {
   await next();
 });
 
-app.get("/robots.txt", (c) => c.text("User-agent: *\\nDisallow: /*?*\\nCrawl-delay: 1"));
+// Built from an array and joined, because this file was a single string with "\\n" in it —
+// which emits a LITERAL backslash-n, so every crawler saw one unparseable line and ding had
+// no robots rules at all. Any edit here must keep real newlines; check with `curl | od -c`.
+const ROBOTS = [
+  // Filtered/search feeds are an infinite crawl space: every tag/sort/page combination is a
+  // distinct URL over the same posts. The middleware already 403s these for known crawlers.
+  "User-agent: *",
+  "Disallow: /*?",
+  "Crawl-delay: 10",
+  "",
+  // Training scrapers, refused outright. Search engines are deliberately NOT in this list —
+  // blocking them would delist ding. Drop this block to opt back in.
+  ...AI_CRAWLERS.flatMap((ua) => [`User-agent: ${ua}`, "Disallow: /", ""]),
+  "Sitemap: https://ding.bar/sitemap.txt",
+  "",
+].join("\n");
+
+app.get("/robots.txt", (c) => c.text(ROBOTS));
 app.get("/sitemap.txt", (c) => c.text("https://ding.bar/"));
 
 const errCopy: Record<number, string> = {
@@ -3537,16 +3581,54 @@ app.get("/embed", async (c) => {
   ));
 });
 
+const MB = 1024 * 1024;
+
 app.post("/i", authed, async (c) => {
-  const f = await c.req.formData();
+  // Refuse on the DECLARED size first. Every check below needs the whole body in memory, so
+  // without this a caller that skips the client-side check makes the isolate buffer the lot
+  // just to reject it. The slack covers multipart framing around the file itself.
+  const declared = +(c.req.header("content-length") ?? 0);
+  if (declared > MAX_UPLOAD_BYTES + MB) {
+    throw new HTTPException(413, {
+      message: `upload is ${(declared / MB).toFixed(1)} MB — the limit is ${MAX_UPLOAD_BYTES / MB} MB.`,
+    });
+  }
+
+  // A client that goes away mid-upload (closed tab, dropped mobile connection, a proxy
+  // timing out) makes this throw "error reading a body from connection", which otherwise
+  // becomes a bare 500 and a stack trace in the logs — telling neither the user nor us
+  // anything actionable. It is a client-side truncation, so name it and return 400.
+  let f: FormData;
+  try {
+    f = await c.req.formData();
+  } catch (e) {
+    throw new HTTPException(400, {
+      message: `upload did not finish — the connection dropped before the whole file arrived (${
+        e instanceof Error ? e.message : e
+      }). nothing was saved; try again.`,
+    });
+  }
+
   const id = f.get("id")?.toString() ?? "";
   const file = f.get("file");
-  if (!(file instanceof File))
-    throw new HTTPException(400, { message: "missing file" });
+  if (!(file instanceof File)) {
+    throw new HTTPException(400, {
+      message: `expected a "file" part in the form, got ${id ? `only "id"` : "nothing"}.`,
+    });
+  }
   const m = id.match(IMG_EXT_RE);
-  if (!m) throw new HTTPException(400, { message: "bad id" });
-  if (file.size > MAX_UPLOAD_BYTES)
-    throw new HTTPException(413, { message: "too big" });
+  if (!m) {
+    throw new HTTPException(400, {
+      message: `bad id "${id}" — expected 8 letters/digits then one of ${
+        Object.keys(MIME_BY_EXT).join(", ")
+      } (e.g. a1b2c3d4.png).`,
+    });
+  }
+  if (file.size > MAX_UPLOAD_BYTES) {
+    throw new HTTPException(413, {
+      message: `${file.name || id} is ${(file.size / MB).toFixed(1)} MB — the limit is ${MAX_UPLOAD_BYTES / MB} MB.`,
+    });
+  }
   const ext = m[2].toLowerCase();
   const bytes = new Uint8Array(await file.arrayBuffer());
   await r2.uploadToR2(bytes, `${m[1]}.${ext}`, MIME_BY_EXT[ext], "i/");

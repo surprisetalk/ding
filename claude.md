@@ -65,6 +65,20 @@ crawler request with one. Anything it needs from the server arrives as a `data-`
 `data-unread`, present only when logged in). The `app.use("*")` middleware early-returns on asset paths (`assetRe`), so
 a `/client.js` or `/style.css` hit costs no cookie read, no `refreshVerified`, and no unread query.
 
+**Crawlers** are handled in two tiers, and the distinction is load-bearing:
+
+- `botRe` (search engines) gets a 403 **only when the request carries a query string** — filtered feeds are an infinite
+  crawl space (every tag × sort × page is a distinct URL over the same posts), but content URLs must stay indexable.
+- `aiBotRe` / `AI_CRAWLERS` (training scrapers) gets a **403 on every path**, because `robots.txt` is advisory and the
+  heaviest of these ignore it. **Nothing in `AI_CRAWLERS` may overlap a search engine** — a 403 to Googlebot delists
+  ding. `Google-Extended`/`Applebot-Extended` are robots.txt tokens, not real UAs, so they belong in `ROBOTS` only.
+
+`ROBOTS` is built from an array and `join("\n")`. It was previously a single string literal containing `"\\n"`, which
+emits a **literal backslash-n** — so for a long time every crawler saw one unparseable line and ding effectively had no
+robots rules at all (this is why bot traffic was heavy). Any edit must keep real newlines;
+`curl -s .../robots.txt | od
+-c` is the check, and a test asserts the file never contains `\n` as text again.
+
 **Postgres connection**: `DATABASE_URL` is Neon's **`-pooler`** endpoint (transaction mode), so `server.tsx` sets
 `prepare: false`. Named prepared statements there outlive the client that created them and are reused by the next one,
 so any DDL that changes a result type (`alter table ... drop column`) makes every cached plan fail with
@@ -341,6 +355,12 @@ Post/comment bodies are rendered by `formatBody()` as lightweight markdown that 
 `# heading`, `> blockquote`, `- item` / `1. item` lists, fenced `` ``` `` and 4-space-indented code blocks. Only code
 blocks render in monospace; prose uses the page font. `<div class="body">` wraps output; styles live in
 `public/style.css` (`.body`, `.body pre`, `.body blockquote`, `.body-list`).
+
+`POST /i` checks the **declared** `content-length` before touching the body: every other check needs the whole upload
+buffered, so without it a caller that skips `client.js`'s guard makes the isolate read the lot just to refuse it. The
+`c.req.formData()` call is wrapped, because a client that goes away mid-upload (closed tab, dropped mobile connection,
+proxy timeout) throws `error reading a body from connection` — which surfaced as a bare 500 and a stack trace that told
+neither the user nor us anything. It is a truncated request, so it returns 400 and says so.
 
 Bare or markdown-linked `.mp4`/`.webm` URLs render as muted looping autoplay `<video class="pre-img">` above the visible
 link (no transcoding — Deno Deploy has no ffmpeg). The same extensions are accepted by `POST /i`
