@@ -280,6 +280,8 @@ as a pref that could never match.
   personalized list's tail lives; the two meet on a page boundary. `cid desc` breaks score ties for the same reason.
 - **`s` is normalized once** (`new`/`top`/else `hot`) because `orderBy` treats any unknown sort as hot — reading
   `q.sort` raw in the branch condition let `?sort=HOT` order one way and take the other branch.
+- Prefs also feed the **compose chips** — an explicit ▲ on a tag outranks the implicit `own`/`affinity` signals and a ▼
+  suppresses the tag everywhere. See **Tag Discovery**.
 - Explicit 70% cuts: `/c` search is **not** personalized (you already expressed intent there — re-ranking fights you),
   and `sort=new`/`sort=top` are not either (chronological and most-voted mean what they say). Weights are constants;
   `todo.md`'s personalization slider is the follow-up.
@@ -291,9 +293,13 @@ as a pref that could never match.
 
 Two surfaces, both rendered as `.tag-preset` chips (`public/style.css`):
 
-- **Frontpage presets** (`GET /`, logged-in only, inside the compose form): `top_mine` — your writable `*orgs`, your own
-  labels, and tags you've upvoted — capped at **12** so the `disco` slice always keeps its **8** reserved slots. `disco`
-  is a _weighted random sample_ of `stat_tag` (`posts_count >= 3`) via the exponential-race trick
+- **Frontpage presets** (`GET /`, logged-in only, inside the compose form): `top_mine`, capped at **12** so the `disco`
+  slice always keeps its **8** reserved slots. Four sources, in priority order: your writable `*orgs` (1), tags you
+  explicitly ▲'d (`picked`, 2), then your own posted labels (`own`) and tags you upvoted a post in (`affinity`) (both
+  3). The tiers matter because the cap is what makes the slots scarce — an explicit ▲ is the user naming the tag, so it
+  must not have to win a recency race against everything they ever posted. A ▼'d tag is filtered out of `mine` **and**
+  `disco`: "less of this" has to hold on every path into the row, or a muted tag walks straight back in via `own`.
+  `disco` is a _weighted random sample_ of `stat_tag` (`posts_count >= 3`) via the exponential-race trick
   `order by -ln(greatest(random(), 1e-9)) / greatest(ups_received / ln(posts_count + 2), 0.05)`, so the row is fresh on
   every load and better tags surface more often. Do **not** reintroduce
   `select distinct on (tag) … order by tag …
