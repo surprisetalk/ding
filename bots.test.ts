@@ -10,8 +10,10 @@ import {
   paginate,
   pickCandidates,
   type Post,
+  R2Conflict,
   reply,
   scanBot,
+  uploadToR2,
   verdictBot,
 } from "./bots.ts";
 import grouch from "./bots/grouch.ts";
@@ -587,4 +589,54 @@ Deno.test("toBraille: an RGBA source renders the same art as RGB", async () => {
   assertEquals(lines[0].length, 40);
   assertEquals(lines[0], "⣿".repeat(40), "dark top half should be solid dots");
   assertEquals(lines[19], "⠀".repeat(40), "light bottom half should be blank");
+});
+
+// ---- R2 ----
+
+const withFakeR2 = async (status: number, f: (reqs: Request[]) => Promise<void>) => {
+  const env: Record<string, string> = {
+    R2_ENDPOINT: "https://acct.r2.cloudflarestorage.com",
+    R2_ACCESS_KEY_ID: "ak",
+    R2_SECRET_ACCESS_KEY: "sk",
+    R2_BUCKET: "ding",
+    R2_PUBLIC_URL: "https://r2.ding.bar",
+  };
+  const prev = Object.fromEntries(Object.keys(env).map((k) => [k, Deno.env.get(k)]));
+  for (const [k, v] of Object.entries(env)) Deno.env.set(k, v);
+  const reqs: Request[] = [];
+  const realFetch = globalThis.fetch;
+  globalThis.fetch = (input, init) => {
+    reqs.push(new Request(input as string, init));
+    return Promise.resolve(new Response("", { status }));
+  };
+  try {
+    await f(reqs);
+  } finally {
+    globalThis.fetch = realFetch;
+    for (const [k, v] of Object.entries(prev)) v === undefined ? Deno.env.delete(k) : Deno.env.set(k, v);
+  }
+};
+
+Deno.test("uploadToR2: noOverwrite signs and sends If-None-Match: *", async () => {
+  await withFakeR2(200, async (reqs) => {
+    await uploadToR2(new Uint8Array([1]), "a1b2c3d4.png", "image/png", "i/", true);
+    assertEquals(reqs[0].headers.get("if-none-match"), "*");
+    // Unsigned, R2 would ignore the condition and overwrite anyway.
+    assertEquals(reqs[0].headers.get("authorization")?.includes("if-none-match"), true);
+  });
+});
+
+Deno.test("uploadToR2: default overwrites (bots reuse keys)", async () => {
+  await withFakeR2(200, async (reqs) => {
+    await uploadToR2(new Uint8Array([1]), "clipart-2026-08-16.svg", "image/svg+xml");
+    assertEquals(reqs[0].headers.get("if-none-match"), null);
+  });
+});
+
+Deno.test("uploadToR2: 412 becomes R2Conflict, not a generic upload failure", async () => {
+  await withFakeR2(412, async () => {
+    const e = await assertRejects(() => uploadToR2(new Uint8Array([1]), "a1b2c3d4.png", "image/png", "i/", true));
+    assertEquals(e instanceof R2Conflict, true);
+    assertEquals((e as Error).message.includes("i/a1b2c3d4.png"), true);
+  });
 });

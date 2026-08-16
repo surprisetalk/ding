@@ -12,3 +12,4 @@
       they get pinned to top of feed?
 - [ ] attract 100 daily active users
 - [ ] ios app
+- [ ] add huddles to ding! it just posts a link to audio chat?

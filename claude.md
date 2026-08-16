@@ -378,6 +378,13 @@ buffered, so without it a caller that skips `client.js`'s guard makes the isolat
 proxy timeout) throws `error reading a body from connection` — which surfaced as a bare 500 and a stack trace that told
 neither the user nor us anything. It is a truncated request, so it returns 400 and says so.
 
+The upload **id comes from the client** (`client.js` draws a random 8-char one and writes the URL into the textarea
+before the bytes land), so the key is nameable by anyone who has seen the image. `POST /i` therefore uploads with
+`noOverwrite` — R2's conditional write (`If-None-Match: *`, signed, one round trip) — and turns the 412 into a **409**
+instead of PUTting over the existing object: otherwise any logged-in user could replace someone else's image and every
+post embedding it would show the new bytes. `uploadToR2` still overwrites by default, because bots reuse keys on purpose
+(`clipart-<date>.svg`).
+
 Bare or markdown-linked `.mp4`/`.webm` URLs render as muted looping autoplay `<video class="pre-img">` above the visible
 link (no transcoding — Deno Deploy has no ffmpeg). The same extensions are accepted by `POST /i`
 (`IMG_EXT_RE`/`MIME_BY_EXT`) and served from `i.ding.bar`; `resolveThumbnail` short-circuits video URLs to the favicon

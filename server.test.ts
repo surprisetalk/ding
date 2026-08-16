@@ -16,7 +16,7 @@ import {
   verifyRow,
 } from "./dht.ts";
 import { backfill } from "./backfill.ts";
-import { directImageUrl, getPostedUrls, imageMentionBot, post, reply, unansweredMentions } from "./bots.ts";
+import { directImageUrl, getPostedUrls, imageMentionBot, post, R2Conflict, reply, unansweredMentions } from "./bots.ts";
 import cowsayBot from "./bots/cowsay.ts";
 import { BOTS } from "./bots/mod.ts";
 import { jsx } from "@hono/hono/jsx";
@@ -3936,7 +3936,10 @@ Deno.test(
     type Call = { filename: string; contentType: string };
     const calls: Call[] = [];
     const original = r2.uploadToR2;
-    r2.uploadToR2 = (_data, filename, contentType) => {
+    r2.uploadToR2 = (_data, filename, contentType, _prefix, noOverwrite) => {
+      // Stands in for R2's conditional write: a second PUT at the same key is refused.
+      if (noOverwrite && calls.some((c) => c.filename === filename))
+        return Promise.reject(new R2Conflict(`R2 key i/${filename} already exists.`));
       calls.push({ filename, contentType });
       return Promise.resolve(`mock://i/${filename}`);
     };
@@ -3957,6 +3960,14 @@ Deno.test(
         const res = await app.request("/i", { method: "POST", body: fd, headers: jAuth });
         assertEquals(res.status, 204);
         assertEquals(calls[1].contentType, "video/webm");
+      });
+
+      await t.step("POST /i 409s on an id that is already taken", async () => {
+        const fd = new FormData();
+        fd.append("id", "abc12345.mp4");
+        fd.append("file", new Blob([new Uint8Array([9])], { type: "video/mp4" }), "other.mp4");
+        const res = await app.request("/i", { method: "POST", body: fd, headers: jAuth });
+        assertEquals(res.status, 409);
       });
 
       await t.step("POST /i still rejects unknown extensions", async () => {

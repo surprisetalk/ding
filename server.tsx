@@ -15,7 +15,7 @@ import pg from "postgres";
 import { Resend } from "resend";
 export const resend = new Resend(Deno.env.get("RESEND_API_KEY") ?? "");
 import Stripe from "stripe";
-import { type Api, uploadToR2 } from "./bots.ts";
+import { type Api, R2Conflict, uploadToR2 } from "./bots.ts";
 import { BOTS } from "./bots/mod.ts";
 export const r2 = { uploadToR2 };
 import { runCheckmark } from "./bots/checkmark.ts";
@@ -3712,7 +3712,18 @@ app.post("/i", authed, async (c) => {
   }
   const ext = m[2].toLowerCase();
   const bytes = new Uint8Array(await file.arrayBuffer());
-  await r2.uploadToR2(bytes, `${m[1]}.${ext}`, MIME_BY_EXT[ext], "i/");
+  // The id is chosen by the client, so it is an authenticated write to a key anyone who has
+  // seen the image can name: without this any logged-in user could PUT over someone else's
+  // upload and every post embedding it would show the new bytes. Conflicts are the caller's
+  // to resolve (client.js just draws another random id), never ours to resolve by overwriting.
+  try {
+    await r2.uploadToR2(bytes, `${m[1]}.${ext}`, MIME_BY_EXT[ext], "i/", true);
+  } catch (e) {
+    if (!(e instanceof R2Conflict)) throw e;
+    throw new HTTPException(409, {
+      message: `id "${id}" is already taken — pick a different one and upload again.`,
+    });
+  }
   return c.body(null, 204);
 });
 

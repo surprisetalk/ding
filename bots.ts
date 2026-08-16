@@ -528,11 +528,16 @@ export async function resolveTextContent(
 
 // ---- R2 upload ----
 
+export class R2Conflict extends Error {}
+
 export async function uploadToR2(
   data: Uint8Array,
   filename: string,
   contentType: string,
   keyPrefix = "bots/",
+  // Bots reuse keys on purpose (a date-stamped clipart run overwrites its own object), so
+  // overwrite stays the default. Uploads whose key comes from the client pass true.
+  noOverwrite = false,
 ): Promise<string> {
   const endpoint = Deno.env.get("R2_ENDPOINT");
   const accessKey = Deno.env.get("R2_ACCESS_KEY_ID");
@@ -563,6 +568,9 @@ export async function uploadToR2(
     "x-amz-content-sha256": payloadHash,
     "x-amz-date": amzDate,
   };
+  // R2 conditional write: the PUT fails with 412 if the key already exists. One round trip
+  // and atomic, so two uploads racing for the same key can't both win.
+  if (noOverwrite) headers["if-none-match"] = "*";
 
   const signedHeaderKeys = Object.keys(headers).sort().map((k) => k.toLowerCase());
   const signedHeaders = signedHeaderKeys.join(";");
@@ -595,6 +603,10 @@ export async function uploadToR2(
     `AWS4-HMAC-SHA256 Credential=${accessKey}/${credentialScope}, SignedHeaders=${signedHeaders}, Signature=${signature}`;
 
   const res = await fetch(url, { method: "PUT", headers, body: data as unknown as BodyInit });
+  if (noOverwrite && res.status === 412) {
+    await res.body?.cancel();
+    throw new R2Conflict(`R2 key ${key} already exists — nothing was overwritten.`);
+  }
   if (!res.ok) throw new Error(`R2 upload failed: HTTP ${res.status} ${await res.text()}`);
 
   return `${publicUrl}/${key}`;
