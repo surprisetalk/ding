@@ -13,3 +13,8 @@
 - [ ] attract 100 daily active users
 - [ ] ios app
 - [ ] add huddles to ding! it just posts a link to audio chat?
+- [ ] photo and web screenshot extraction when links pasted
+- [ ] better visual scrolling. links should image(s), article extraction, body, etc. in roughly square proportions.
+      maybe even use grid for horizontal space? figure out nice heuristics for filling out content square with its
+      content
+- [ ] auto tag recommendations based on link, title, etc
