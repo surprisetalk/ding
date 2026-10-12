@@ -41,15 +41,22 @@ document.querySelectorAll("pre").forEach((x) => {
     if (["jpg", "jpeg", "png", "gif", "webp", "pdf", "mp4", "webm"].includes(e)) return e === "jpeg" ? "jpg" : e;
     return EXT_BY_MIME[type] || "";
   };
+  // Code that changes a textarea fires "input" like typing does, so the image previews follow it.
+  const setValue = (ta, v) => {
+    ta.value = v;
+    ta.dispatchEvent(new Event("input", { bubbles: true }));
+  };
   const insertAt = (ta, s) => {
     const start = ta.selectionStart ?? ta.value.length, end = ta.selectionEnd ?? start;
     const pre = ta.value.slice(0, start), post = ta.value.slice(end);
     const sep = pre && !pre.endsWith("\n") ? "\n" : "";
-    ta.value = pre + sep + s + post;
+    setValue(ta, pre + sep + s + post);
     const pos = (pre + sep + s).length;
     ta.setSelectionRange(pos, pos);
     ta.focus();
   };
+  // An upload's URL points at bytes that are not on i.ding.bar yet, so its preview shows the local file.
+  const localSrc = new Map();
   const pendings = new WeakMap();
   const setPending = (form, d) => {
     const btn = form && form.querySelector("button[type=submit]");
@@ -74,6 +81,7 @@ document.querySelectorAll("pre").forEach((x) => {
       }
       const id = randId() + "." + ext;
       const url = "https://i.ding.bar/" + id;
+      localSrc.set(url, URL.createObjectURL(file));
       insertAt(ta, url);
       setPending(form, 1);
       const fd = new FormData();
@@ -82,11 +90,11 @@ document.querySelectorAll("pre").forEach((x) => {
       try {
         const r = await fetch("/i", { method: "POST", credentials: "same-origin", body: fd });
         if (!r.ok) {
-          ta.value = ta.value.replace(url, "").replace(/\n{3,}/g, "\n\n");
+          setValue(ta, ta.value.replace(url, "").replace(/\n{3,}/g, "\n\n"));
           alert("upload failed (" + r.status + "): " + file.name);
         }
       } catch (e) {
-        ta.value = ta.value.replace(url, "").replace(/\n{3,}/g, "\n\n");
+        setValue(ta, ta.value.replace(url, "").replace(/\n{3,}/g, "\n\n"));
         alert("upload error: " + file.name + " — " + e);
       } finally {
         setPending(form, -1);
@@ -103,6 +111,59 @@ document.querySelectorAll("pre").forEach((x) => {
   });
   const allTas = () => document.querySelectorAll("textarea[name=body]");
   if (!allTas().length) return;
+
+  // Under each textarea: every image the post will show, with an × that takes its URL out.
+  // The URL pattern and the extension test copy formatBody's INLINE_RE and isImageUrl, so the
+  // preview shows exactly the images the post shows.
+  const IMG_URL = /\.(?:jpe?g|png|gif|webp|svg)(?:\?\S*)?$/i;
+  const imagesIn = (text) => [
+    ...new Set(
+      (text.match(/https?:\/\/(?:[^\s<()]+|\([^\s<()]*\))+/g) || [])
+        .map((u) => u.replace(/[.,!?;:]+$/, ""))
+        .filter((u) => IMG_URL.test(u)),
+    ),
+  ];
+  const previewOf = (ta, u) => {
+    const item = document.createElement("span");
+    item.className = "body-image";
+    item.dataset.url = u;
+    const img = document.createElement("img");
+    img.src = localSrc.get(u) || u;
+    img.alt = "";
+    const x = document.createElement("button");
+    x.type = "button";
+    x.textContent = "×";
+    x.title = "take this image out of the post";
+    x.onclick = () => setValue(ta, ta.value.split("\n" + u).join("").split(u).join(""));
+    item.append(img, x);
+    return item;
+  };
+  const render = (ta) => {
+    let row = ta.nextElementSibling;
+    if (!row?.classList.contains("body-images")) {
+      row = document.createElement("div");
+      row.className = "body-images";
+      ta.after(row);
+    }
+    const urls = imagesIn(ta.value);
+    // Keyed by URL: an image that stays in the post keeps its element and does not load again.
+    const kept = new Map([...row.children].map((el) => [el.dataset.url, el]));
+    row.replaceChildren(...urls.map((u) => kept.get(u) || previewOf(ta, u)));
+    row.hidden = !urls.length;
+    ta.form?.querySelectorAll(".share-image").forEach((b) => b.disabled = urls.includes(b.dataset.url));
+  };
+  document.addEventListener("input", (e) => {
+    if (e.target.matches?.("textarea[name=body]")) render(e.target);
+  });
+  allTas().forEach(render);
+  // ?submit= thumbnails: a click adds that image's URL to the post. render() disables it while it is there.
+  document.querySelectorAll(".share-image").forEach((b) => {
+    b.querySelector("img")?.addEventListener("error", () => b.remove());
+    b.addEventListener("click", () => {
+      const ta = b.closest("form")?.querySelector("textarea[name=body]");
+      if (ta) setValue(ta, ta.value + (ta.value && !ta.value.endsWith("\n") ? "\n" : "") + b.dataset.url);
+    });
+  });
   let lastTa = null;
   document.addEventListener("focusin", (e) => {
     if (e.target.tagName === "TEXTAREA" && e.target.name === "body") lastTa = e.target;
@@ -230,7 +291,10 @@ if (fr) {
   if (!ta) return;
   const KEY = "ding:compose-body";
   const saved = sessionStorage.getItem(KEY);
-  if (saved && !ta.value) ta.value = saved;
+  if (saved && !ta.value) {
+    ta.value = saved;
+    ta.dispatchEvent(new Event("input", { bubbles: true }));
+  }
   sessionStorage.removeItem(KEY);
   let submitted = false;
   ta.form?.addEventListener("submit", () => submitted = true);

@@ -30,7 +30,9 @@ import dbSql from "./db.sql" with { type: "text" };
 import app, {
   AI_CRAWLERS,
   badSignupEmail,
+  beat,
   botApi,
+  CRONS,
   dbIngestRate,
   decodeLabels,
   discoverPeers,
@@ -39,8 +41,11 @@ import app, {
   extractDomains,
   extractImageUrl,
   extractLinks,
+  fetchGuard,
   formatBody,
   formatLabels,
+  gradeAll,
+  gradeMemo,
   matchesQ,
   paging,
   parseLabels,
@@ -52,6 +57,8 @@ import app, {
   replicate,
   resend,
   resolveName,
+  runBotFleet,
+  runCron,
   setAssetV,
   setSql,
   signupRate,
@@ -1296,6 +1303,17 @@ Deno.test(
       assertEquals(res.status, 400);
       const body = await res.text();
       assertStringIncludes(body, "#tag, *org, or @user");
+    });
+
+    await t.step("POST /c over 4096 characters answers 400 with the count, not a database 500", async () => {
+      const res = await app.request("/c", {
+        method: "POST",
+        body: fd({ body: "x".repeat(4097), tags: "#pub" }),
+        headers: jAuth,
+      });
+      assertEquals(res.status, 400);
+      const text = await res.text();
+      for (const word of ["expected:", "received: 4097", "fix:"]) assertStringIncludes(text, word);
     });
 
     await t.step("POST /c root DM happy path: tagless post with @recipient", async () => {
@@ -3745,6 +3763,36 @@ Deno.test(
       await sql`delete from pref`;
     });
 
+    await t.step("POST /u saves bio and pref_weight; a bad weight answers 400 and changes nothing", async () => {
+      const html = await (await app.request("/u", { headers: { cookie } })).text();
+      assertStringIncludes(html, `name="pref_weight"`);
+      const save = async (weight?: string, bio: string | null = "new bio") => {
+        const f = new FormData();
+        if (bio !== null) f.append("bio", bio);
+        if (weight !== undefined) f.append("pref_weight", weight);
+        return await app.request("/u", { method: "POST", body: f, headers: { cookie } });
+      };
+      const row = async () => (await sql`select bio, pref_weight from usr where name = 'john_doe'`)[0];
+      const res = await save("1.5");
+      assertEquals(res.status, 302);
+      assertEquals(await row(), { bio: "new bio", pref_weight: 1.5 });
+      await sql`update usr set bio = 'old bio' where name = 'john_doe'`;
+      for (const bad of ["3", "abc", "", "0x1"]) {
+        const r = await save(bad);
+        assertEquals(r.status, 400, `weight ${bad}`);
+        assertStringIncludes(await r.text(), "Expected a number from 0 to 2");
+        assertEquals(await row(), { bio: "old bio", pref_weight: 1.5 }, `weight ${bad} changed the row`);
+      }
+      // A form loaded before the slider existed, or an API caller, sends no pref_weight; a weight-only post sends no bio.
+      assertEquals((await save(undefined, "bio only")).status, 302);
+      assertEquals(await row(), { bio: "bio only", pref_weight: 1.5 });
+      for (const edge of [0.5, 0, 2]) {
+        assertEquals((await save(String(edge), null)).status, 302);
+        assertEquals(await row(), { bio: "bio only", pref_weight: edge });
+      }
+      await sql`update usr set pref_weight = 1 where name = 'john_doe'`;
+    });
+
     await t.step("custodial user sees key download and delete confirm", async () => {
       await sql`update usr set seckey_enc = ${new Uint8Array([0])} where name = 'john_doe'`;
       const res = await app.request("/u", { headers: { cookie } });
@@ -4541,6 +4589,27 @@ Deno.test(
       await sql`delete from pref where uid = 'john_doe'`;
     });
 
+    await t.step("pref_weight scales the boost: 0 is the global order, 2 doubles it", async () => {
+      await sql`insert into pref (uid, kind, val, vote) values ('john_doe', 'tag', 'betatag', 1)`;
+      await sql`update usr set pref_weight = 0 where name = 'john_doe'`;
+      assertEquals(await feed("", jCookie), baseline, "weight 0 still re-ranked");
+      await sql`delete from pref where uid = 'john_doe'`;
+
+      // B leads A by 12h; a ▲ tag is worth 8h, so A wins only when the weight is above 1.5.
+      const top = sql`now() + interval '3 days'`;
+      await sql`insert into com (cid, created_by, body, tags, created_at, score) values
+        (911, 'BugHunter42', 'prefpost-wa', '{wtag}',  ${top} - interval '12 hours', ${top} - interval '12 hours'),
+        (912, 'BugHunter42', 'prefpost-wb', '{wother}', ${top}, ${top})`;
+      await sql`insert into pref (uid, kind, val, vote) values ('john_doe', 'tag', 'wtag', 1)`;
+      for (const [w, want] of [[1, ["prefpost-wb", "prefpost-wa"]], [2, ["prefpost-wa", "prefpost-wb"]]] as const) {
+        await sql`update usr set pref_weight = ${w} where name = 'john_doe'`;
+        assertEquals((await feed("", jCookie)).slice(0, 2), [...want], `weight ${w}`);
+      }
+      await sql`delete from com where cid in (911, 912)`;
+      await sql`delete from pref where uid = 'john_doe'`;
+      await sql`update usr set pref_weight = 1 where name = 'john_doe'`;
+    });
+
     // Paging must be a stable slice of ONE ordered list. A window whose membership grows with
     // the page is not: a row that only enters at page p sorts to the top of that page's window,
     // into a slot page p-1 already used — so it is emitted on no page at all, and the row it
@@ -4586,5 +4655,366 @@ Deno.test(
       const [dm] = await sql`select body from com where cid = 357`;
       assertEquals(html.includes(dm.body.split("\n")[0]), false, "a DM leaked into a personalized feed");
     });
+  }),
+);
+
+Deno.test(
+  "status",
+  pgtest((sql) => async (t) => {
+    const SENTENCES = [
+      "100 humans posted in the past 24h.",
+      "3 humans besides taylor posted this week.",
+      "Somebody verified their email this week.",
+      "Somebody paid for an org this month.",
+      "Every bot in bots/mod.ts finished a run in the past hour.",
+      "Every cron ran inside twice its period.",
+      "The anonymous frontpage renders in 300ms.",
+      "The dht ingested a row in the past 24h.",
+      "Postgres uses under 80% of Neon's 0.5 GB free-tier storage.",
+      "DNS lookups answer, so ding can fetch link previews and /img.",
+    ];
+    const get = async () => {
+      gradeMemo.run = null;
+      const res = await app.request("/status");
+      return { res, body: await res.json() as Record<string, Record<string, number>> };
+    };
+    const grades = async () => Object.fromEntries((await gradeAll()).map((g) => [g.cond, g.grade]));
+    const humans = (names: string[]) =>
+      sql`insert into com (created_by, body, tags, orgs, usrs) select n, 'status test post', '{status}', '{}', '{}' from unnest(${names}::text[]) n`;
+
+    await t.step("seeded db answers 503 with every sentence", async () => {
+      const { res, body } = await get();
+      assertEquals(res.status, 503);
+      assertEquals(res.headers.get("cache-control"), "no-store");
+      assertEquals(Object.keys(body), SENTENCES);
+      for (const v of Object.values(body)) assertEquals(Object.keys(v), ["0"]);
+    });
+
+    await t.step("bot_* posters do not count as humans; botany does", async () => {
+      await sql`update com set parent_cid = null`;
+      await sql`delete from com`;
+      const bots = ["bot_hn", "bot_a", "bot_b", "bot_c", "bot_d", "bot_e"];
+      await sql`insert into usr (name, email, password, bio, email_verified_at, invited_by)
+        select n, n || '@ding.bar', 'x', 'beep', now(), 'john_doe' from unnest(${[
+        ...bots,
+        "botany",
+        "taylor",
+      ]}::text[]) n`;
+      await humans(bots);
+      assertEquals((await grades())[SENTENCES[0]], 0);
+      await humans(["botany"]);
+      assertEquals((await grades())[SENTENCES[0]], 0.01);
+      await humans(["taylor"]);
+      assertEquals((await grades())[SENTENCES[1]], 0.33); // botany only: taylor is excluded
+    });
+
+    await t.step("a healthy db answers 200", async () => {
+      const crowd = Array.from({ length: 100 }, (_, i) => `human_${i}`);
+      await sql`insert into usr (name, email, password, bio, email_verified_at, invited_by)
+        select n, n || '@ding.bar', 'x', 'hi', now(), 'john_doe' from unnest(${crowd}::text[]) n`;
+      await humans(crowd);
+      await sql`insert into org (name, created_by, stripe_sub_id) values ('paidorg', 'john_doe', 'sub_status')`;
+      const names = [...Object.keys(BOTS).map((k) => `bot:${k}`), ...CRONS.map((c) => c.name)];
+      for (const n of names) await beat(n);
+      await sql`insert into dht (k, kind, pubkey, ts, sig, val)
+        values ('k1', 'msg', ${"a".repeat(64)}, 1, ${"b".repeat(128)}, '{}')`;
+      await app.request("/"); // warm the first render
+      const { res, body } = await get();
+      assertEquals(
+        Object.entries(body).filter(([, v]) => v["0"] < 1),
+        [],
+      );
+      assertEquals(res.status, 200);
+    });
+
+    await t.step("runBotFleet beats only bots that finished", async () => {
+      await sql`delete from beat where name like 'bot:%'`;
+      await sql`insert into usr (name, email, password, bio, email_verified_at, invited_by) values
+        ('bot_cowsay', 'bot-cowsay@ding.bar', 'hashed:cowpw!', 'moo', now(), 'john_doe')`;
+      Deno.env.set("BOT_COWSAY_EMAIL", "bot-cowsay@ding.bar");
+      Deno.env.set("BOT_COWSAY_PASSWORD", "cowpw!");
+      Deno.env.set("BOT_DICE_EMAIL", "bot-cowsay@ding.bar");
+      Deno.env.set("BOT_DICE_PASSWORD", "wrong!");
+      Deno.env.delete("BOT_EIGHTBALL_EMAIL");
+      try {
+        await runBotFleet(["cowsay", "dice"]);
+      } finally {
+        for (const k of ["COWSAY", "DICE"]) {
+          Deno.env.delete(`BOT_${k}_EMAIL`);
+          Deno.env.delete(`BOT_${k}_PASSWORD`);
+        }
+      }
+      const rows = await sql`select name from beat where name like 'bot:%' order by name`;
+      assertEquals(rows.map((r) => r.name), ["bot:cowsay"]);
+    });
+
+    await t.step("runBotFleet throws when every bot that ran failed", async () => {
+      Deno.env.set("BOT_DICE_EMAIL", "bot-cowsay@ding.bar");
+      Deno.env.set("BOT_DICE_PASSWORD", "wrong!");
+      try {
+        await assertRejects(() => runBotFleet(["dice"]), Error, "every bot that ran failed");
+      } finally {
+        Deno.env.delete("BOT_DICE_EMAIL");
+        Deno.env.delete("BOT_DICE_PASSWORD");
+      }
+    });
+
+    await t.step("runCron beats under its own name only when the job returns", async () => {
+      await sql`delete from beat where name like 'ding-%'`;
+      for (const cron of CRONS.filter((c) => ["ding-prune-unverified", "ding-refresh-stats"].includes(c.name)))
+        await runCron(cron);
+      assertEquals(
+        (await sql`select name from beat where name like 'ding-%' order by name`).map((r) => r.name),
+        ["ding-prune-unverified", "ding-refresh-stats"],
+      );
+      const cron = CRONS.map((c) => c.name).sort();
+      assertEquals(cron, ["ding-bots", "ding-checkmark", "ding-prune-unverified", "ding-refresh-stats"]);
+    });
+
+    await t.step("ding status exits 1 when unhealthy and 0 when healthy", async () => {
+      const server = Deno.serve({ port: 0, onListen() {} }, app.fetch);
+      try {
+        const url = `http://127.0.0.1:${server.addr.port}/status`;
+        const run = async () => {
+          gradeMemo.run = null;
+          const out = await new Deno.Command(Deno.execPath(), {
+            args: ["run", "-A", "ding.ts", "status", url],
+            env: { HOME: "/nonexistent" },
+            stdout: "piped",
+            stderr: "piped",
+          }).output();
+          assertEquals(Object.keys(JSON.parse(new TextDecoder().decode(out.stdout))), SENTENCES);
+          return out.code;
+        };
+        assertEquals(await run(), 1);
+        for (const n of [...Object.keys(BOTS).map((k) => `bot:${k}`), ...CRONS.map((c) => c.name)]) await beat(n);
+        assertEquals(await run(), 0);
+      } finally {
+        await server.shutdown();
+      }
+    });
+
+    await t.step("a check that throws grades 0 and answers 503, not healthy", async () => {
+      await sql`drop table dht`;
+      const { res, body } = await get();
+      assertEquals(res.status, 503);
+      assertEquals(Object.keys(body), SENTENCES);
+      assertEquals(body[SENTENCES[7]]["0"], 0);
+    });
+
+    await t.step("a resolver that fails grades the DNS condition 0", async () => {
+      const dns = Deno.resolveDns;
+      Deno.resolveDns = (() => Promise.reject(new Error("resolver unreachable"))) as typeof Deno.resolveDns;
+      try {
+        assertEquals((await get()).body[SENTENCES[9]]["0"], 0);
+      } finally {
+        Deno.resolveDns = dns;
+      }
+    });
+  }),
+);
+
+Deno.test(
+  "share via ?submit=",
+  pgtest((sql) => async (t) => {
+    const prose = "Readability keeps an article only when it carries enough prose. ".repeat(20);
+    let hits = 0;
+    const fixture = Deno.serve({ port: 0, onListen() {} }, (req) => {
+      hits++;
+      const path = new URL(req.url).pathname;
+      const html = (b: string | Uint8Array<ArrayBuffer>, type = "text/html; charset=utf-8") =>
+        new Response(b, { headers: { "content-type": type } });
+      if (path === "/latin") {
+        const enc = new TextEncoder();
+        return html(
+          Uint8Array.from([...enc.encode("<title>Caf"), 0xe9, ...enc.encode("</title>")]),
+          "text/html; charset=iso-8859-1",
+        );
+      }
+      if (path === "/huge") return html(`<title>${"x".repeat(9000)}</title>`);
+      if (path === "/uni") return html(`<title>uni</title>`);
+      if (path === "/bogus") return html(`<title>Bogus</title>`, "text/html; charset=nonsense");
+      if (path === "/json") return html(`{}`, "application/json");
+      if (path === "/hop") return new Response(null, { status: 302, headers: { location: "http://10.0.0.1/secret" } });
+      if (path === "/article") {
+        return html(
+          `<html><head><title>No Meta</title></head><body><article><p>${prose}</p><img src="/inside.png"><p>${prose}</p></article></body></html>`,
+        );
+      }
+      if (path !== "/page") return new Response("gone", { status: 404 });
+      return new Response(
+        `<html><head><title>Plain Title</title>
+          <meta property="og:title" content="Fixture Title">
+          <meta property="og:image" content="/og.png">
+          <meta name="twitter:image" content="/tw.png"></head>
+        <body><article><h1>Fixture Title</h1><p>${prose}</p>
+          <img src="/a.png"><img src="data:image/gif;base64,R0lGOD"><img src="/og.png"><img src="/chart?id=1">
+          <p>${prose}</p></article></body></html>`,
+        { headers: { "content-type": "text/html; charset=utf-8" } },
+      );
+    });
+    const origin = `http://127.0.0.1:${fixture.addr.port}`;
+    const body = new FormData();
+    body.append("email", "jane@example.com");
+    body.append("password", "password1!");
+    const cookie = (await app.request("/login", { method: "POST", body })).headers.get("set-cookie")!.split(";")[0];
+    const share = async (url: string) => {
+      const res = await app.request(`/?submit=${encodeURIComponent(url)}`, { headers: { cookie } });
+      return { status: res.status, html: await res.text() };
+    };
+    const textarea = (html: string) =>
+      html.match(/<textarea[^>]*name="body"[^>]*>([\s\S]*?)<\/textarea>/)?.[1].trim().replaceAll("&amp;", "&");
+    // The page shows only a generic line, so the refusal detail is checked where the operator reads it: the log.
+    const logged = async (f: () => Promise<void>) => {
+      const lines: string[] = [], orig = console.error;
+      console.error = (...a: unknown[]) => void lines.push(a.join(" "));
+      try {
+        await f();
+      } finally {
+        console.error = orig;
+      }
+      return lines.join("\n");
+    };
+    try {
+      await t.step("logged out redirects to login with the whole query, and fetches nothing", async () => {
+        const res = await app.request(`/?submit=${encodeURIComponent(`${origin}/page`)}&tag=news`);
+        assertEquals(res.status, 302);
+        assertEquals(
+          res.headers.get("location"),
+          `/u?next=${encodeURIComponent(`/?submit=${encodeURIComponent(`${origin}/page`)}&tag=news`)}`,
+        );
+        assertEquals(hits, 0);
+      });
+
+      await t.step("a loopback, private, or metadata address is refused before any request", async () => {
+        const dns = Deno.resolveDns;
+        Deno.resolveDns = ((host: string, type: "A" | "AAAA") =>
+          host === "intranet.test"
+            ? Promise.resolve(type === "A" ? ["10.0.0.7"] : [])
+            : dns(host, type)) as typeof Deno.resolveDns;
+        try {
+          const urls = [
+            `${origin}/page`,
+            "http://10.0.0.1/x",
+            "http://[::1]/",
+            "http://169.254.169.254/latest",
+            "http://intranet.test/",
+          ];
+          const log = await logged(async () => {
+            for (const url of urls) {
+              const { status, html } = await share(url);
+              assertEquals(status, 200, url);
+              assertEquals(textarea(html), new URL(url).href);
+              assertStringIncludes(html, "could not read the page");
+            }
+            const img = await app.request(`/img?url=${encodeURIComponent("http://169.254.169.254/x.png")}`);
+            assertEquals(img.status, 502);
+            await img.body?.cancel();
+          });
+          for (const ip of ["127.0.0.1", "10.0.0.1", "::1", "169.254.169.254", "10.0.0.7"])
+            assertStringIncludes(log, `${ip}, not a public address`);
+          assertEquals(hits, 0);
+        } finally {
+          Deno.resolveDns = dns;
+        }
+        // The rest of this test reads fixtures on 127.0.0.1.
+        fetchGuard.allow.add("127.0.0.1");
+      });
+
+      await t.step("a redirect to a private address is refused at that hop", async () => {
+        const log = await logged(async () => {
+          const { html } = await share(`${origin}/hop`);
+          assertEquals(textarea(html), `${origin}/hop`);
+          assertStringIncludes(html, "could not read the page");
+        });
+        assertStringIncludes(log, "10.0.0.1, not a public address");
+      });
+
+      await t.step("an IPv4-compatible IPv6 literal is refused", async () => {
+        const log = await logged(async () => {
+          const { html } = await share("http://[::127.0.0.1]/");
+          assertStringIncludes(html, "could not read the page");
+        });
+        assertStringIncludes(log, "not a public address");
+      });
+
+      await t.step("a page fills the title, the link, and the images a post renders", async () => {
+        // /chart?id=1 has no image extension, so formatBody would render it as a link: the strip leaves it out.
+        const { status, html } = await share(`${origin}/page`);
+        assertEquals(status, 200);
+        assertEquals(textarea(html), `Fixture Title\n${origin}/page`);
+        const thumbs = [...html.matchAll(/data-url="([^"]+)"/g)].map((m) => m[1]);
+        assertEquals(thumbs, [`${origin}/og.png`, `${origin}/tw.png`, `${origin}/a.png`]);
+        assertStringIncludes(html, `src="/img?url=${encodeURIComponent(`${origin}/og.png`)}"`);
+      });
+
+      await t.step("a link post's thumbnail is its og:image, never an article image", async () => {
+        const post = async (link: string) => {
+          const f = new FormData();
+          f.append("body", link);
+          f.append("tags", "#share");
+          await app.request("/c", { method: "POST", body: f, headers: { cookie } });
+          return (await sql`select thumb from com where body = ${link}`)[0].thumb;
+        };
+        assertEquals(await post(`${origin}/page`), `${origin}/og.png`);
+        assertEquals(await post(`${origin}/article`), "https://www.google.com/s2/favicons?domain=127.0.0.1&sz=128");
+      });
+
+      await t.step(
+        "a 404 or a non-HTML page fills the bare link; the page says only that it could not read it",
+        async () => {
+          for (const [path, detail] of [["/missing", "HTTP 404"], ["/json", "not an HTML page"]]) {
+            let html = "";
+            const log = await logged(async () => void ({ html } = await share(`${origin}${path}`)));
+            assertEquals(textarea(html), `${origin}${path}`);
+            for (const word of ["could not read the page", "expected:", "fix:"]) assertStringIncludes(html, word);
+            assertEquals(html.includes(detail), false, `the page shows "${detail}"`);
+            assertStringIncludes(log, detail);
+          }
+        },
+      );
+
+      await t.step("a missing scheme becomes https", async () => {
+        // The fixture speaks plain http, so the https fetch fails: the link is still filled in.
+        const { status, html } = await share(`localhost:${fixture.addr.port}/page`);
+        assertEquals(status, 200);
+        assertEquals(textarea(html), `https://localhost:${fixture.addr.port}/page`);
+      });
+
+      await t.step("a scheme other than http or https is a 400 that names the value", async () => {
+        for (const bad of ["javascript:alert(1)", "ftp://example.org/x", "file:///etc/passwd"]) {
+          const { status, html } = await share(bad);
+          assertEquals(status, 400, bad);
+          assertStringIncludes(html, bad.replaceAll("&", "&amp;").replaceAll("<", "&lt;"));
+        }
+      });
+      await t.step("title edge cases: legacy charset, unknown charset, long title, normalized link", async () => {
+        assertEquals(textarea((await share(`${origin}/latin`)).html), `Café\n${origin}/latin`);
+        assertEquals(textarea((await share(`${origin}/bogus`)).html), `Bogus\n${origin}/bogus`);
+        // A post body holds 4096 characters, so the title is cut.
+        assertEquals(textarea((await share(`${origin}/huge`)).html)!.length < 400, true);
+        assertEquals(textarea((await share(`${origin}/uni?a b`)).html), `uni\n${origin}/uni?a%20b`);
+        assertEquals(textarea((await share(`  ${origin}/uni`)).html), `uni\n${origin}/uni`);
+      });
+
+      await t.step("/img sandboxes what it relays", async () => {
+        const svg = Deno.serve(
+          { port: 0, onListen() {} },
+          () =>
+            new Response("<svg xmlns='http://www.w3.org/2000/svg'/>", { headers: { "content-type": "image/svg+xml" } }),
+        );
+        try {
+          const res = await app.request(`/img?url=${encodeURIComponent(`http://127.0.0.1:${svg.addr.port}/x.svg`)}`);
+          assertEquals(res.headers.get("content-security-policy"), "sandbox");
+          assertEquals(res.headers.get("x-content-type-options"), "nosniff");
+          await res.body?.cancel();
+        } finally {
+          await svg.shutdown();
+        }
+      });
+    } finally {
+      fetchGuard.allow.clear();
+      await fixture.shutdown();
+    }
   }),
 );

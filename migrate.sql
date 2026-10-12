@@ -244,3 +244,10 @@ group by d.domain;
 create unique index if not exists stat_domain_domain_idx on stat_domain (domain);
 
 commit;
+
+-- A beat row is the last time a named event happened (a cron tick, a bot run). /status reads it.
+-- Run this BEFORE deploying: the crons and runBotFleet write beat.
+create table if not exists beat (name text primary key, at timestamptz not null);
+
+-- Additive and instant (constant default). Old code never reads it.
+alter table usr add column if not exists pref_weight real not null default 1 check (pref_weight between 0 and 2);

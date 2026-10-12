@@ -28,6 +28,7 @@
     "npm:@mozilla/readability@*": "0.6.0",
     "npm:@mozilla/readability@0.6": "0.6.0",
     "npm:@types/node@*": "18.16.19",
+    "npm:ipaddr.js@^2.5.0": "2.5.0",
     "npm:keychain@1.5.0": "1.5.0",
     "npm:linkedom@~0.18.12": "0.18.12",
     "npm:pg-gateway@0.3.0-beta.4": "0.3.0-beta.4",
@@ -383,6 +384,9 @@
         "domutils",
         "entities@7.0.1"
       ]
+    },
+    "ipaddr.js@2.5.0": {
+      "integrity": "sha512-aq+t5NAc+cS6rZQQVWC2x98CPqGtKKTMDd4Gaodv0wShnItdKg/51djkGJ1hqH+Oy0ivDftCbSLCQob8zso01w=="
     },
     "keychain@1.5.0": {
       "integrity": "sha512-liyp4r+93RI7EB2jhwaRd4MWfdgHH6shuldkaPMkELCJjMFvOOVXuTvw1pGqFfhsrgA6OqfykWWPQgBjQakVag=="
@@ -1076,6 +1080,7 @@
       "jsr:@surprisetalk/pgtemp@~0.2.3",
       "npm:@electric-sql/pglite@0.3.15",
       "npm:@mozilla/readability@0.6",
+      "npm:ipaddr.js@^2.5.0",
       "npm:linkedom@~0.18.12",
       "npm:postgres@^3.4.5",
       "npm:resend@^6.12.2",

@@ -15,6 +15,9 @@ import pg from "postgres";
 import { Resend } from "resend";
 export const resend = new Resend(Deno.env.get("RESEND_API_KEY") ?? "");
 import Stripe from "stripe";
+import { parseHTML } from "linkedom";
+import { Readability } from "@mozilla/readability";
+import ipaddr from "ipaddr.js";
 import { type Api, R2Conflict, uploadToR2 } from "./bots.ts";
 import { BOTS } from "./bots/mod.ts";
 export const r2 = { uploadToR2 };
@@ -173,22 +176,115 @@ export const refreshStats = async () => {
 
 const FLAG_THRESHOLD = 3;
 
+// The first 1 MB holds the <head> and the article. Reading more lets one big page fill the isolate's memory.
+const PAGE_MAX_BYTES = 1_000_000;
+
+// Image sources from a page, made absolute against `base` and deduped. Only http and https survive.
+const pageImages = (srcs: string[], base: string) => [
+  ...new Set(
+    srcs
+      .filter((src) => src && URL.canParse(src, base))
+      .map((src) => new URL(src, base))
+      .filter((u) => u.protocol === "http:" || u.protocol === "https:")
+      .map((u) => u.href),
+  ),
+];
+
+// Tests serve their fixture pages on 127.0.0.1, so they add it here. Production code never does.
+export const fetchGuard = { allow: new Set<string>() };
+
+const MAX_HOPS = 5;
+
+// fetch() for a URL a user chose. Every hop, the first and each redirect, must resolve only to public unicast
+// addresses: no loopback, private, link-local (cloud metadata), or other special ranges. Known gap: fetch resolves
+// the name again, so a DNS answer that changes between this check and the connect (DNS rebinding) gets through.
+const fetchPublic = async (url: string, init: { headers: Record<string, string>; signal: AbortSignal }) => {
+  let next = new URL(url);
+  for (let hop = 0; hop <= MAX_HOPS; hop++) {
+    if (next.protocol !== "http:" && next.protocol !== "https:")
+      throw new Error(`refused ${next.href}: only http and https`);
+    const host = next.hostname.replace(/^\[|\]$/g, "");
+    const ips = ipaddr.isValid(host) ? [host] : (await Promise.all(
+      (["A", "AAAA"] as const).map((type) =>
+        Deno.resolveDns(host, type, { signal: init.signal }).catch((e) => {
+          if (e instanceof Deno.errors.NotFound) return [];
+          throw e;
+        })
+      ),
+    )).flat();
+    if (!ips.length) throw new Error(`refused ${next.href}: ${host} has no A or AAAA record`);
+    // ipaddr.js calls ::a.b.c.d (IPv4-compatible, inside ::/8) "unicast", so the IANA-reserved ::/8 is matched apart.
+    const bad = ips.find((ip) => {
+      if (fetchGuard.allow.has(ip)) return false;
+      const addr = ipaddr.process(ip);
+      return addr.range() !== "unicast" || (addr.kind() === "ipv6" && addr.match(ipaddr.IPv6.parseCIDR("::/8")));
+    });
+    if (bad) throw new Error(`refused ${next.href}: ${host} is ${bad}, not a public address`);
+    const res = await fetch(next, { ...init, redirect: "manual" });
+    const location = res.headers.get("location");
+    if (res.status < 300 || res.status > 399 || !location) return res;
+    await res.body?.cancel();
+    next = new URL(location, next);
+  }
+  throw new Error(`refused ${url}: more than ${MAX_HOPS} redirects`);
+};
+
+// The one fetch of a foreign page: thumbnails and the ?submit= prefill both read it. Throws on any failure.
+// `images` holds the og:image and twitter:image only. ?submit= runs Readability on `document` for the rest.
+const fetchPage = async (url: string) => {
+  const res = await fetchPublic(url, { headers: { "User-Agent": "ding/1.0" }, signal: AbortSignal.timeout(3000) });
+  const type = res.headers.get("content-type") ?? "";
+  if (!res.ok || !type.includes("html")) {
+    await res.body?.cancel();
+    throw new Error(!res.ok ? `HTTP ${res.status}` : `not an HTML page (content-type: ${type || "none"})`);
+  }
+  if (!res.body) throw new Error("empty response body");
+  // Pages in ISO-8859-1 and other legacy charsets name them here. An unknown label falls back to UTF-8.
+  const label = /charset=["']?([\w-]+)/i.exec(type)?.[1] ?? "utf-8";
+  let decoder = new TextDecoder();
+  try {
+    decoder = new TextDecoder(label);
+  } catch { /* unknown label: keep UTF-8 */ }
+  const reader = res.body.getReader();
+  let html = "";
+  try {
+    for (let size = 0; size < PAGE_MAX_BYTES;) {
+      const { done, value } = await reader.read();
+      if (done) break;
+      html += decoder.decode(value, { stream: true });
+      size += value.length;
+    }
+  } finally {
+    await reader.cancel().catch(() => {});
+  }
+  const { document } = parseHTML(html);
+  const meta = (sel: string) => document.querySelector(sel)?.getAttribute("content")?.trim() ?? "";
+  // A post body holds 4096 characters, so one long title must not fill it.
+  const title = [
+    ...(meta('meta[property="og:title"]') || document.querySelector("title")?.textContent || "")
+      .replace(/\s+/g, " ").trim(),
+  ].slice(0, 200).join("");
+  // res.url is the address after redirects, which is what relative image paths resolve against.
+  const base = res.url || url;
+  return {
+    title,
+    images: pageImages([meta('meta[property="og:image"]'), meta('meta[name="twitter:image"]')], base),
+    document,
+    base,
+  };
+};
+
 const resolveThumbnail = async (url: string) => {
   if (/\.(?:jpe?g|png|gif|webp|svg)(?:\?|$)/i.test(url)) return url;
   // never fetch video files as text — fall straight to the favicon
-  if (/\.(?:mp4|webm)(?:\?|$)/i.test(url))
-    return `https://www.google.com/s2/favicons?domain=${new URL(url).hostname}&sz=128`;
-  try {
-    const res = await fetch(url, {
-      headers: { "User-Agent": "ding/1.0" },
-      signal: AbortSignal.timeout(3000),
-    });
-    const og = (await res.text()).match(
-      /<meta[^>]+(?:property="og:image"|name="twitter:image")[^>]+content="([^"]+)"/i,
-    )?.[1];
-    if (og) return new URL(og, url).href;
-  } catch {
-    /* ignore */
+  if (!/\.(?:mp4|webm)(?:\?|$)/i.test(url)) {
+    try {
+      const [image] = (await fetchPage(url)).images;
+      if (image) return image;
+    } catch (e) {
+      // An unreadable page gets the favicon, like a page without an image.
+      console.error(`thumbnail ${url}: ${e instanceof Error ? e.message : e}`);
+    }
   }
   return `https://www.google.com/s2/favicons?domain=${new URL(url).hostname}&sz=128`;
 };
@@ -1918,6 +2014,22 @@ const prefStat = (me: string, kind: string, val: string) =>
     select (select vote from pref where uid = ${me} and kind = ${kind} and val = ${val}) as vote,
            (select count(*)::int from pref where kind = ${kind} and val = ${val} and vote = 1) as ups`;
 
+// A share sheet hands over a bare host, so a value without a scheme gets https://.
+// In "localhost:3000" a digit follows the colon: that is a port, not a scheme.
+const shareUrl = (input: string) => {
+  const raw = input.trim();
+  const url = /^[a-z][a-z0-9+.-]*:(?!\d)/i.test(raw) ? raw : `https://${raw}`;
+  if (!URL.canParse(url) || !["http:", "https:"].includes(new URL(url).protocol)) {
+    throw new HTTPException(400, {
+      message:
+        `?submit= takes a web page address. expected: an http or https URL, such as https://example.org/post. received: ${
+          JSON.stringify(raw)
+        }. source: the ?submit= link. fix: share a web page, or put its address after ?submit=.`,
+    });
+  }
+  return new URL(url).href;
+};
+
 // The personalized window. A page must never straddle it, so it is a multiple of the 25-row
 // page size: pages inside it are a slice of the re-ranked window, pages past it are a slice
 // of the global order, and the two meet exactly on a page boundary.
@@ -1930,6 +2042,43 @@ app.get("/", async (c) => {
     // raw here would let `?sort=HOT` silently take a different branch than it orders by.
     s = q.sort === "new" || q.sort === "top" ? q.sort : "hot",
     name = c.get("name");
+  // ?submit= fetches a foreign page, so an anonymous request must never reach the fetch.
+  if (q.submit !== undefined && !name) {
+    const { pathname, search } = new URL(c.req.url);
+    return c.redirect(`/u?next=${encodeURIComponent(pathname + search)}`);
+  }
+  // Starts before the feed queries so the fetch overlaps them. It never rejects: a page that cannot be
+  // read still prefills the bare link. The reason goes to the log only, because the page text would let a
+  // user probe which hosts and ports answer.
+  const sharing = q.submit === undefined ? null : ((url) =>
+    fetchPage(url).then(
+      ({ title, images, document, base }) => {
+        // Readability rewrites the document it reads, and only ?submit= pays its cost: a thumbnail needs no article.
+        let inArticle: string[] = [];
+        try {
+          const article = new Readability(document as unknown as Document, { maxElemsToParse: 20_000 }).parse();
+          if (article?.content) {
+            inArticle = [...parseHTML(`<html><body>${article.content}</body></html>`).document.querySelectorAll("img")]
+              .map((img) => img.getAttribute("src") ?? "");
+          }
+        } catch (e) {
+          console.error(`share ${url}: article not read: ${e instanceof Error ? e.message : e}`);
+        }
+        // formatBody shows only URLs with an image extension as images, so any other URL would post as a bare link.
+        return {
+          url,
+          title,
+          images: pageImages([...images, ...inArticle], base).filter(isImageUrl).slice(0, 8),
+          failed: false,
+        };
+      },
+      (e) => (console.error(`share ${url}: ${e instanceof Error ? e.message : e}`), {
+        url,
+        title: "",
+        images: [] as string[],
+        failed: true,
+      }),
+    ))(shareUrl(q.submit));
   const [viewer] = name ? await sql`select orgs_r, orgs_w from usr where name = ${name}` : [{ orgs_r: [], orgs_w: [] }];
   const rT = viewer?.orgs_r || [],
     wT = viewer?.orgs_w || [];
@@ -2023,7 +2172,8 @@ app.get("/", async (c) => {
       //
       // Weights mirror refresh_score's asymmetry — a ▼ weighs ~3x a ▲ — and `&&`/`= any`
       // against a null array is null, so a viewer with no prefs (or none of one kind)
-      // scores exactly as the global ranking does.
+      // scores exactly as the global ranking does. The viewer's usr.pref_weight (0-2, the /u
+      // slider) multiplies the whole boost: 0 is the global order, 2 doubles every term.
       : sql<Com[]>`
         with mine as (
           select array_agg(val::text)   filter (where kind = 'tag' and vote =  1) as up_tag,
@@ -2031,7 +2181,8 @@ app.get("/", async (c) => {
                  array_agg(val::citext) filter (where kind = 'usr' and vote =  1) as up_usr,
                  array_agg(val::citext) filter (where kind = 'usr' and vote = -1) as dn_usr,
                  array_agg(val::text)   filter (where kind = 'www' and vote =  1) as up_www,
-                 array_agg(val::text)   filter (where kind = 'www' and vote = -1) as dn_www
+                 array_agg(val::text)   filter (where kind = 'www' and vote = -1) as dn_www,
+                 coalesce((select pref_weight from usr where name = ${me}), 1) as w
             from pref where uid = ${me}
         ),
         cand as (
@@ -2039,13 +2190,13 @@ app.get("/", async (c) => {
           order by score desc, cid desc limit ${PREF_WINDOW}
         ),
         pick as (
-          select cand.cid, cand.score
-            + interval '8 hours'  * (case when cand.tags       && m.up_tag        then 1 else 0 end)
+          select cand.cid, cand.score + m.w * (
+              interval '8 hours'  * (case when cand.tags       && m.up_tag        then 1 else 0 end)
             - interval '24 hours' * (case when cand.tags       && m.dn_tag        then 1 else 0 end)
             + interval '12 hours' * (case when cand.created_by = any(m.up_usr)    then 1 else 0 end)
             - interval '36 hours' * (case when cand.created_by = any(m.dn_usr)    then 1 else 0 end)
             + interval '4 hours'  * (case when cand.domains    && m.up_www        then 1 else 0 end)
-            - interval '12 hours' * (case when cand.domains    && m.dn_www        then 1 else 0 end) as pscore
+            - interval '12 hours' * (case when cand.domains    && m.dn_www        then 1 else 0 end)) as pscore
           from cand cross join mine m
           order by pscore desc, cand.cid desc offset ${p * 25} limit 25
         )
@@ -2056,6 +2207,7 @@ app.get("/", async (c) => {
       `,
   ]);
 
+  const share = await sharing;
   const cur = new URL(c.req.url).searchParams,
     meta = buildFilterTitle(cur);
   return c.render(
@@ -2071,8 +2223,23 @@ app.get("/", async (c) => {
               minlength={1}
               maxlength={4096}
             >
-              {cur.get("body") ?? ""}
+              {share ? (share.title ? `${share.title}\n${share.url}` : share.url) : cur.get("body") ?? ""}
             </textarea>
+            {share?.failed && (
+              <p class="note-sm">
+                could not read the page. expected: a public web page that answers with HTML within 3 seconds. fix: type
+                the title by hand. The link is filled in.
+              </p>
+            )}
+            {share && share.images.length > 0 && (
+              <div class="share-images">
+                {share.images.map((u) => (
+                  <button key={u} type="button" class="share-image" data-url={u} title="add this image to the post">
+                    <img src={`/img?url=${encodeURIComponent(u)}`} alt="" loading="lazy" />
+                  </button>
+                ))}
+              </div>
+            )}
             <div class="post-form__row">
               <input
                 type="text"
@@ -2456,7 +2623,7 @@ app.get("/u", async (c) => {
   // row (same table), and the three pref reads collapse into one pass over the same rows.
   const [[usr], tags, prefRows] = await Promise.all([
     sql`
-      select u.name, u.bio, u.invited_by, u.password, u.orgs_r, u.orgs_w, u.pubkey,
+      select u.name, u.bio, u.pref_weight, u.invited_by, u.password, u.orgs_r, u.orgs_w, u.pubkey,
              (u.seckey_enc is not null) as custodial,
              coalesce((
                select json_agg(json_build_object('name', i.name, 'verified', i.email_verified_at is not null)
@@ -2511,6 +2678,11 @@ app.get("/u", async (c) => {
           <textarea name="bio" rows={6} aria-label="bio">
             {usr.bio}
           </textarea>
+          <label>
+            personalization
+            <input type="range" name="pref_weight" min="0" max="2" step="0.25" value={usr.pref_weight} />
+          </label>
+          <p class="note-sm">0 = everyone's feed, 2 = strongly yours.</p>
           <button type="submit">save</button>
         </form>
       </section>
@@ -2621,8 +2793,25 @@ app.get("/u", async (c) => {
 });
 
 app.post("/u", authed, async (c) => {
-  const data = await form(c);
-  await sql`update usr set bio = ${data.bio} where name = ${c.get("name")!}`;
+  // A field that is absent keeps its stored value: forms loaded before the slider existed and API callers send only a bio.
+  const data: Record<string, string | undefined> = await form(c);
+  // Digits only: Number() alone would also accept "0x1", "1e0" and " 1 ".
+  const w = data.pref_weight === undefined
+    ? null
+    : /^\d(\.\d+)?$/.test(data.pref_weight)
+    ? Number(data.pref_weight)
+    : NaN;
+  if (w !== null && !(w >= 0 && w <= 2)) {
+    throw new HTTPException(400, {
+      message: `Expected a number from 0 to 2 in pref_weight, received ${
+        JSON.stringify(data.pref_weight)
+      }. Source: the /u form. Fix: move the slider on /u and save again.`,
+    });
+  }
+  await sql`update usr set bio = coalesce(${
+    data.bio ?? null
+  }::text, bio), pref_weight = coalesce(${w}::real, pref_weight)
+    where name = ${c.get("name")!}`;
   return c.redirect("/u");
 });
 
@@ -3089,6 +3278,16 @@ export const createPost = async (
   opts: { parentCid?: number | string | null; labels?: string } = {},
 ): Promise<PostOutcome> => {
   const pid = opts.parentCid ?? null;
+  // Code points, like postgres length(): com.body holds at most 4096 of them.
+  const chars = [...body].length;
+  if (chars > 4096) {
+    throw new HTTPException(400, {
+      message:
+        `This post is too long. expected: at most 4096 characters. received: ${chars}. source: the post body. fix: cut ${
+          chars - 4096
+        } characters, or split it into a reply.`,
+    });
+  }
   if (!rateHit(postRate, author, POST_RATE_MAX, POST_RATE_MS))
     throw new HTTPException(429, { message: "slow down. try again in a minute." });
 
@@ -3585,12 +3784,18 @@ app.get("/img", async (c) => {
   if (!url) throw new HTTPException(400, { message: "missing ?url=" });
   if (!/^https?:\/\//.test(url))
     throw new HTTPException(400, { message: "invalid url" });
-  const res = await fetch(url, {
-    headers: { "User-Agent": "ding/1.0" },
-    signal: AbortSignal.timeout(5000),
-  });
-  if (!res.ok)
+  const res = await fetchPublic(url, { headers: { "User-Agent": "ding/1.0" }, signal: AbortSignal.timeout(5000) })
+    .catch((e) => {
+      // The detail goes to the log only: the response must not tell a caller which hosts and ports answer.
+      console.error(`/img ${url}: ${e instanceof Error ? e.message : e}`);
+      throw new HTTPException(502, {
+        message: "could not fetch that image. expected: a public http or https image. fix: check the link.",
+      });
+    });
+  if (!res.ok) {
+    await res.body?.cancel();
     throw new HTTPException(502, { message: `upstream ${res.status}` });
+  }
   const ct = res.headers.get("content-type") || "image/png";
   if (!ct.startsWith("image/"))
     throw new HTTPException(400, { message: "not an image" });
@@ -3598,6 +3803,9 @@ app.get("/img", async (c) => {
     headers: {
       "Content-Type": ct,
       "Cache-Control": "public, max-age=604800, immutable",
+      // An SVG opened as a page must not run script on this origin.
+      "Content-Security-Policy": "sandbox",
+      "X-Content-Type-Options": "nosniff",
     },
   });
 });
@@ -3804,6 +4012,7 @@ export async function runBotFleet(names: string[] = Object.keys(BOTS)) {
             timer = setTimeout(() => rej(new Error(`timed out after ${BOT_TIMEOUT_MS}ms`)), BOT_TIMEOUT_MS);
           }),
         ]);
+        await beat(`bot:${name}`);
         ok++;
       } catch (e) {
         failed++;
@@ -3815,18 +4024,176 @@ export async function runBotFleet(names: string[] = Object.keys(BOTS)) {
   };
   await Promise.all(Array.from({ length: BOT_CONCURRENCY }, worker));
   console.log(`bot fleet: ${ok} ok, ${failed} failed, ${skipped} skipped`);
+  if (failed > 0 && ok === 0) {
+    throw new Error(
+      `every bot that ran failed.\n\n    expected: at least one bot to finish\n    received: ${failed} failed, ${ok} ok\n    source: runBotFleet in server.tsx\n\nLikely fix: see the 'bot <name> failed' lines above in the Deno Deploy logs.`,
+    );
+  }
 }
 
-// Hourly checkmark cron via Deno.cron — registered ONLY on Deno Deploy (DENO_DEPLOYMENT_ID
-// is unset locally/in tests, so this never fires there or trips the test sanitizer).
-// SIMPLE path for now: DING_ORG_SK lives on the main server. Harden later by moving the cron
-// to a separate Deno Deploy project (or GitHub Actions) so the trust root is off the public server.
-if (Deno.env.get("DENO_DEPLOYMENT_ID")) {
-  Deno.cron("ding-checkmark", "0 * * * *", async () => {
+//// STATUS ////////////////////////////////////////////////////////////////////
+
+export const beat = async (name: string) => {
+  await sql`insert into beat (name, at) values (${name}, now()) on conflict (name) do update set at = now()`;
+};
+
+const count = async (q: PromiseLike<{ n: number }[]>) => (await q)[0].n;
+
+// Each grade is actual / threshold, never clamped: 45 means 45 times the bar. A ceiling is threshold / actual.
+export const checks: { cond: string; fix: string; grade: () => Promise<number> }[] = [
+  {
+    cond: "100 humans posted in the past 24h.",
+    fix: "too few daily posters, or the web app is down: open https://ding.bar and check the Deno Deploy logs",
+    // Bot accounts are named bot_<x>. Regex, not LIKE: in LIKE "_" is a wildcard and would also drop "botany".
+    grade: async () =>
+      await count(sql<{ n: number }[]>`
+        select count(distinct created_by)::int as n from com
+        where created_at > now() - interval '24 hours' and char_length(body) > 1
+          and created_by is not null and created_by !~ '^bot_'`) / 100,
+  },
+  {
+    cond: "3 humans besides taylor posted this week.",
+    fix: "too few people post: check signups and invites at https://ding.bar/us",
+    grade: async () =>
+      await count(sql<{ n: number }[]>`
+        select count(distinct created_by)::int as n from com
+        where created_at > now() - interval '7 days' and char_length(body) > 1
+          and created_by is not null and created_by !~ '^bot_' and created_by <> 'taylor'`) / 3,
+  },
+  {
+    cond: "Somebody verified their email this week.",
+    fix:
+      "signup or the verify email is broken: check RESEND_API_KEY and 'Could not send verification email' in the Deno Deploy logs",
+    grade: async () =>
+      await count(sql<{ n: number }[]>`
+        select count(*)::int as n from usr where email_verified_at > now() - interval '7 days'`),
+  },
+  {
+    cond: "Somebody paid for an org this month.",
+    fix: "no org subscription started: check the Stripe webhook deliveries and POST /org in the Deno Deploy logs",
+    grade: async () =>
+      await count(sql<{ n: number }[]>`
+        select count(*)::int as n from org
+        where stripe_sub_id is not null and created_at > now() - interval '30 days'`),
+  },
+  {
+    cond: "Every bot in bots/mod.ts finished a run in the past hour.",
+    fix:
+      "a bot threw or lost its BOT_<NAME>_EMAIL/_PASSWORD: see the Deno Deploy logs for 'bot <name> failed' or 'skipping'",
+    grade: async () =>
+      await count(sql<{ n: number }[]>`
+        select count(*)::int as n from beat
+        where name = any(${Object.keys(BOTS).map((k) => `bot:${k}`)}::text[]) and at > now() - interval '1 hour'`) /
+      Object.keys(BOTS).length,
+  },
+  {
+    cond: "Every cron ran inside twice its period.",
+    fix:
+      "a Deno.cron stopped or threw: run `select * from beat order by at` and see the Deno Deploy logs for 'cron failed'",
+    grade: async () =>
+      await count(sql<{ n: number }[]>`
+        select count(*)::int as n from beat b
+        join unnest(${CRONS.map((c) => c.name)}::text[], ${CRONS.map((c) => c.periodS)}::int[]) c(name, period)
+          using (name)
+        where b.at > now() - 2 * c.period * interval '1 second'`) / CRONS.length,
+  },
+  {
+    cond: "The anonymous frontpage renders in 300ms.",
+    fix: "GET / is slow or failing: run explain analyze on the feed query in feedPosts and check Neon CPU",
+    grade: async () => {
+      const t0 = performance.now();
+      const res = await app.request("/");
+      await res.text();
+      const ms = performance.now() - t0;
+      if (res.status !== 200) throw new Error(`GET / answered HTTP ${res.status}`);
+      return 300 / Math.max(ms, 1);
+    },
+  },
+  {
+    cond: "The dht ingested a row in the past 24h.",
+    fix: "no signed row arrived: check the Deno Deploy logs for POST /db errors and bots/checkmark.ts",
+    // Newest row by the seq index. count(*) would scan the whole log.
+    grade: async () => {
+      const [row] = await sql<{ age: number }[]>`
+        select extract(epoch from now() - seen_at)::float8 as age from dht order by seq desc limit 1`;
+      return row ? 86400 / Math.max(row.age, 1) : 0;
+    },
+  },
+  {
+    cond: "Postgres uses under 80% of Neon's 0.5 GB free-tier storage.",
+    fix: "the database is near its cap: find big tables with pg_total_relation_size, prune, or upgrade the Neon plan",
+    // 0.5 GB is Neon's free-plan cap. A plan change moves it.
+    grade: async () => {
+      const [row] = await sql<{ n: number }[]>`select pg_database_size(current_database())::float8 as n`;
+      return (0.8 * 0.5 * 1024 ** 3) / row.n;
+    },
+  },
+  {
+    cond: "DNS lookups answer, so ding can fetch link previews and /img.",
+    fix:
+      "Deno.resolveDns fails on this host, so fetchPublic refuses every page and image: see the Deno Deploy logs for resolver errors",
+    // fetchPublic resolves every host before it fetches, and refuses when the lookup throws.
+    grade: async () => (await Deno.resolveDns("ding.bar", "A")).length,
+  },
+];
+
+const CHECK_TIMEOUT_MS = 5_000;
+
+export const gradeAll = async (): Promise<{ cond: string; fix: string; grade: number }[]> => {
+  const out = [];
+  // One at a time: the frontpage timing must not queue behind the other checks on the 3-connection pool.
+  for (const { cond, fix, grade } of checks) {
+    let timer: ReturnType<typeof setTimeout> | undefined;
     try {
-      // Ingest marks straight into the dht via ingestMsg — NOT an HTTP POST back to our own
-      // db.ding.bar (a Deno Deploy isolate fetching its own custom domain redirect-loops).
-      await runCheckmark({
+      const g = await Promise.race([
+        grade(),
+        new Promise<never>((_, rej) => {
+          timer = setTimeout(() => rej(new Error(`no answer after ${CHECK_TIMEOUT_MS}ms`)), CHECK_TIMEOUT_MS);
+        }),
+      ]);
+      if (!Number.isFinite(g)) throw new Error(`grade is ${g}, not a finite number`);
+      // Floor, not round: 0.999 must not print as 1.
+      out.push({ cond, fix, grade: Math.floor(g * 100) / 100 });
+    } catch (e) {
+      console.error(
+        `status check "${cond}" failed to grade.\n\n    expected: a finite grade within ${CHECK_TIMEOUT_MS}ms\n    received: ${
+          e instanceof Error ? e.message : e
+        }\n    source: checks in server.tsx\n\nLikely fix: ${fix}.`,
+      );
+      out.push({ cond, fix, grade: 0 });
+    } finally {
+      clearTimeout(timer);
+    }
+  }
+  return out;
+};
+
+// /status is public. Every request inside 30 s shares one grading, so a request loop cannot hold the pool.
+export const gradeMemo: { at: number; run: ReturnType<typeof gradeAll> | null } = { at: 0, run: null };
+
+app.get("/status", async (c) => {
+  if (!gradeMemo.run || Date.now() - gradeMemo.at > 30_000) {
+    gradeMemo.at = Date.now();
+    gradeMemo.run = gradeAll();
+  }
+  const body = Object.fromEntries((await gradeMemo.run).map(({ cond, grade }) => [cond, { "0": grade }]));
+  c.header("cache-control", "no-store");
+  return c.json(body, Object.values(body).every((v) => v["0"] >= 1) ? 200 : 503);
+});
+
+// Each cron registers ONLY on Deno Deploy (DENO_DEPLOYMENT_ID is unset locally and in tests,
+// so none fires there or trips the test sanitizer). periodS must match the schedule.
+// A cron that returns writes its beat; a cron that throws logs and writes none.
+export const CRONS: { name: string; schedule: string; periodS: number; run: () => Promise<unknown> }[] = [
+  {
+    name: "ding-checkmark",
+    schedule: "0 * * * *",
+    periodS: 3600,
+    // SIMPLE path for now: DING_ORG_SK lives on the main server. Harden later by moving the cron
+    // to a separate Deno Deploy project so the trust root is off the public server.
+    // Marks go straight into the dht via ingestMsg: a Deploy isolate that fetches its own custom domain redirect-loops.
+    run: () =>
+      runCheckmark({
         sql,
         sink: async (rows) => {
           for (const row of rows) {
@@ -3838,16 +4205,15 @@ if (Deno.env.get("DENO_DEPLOYMENT_ID")) {
             }
           }
         },
-      });
-    } catch (e) {
-      console.error(`checkmark cron failed: ${e instanceof Error ? e.message : e}`);
-    }
-  });
-
-  // Daily: prune stale unverified self-signups. They have no password → no posts → no com rows,
-  // so deletion is safe; `invited_by = name` limits it to self-signups (pending real invites kept).
-  Deno.cron("ding-prune-unverified", "17 3 * * *", async () => {
-    try {
+      }),
+  },
+  {
+    name: "ding-prune-unverified",
+    schedule: "17 3 * * *",
+    periodS: 86400,
+    // Unverified self-signups have no password, so no posts and no com rows: deletion is safe.
+    // `invited_by = name` limits it to self-signups (pending real invites stay).
+    run: async () => {
       const gone = await sql`
         delete from usr
         where email_verified_at is null and invited_by = name
@@ -3855,24 +4221,25 @@ if (Deno.env.get("DENO_DEPLOYMENT_ID")) {
         returning name
       `;
       if (gone.length) console.log(`pruned ${gone.length} stale unverified signups`);
-    } catch (e) {
-      console.error(`prune cron failed: ${e instanceof Error ? e.message : e}`);
-    }
-  });
+    },
+  },
+  { name: "ding-bots", schedule: "*/5 * * * *", periodS: 300, run: () => runBotFleet() },
+  // stat_tag and stat_domain are snapshots, so something has to refresh them. Their chips are discovery
+  // and their refresh_score term is slow reputation: 10 minutes of staleness is invisible.
+  { name: "ding-refresh-stats", schedule: "*/10 * * * *", periodS: 600, run: refreshStats },
+];
 
-  Deno.cron("ding-bots", "*/5 * * * *", () => runBotFleet());
+export const runCron = async ({ name, run }: (typeof CRONS)[number]): Promise<void> => {
+  try {
+    await run();
+    await beat(name);
+  } catch (e) {
+    console.error(`${name} cron failed: ${e instanceof Error ? e.message : e}`);
+  }
+};
 
-  // stat_tag is a snapshot now, so something has to take it. Every 10 minutes: the chips it
-  // feeds are discovery, and its refresh_score term is slow-moving reputation, so staleness
-  // of that order is invisible. pg_cron is available on Neon but this repo already schedules
-  // everything here — one scheduler to reason about beats two.
-  Deno.cron("ding-refresh-stats", "*/10 * * * *", async () => {
-    try {
-      await refreshStats();
-    } catch (e) {
-      console.error(`stat refresh cron failed: ${e instanceof Error ? e.message : e}`);
-    }
-  });
+if (Deno.env.get("DENO_DEPLOYMENT_ID")) {
+  for (const cron of CRONS) Deno.cron(cron.name, cron.schedule, () => runCron(cron));
 }
 
 export default app;

@@ -26,6 +26,15 @@ http ding.bar/u?q=lisp     # search users
 http POST ding.bar ...     # TODO
 ```
 
+## share
+
+`https://ding.bar/?submit=<url>` opens compose with the page's title, the link, and its images filled in. Save this as a
+bookmark, or use the same URL in an iOS Shortcut's Open URL action:
+
+```
+javascript:location='https://ding.bar/?submit='+encodeURIComponent(location.href)
+```
+
 ## dht (decentralization, phase 1)
 
 ding's data is a signed, content-addressed log. identity is an ed25519 keypair; every post is content-addressed
@@ -60,6 +69,12 @@ psql -d postgres -c "create database ding"
 psql -d ding -x < db.sql
 deno serve --watch -A --env server.tsx
 git config core.hooksPath .githooks  # enable pre-commit hook
+```
+
+## status
+
+```bash
+deno task status   # grades production; exits 1 when any condition is below 1.0
 ```
 
 ## tests

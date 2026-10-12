@@ -529,6 +529,75 @@ details.danger[open] > summary {
   text-decoration: none;
 }
 
+.share-images,
+.body-images {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: flex-start;
+  gap: var(--space-1);
+  margin-top: var(--space-1);
+}
+
+.share-images::before,
+.body-images::before {
+  flex-basis: 100%;
+  font-size: var(--text-xs);
+  color: var(--muted);
+}
+
+.share-images::before {
+  content: "found on the page, click to add:";
+}
+
+.body-images::before {
+  content: "in this post:";
+}
+
+.body-images[hidden] {
+  display: none;
+}
+
+.body-image {
+  position: relative;
+}
+
+.body-image img {
+  display: block;
+  width: 96px;
+  height: 96px;
+  object-fit: cover;
+  border: 1px solid var(--border);
+}
+
+.body-image button {
+  position: absolute;
+  top: 0;
+  right: 0;
+  min-height: 0;
+  padding: 0 var(--space-1);
+  line-height: 1.4;
+  border-radius: 0;
+}
+
+.share-image {
+  min-height: 0;
+  padding: 0;
+  background: none;
+  border: 1px solid var(--border);
+  border-radius: 0;
+}
+
+.share-image img {
+  display: block;
+  width: 72px;
+  height: 72px;
+  object-fit: cover;
+}
+
+.share-image:disabled {
+  opacity: 0.4;
+}
+
 .tag-preset__count {
   opacity: 0.6;
 }

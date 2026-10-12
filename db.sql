@@ -17,6 +17,7 @@ create table usr (
   pubkey text check (pubkey ~ '^[0-9a-f]{64}$'),  -- Ed25519 identity (custodial or self-managed)
   id text check (id ~ '^[0-9a-f]{64}$'),  -- sha256(pubkey); resolves private @recipient ids -> name
   seckey_enc bytea,  -- custodial private key, AES-256-GCM(JWK, KEY_WRAP_SECRET); null = self-custody
+  pref_weight real not null default 1 check (pref_weight between 0 and 2),  -- multiplies the GET / pref boost; 0 = the global order
   last_seen_at timestamptz not null default current_timestamp,
   created_at timestamptz not null default current_timestamp
 );
@@ -252,3 +253,6 @@ create or replace function refresh_score(cids int[]) returns void language sql a
   where c.cid = any(cids)
     and ta.cid = c.cid and da.cid = c.cid and ra.cid = c.cid and ua.cid = c.cid and ba.cid = c.cid;
 $$;
+
+-- A beat row is the last time a named event happened (a cron tick, a bot run). /status reads it.
+create table beat (name text primary key, at timestamptz not null);

@@ -2,7 +2,7 @@
 //// ding CLI ////////////////////////////////////////////////////////////////////
 // Self-managed identity: signs rows with your own key and POSTs them to a node.
 // Key lives at ~/.ding/key.json. No deps; shares dht.ts with the server so hashes
-// are byte-identical. Commands: msg, usr, org, flag, mark, id.
+// are byte-identical. Commands: msg, usr, org, flag, mark, id, status.
 
 import {
   buildMark,
@@ -143,6 +143,53 @@ switch (cmd) {
     console.log(JSON.stringify({ pubkey: key.pub, id: await idOf(key.pub) }, null, 2));
     break;
   }
+  case "status": {
+    const url = positional[0];
+    if (!/^https?:\/\//.test(url ?? "") || !URL.canParse(url)) {
+      die(
+        `status takes the URL of /status.\n\n    expected: an http or https URL, such as https://ding.bar/status\n    received: ${
+          JSON.stringify(url)
+        }\n    source: ding status <url>\n\nRun \`deno task status\` to check production.`,
+      );
+    }
+    let res: Response, text: string;
+    try {
+      res = await fetch(url, { signal: AbortSignal.timeout(10_000) });
+      text = await res.text();
+    } catch (e) {
+      die(
+        `status cannot reach ${url}.\n\n    expected: an answer within 10 s\n    received: ${
+          e instanceof Error ? e.message : e
+        }\n    source: ${url}\n\nLikely fix: check the Deno Deploy dashboard for the ding project. For a local server, run it and pass its URL.`,
+      );
+    }
+    let report: unknown;
+    try {
+      report = JSON.parse(text!);
+    } catch {
+      // The shape check below rejects a body that is not JSON.
+    }
+    const isRecord = (x: unknown): x is Record<string, unknown> =>
+      typeof x === "object" && x !== null && !Array.isArray(x);
+    const scores = isRecord(report) ? Object.values(report) : [];
+    const nows = scores.flatMap((v) => isRecord(v) && typeof v["0"] === "number" ? [v["0"]] : []);
+    const valid = nows.length > 0 && nows.length === scores.length;
+    const healthy = valid && nows.every((n) => n >= 1);
+    if (!valid || healthy !== (res!.status === 200)) {
+      die(
+        `status received an answer that is not a status report.\n\n    expected: HTTP 200 with every "0" at 1.0 or above, or HTTP 503 with a "0" below 1.0, as JSON such as {"<condition>": {"0": 1.5}}\n    received: HTTP ${
+          res!.status
+        }, ${
+          JSON.stringify(text!.slice(0, 200))
+        }\n    source: ${url}\n\nLikely fix: an HTTP 404 means the deploy with /status has not shipped; see "Blocked on you" in todo.md. Otherwise check that ${url} is the /status of ding.`,
+      );
+    }
+    console.log(text!);
+    if (!healthy)
+      console.error("A condition scored below 1.0. Each condition's likely fix is in `checks` in server.tsx.");
+    Deno.exit(healthy ? 0 : 1);
+    break; // deno lint no-fallthrough does not know Deno.exit never returns
+  }
   default:
-    die(`unknown command "${cmd ?? ""}". commands: msg, usr, org, flag, mark, id`);
+    die(`unknown command "${cmd ?? ""}". commands: msg, usr, org, flag, mark, id, status`);
 }

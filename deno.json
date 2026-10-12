@@ -22,6 +22,7 @@
     "@mozilla/readability": "npm:@mozilla/readability@^0.6.0",
     "@std/assert": "jsr:@std/assert@^1.0.19",
     "@surprisetalk/pgtemp": "jsr:@surprisetalk/pgtemp@^0.2.3",
+    "ipaddr.js": "npm:ipaddr.js@^2.5.0",
     "linkedom": "npm:linkedom@^0.18.12",
     "sharp": "npm:sharp@^0.34.5",
     "@hono/hono": "jsr:@hono/hono@4.12.15",
@@ -36,6 +37,7 @@
     "node": "deno serve -A node.tsx",
     "checkmark": "deno run -A bots/checkmark.ts",
     "backfill": "deno run -A backfill.ts",
+    "status": "deno run -A ding.ts status https://ding.bar/status",
     "test": "deno test -A"
   },
   "deploy": {

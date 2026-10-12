@@ -313,8 +313,8 @@ as a pref that could never match.
 - Prefs also feed the **compose chips** — an explicit ▲ on a tag outranks the implicit `own`/`affinity` signals and a ▼
   suppresses the tag everywhere. See **Tag Discovery**.
 - Explicit 70% cuts: `/c` search is **not** personalized (you already expressed intent there — re-ranking fights you),
-  and `sort=new`/`sort=top` are not either (chronological and most-voted mean what they say). Weights are constants;
-  `todo.md`'s personalization slider is the follow-up.
+  and `sort=new`/`sort=top` are not either (chronological and most-voted mean what they say). Weights are constants,
+  scaled by `usr.pref_weight` (0–2, the `/u` slider; 0 = the global order).
 - Surfaces: `LabelVote` (same markup/classes as `Reactions`) on the `/c?tag=`, `/c?usr=` and `/c?www=` `InfoBlock`s and
   on `/u/:name`; `/u` gains **people** (mutuals) and **interests** (your prefs, with toggle-off chips). `/c?www=` had no
   header before — adding one required `onlyFilter` to move `www` from "nothing else is set" into the single-label count.
@@ -409,6 +409,33 @@ table), and prefs + mutuals + both follow counts collapse into one pass. That la
 the only thing keeping a follower count that isn't yours from reading as zero. The all-null sentinel row is dropped in
 JS.
 
+## Share (?submit=)
+
+`GET /?submit=<url>` prefills compose from a foreign page: `<title>\n<url>` in the textarea, and up to 8 images as
+`GET /img` thumbnails that a click appends to the post. A logged-out request redirects to `/u?next=` BEFORE any fetch,
+so anonymous traffic can never make ding fetch a page. A page that cannot be read still prefills the bare link and shows
+the reason.
+
+- **`fetchPage`** is the single foreign-page fetch (3s, `ding/1.0`, first 1 MB, linkedom): reuse it, do not add another.
+  Its `images` are the `og:image`/`twitter:image` only, which is all `resolveThumbnail` needs. Readability runs in the
+  `?submit=` path alone, so a link post (bots included, every 5 min) never pays for article extraction.
+- **The strip offers only images a post renders.** `formatBody` shows a URL as an image only when `isImageUrl` matches
+  its extension, so an extensionless `og:image` would post as a bare link. The strip filters on `isImageUrl` too.
+- **Compose previews** (`public/client.js`): under every `textarea[name=body]`, a row shows each image the post will
+  render, with an × that removes its URL. `imagesIn` copies `INLINE_RE`'s URL pattern and `isImageUrl`: change them
+  together. Code that sets a textarea's value goes through `setValue`, which fires `input`, or the row goes stale. An
+  upload previews its local file (`localSrc`), because its `i.ding.bar` URL has no bytes yet.
+- `GET /img` answers with `Content-Security-Policy: sandbox` and `nosniff`, so a relayed SVG cannot run script on the
+  ding origin.
+
+**User-chosen URLs go through `fetchPublic`** (`fetchPage` and `GET /img` both do). Before each hop, the first and every
+redirect (followed by hand, at most 5), it resolves the host and refuses unless every address is public unicast by
+`ipaddr.js` (`range() === "unicast"`): no loopback, private, link-local (cloud metadata), CGNAT, or IPv4-mapped tricks.
+Known gap: `fetch` resolves the name again, so DNS rebinding between the check and the connect gets through. Tests serve
+fixtures on 127.0.0.1 and add it to `fetchGuard.allow`; production never does. Failure text never reaches the user (the
+`?submit=` line and `/img`'s 502 are generic) because it would tell a caller which hosts and ports answer; the detail
+goes to the log.
+
 ## Embeddable comments (/embed)
 
 `GET /embed?url=<page>` is a read-only iframe widget for static sites
@@ -467,6 +494,21 @@ JSX components are pure functions:
 ```tsx
 const Post = ({ post }: { post: Com }) => <article>...</article>;
 ```
+
+## Status
+
+`GET /status` grades every condition in `checks` (`server.tsx`). Each grade is actual / threshold, unclamped, floored to
+2 decimals; 1.0 is the minimum pass. The body maps each condition to `{"0": grade}`, and the route answers 503 when any
+grade is below 1.0. A check that throws or exceeds 5s grades 0 and logs expected/received/source/fix. The route is
+public, so every request inside 30s shares one grading (`gradeMemo`).
+
+- **Alerting is snitch, not ding.** snitch runs `deno task status` (`ding.ts status <url>`) hourly from pc, logs the
+  result, and mails the 4:30 report. That run is also the external uptime ping. ding sends no status email and keeps no
+  status history of its own.
+- **`beat(name)`** upserts "the last time X happened" into the `beat` table. Every `Deno.cron` beats its own name after
+  a good tick, and `runBotFleet` beats `bot:<name>` for each bot that finishes. Cron name, schedule, and period are
+  defined once in `CRONS`; keep each period equal to its schedule.
+- **Deploy order:** run `migrate.sql` BEFORE the deploy, because the crons and `runBotFleet` write `beat`.
 
 ## Testing
 

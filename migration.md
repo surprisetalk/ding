@@ -140,6 +140,8 @@ Fully safe. Redeploy the previous Deno Deploy deployment (dashboard or deployctl
 ignores the new columns/tables; custodial keys / `dht` rows created during the window just sit unused. Disable the
 checkmark cron. No schema revert needed (and none is safe to do while any new-code instance is live).
 
+The `beat` table comes from `migrate.sql`. Run it BEFORE the deploy: the crons and `runBotFleet` write `beat`.
+
 ## Open hardening items (track before wide launch)
 
 - **`POST /db` abuse:** rate-limited per-IP + per-pubkey (done). Remaining: a body byte-cap on the actual read (the
