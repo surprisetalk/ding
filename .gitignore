@@ -4,3 +4,5 @@
 bots.env
 .ruff_cache/
 .impeccable/
+.env.*
+!.env.example
