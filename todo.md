@@ -107,6 +107,23 @@
 
 ## Blocked on you
 
+- [ ] You see all bots finish a run every hour, so the status condition "Every bot in bots/mod.ts finished a run in the
+      past hour." scores 1.0 (now 0.86 = 39 of 45).
+  1. Cause (partly known): six bots have no `beat` row in production, ever: `album`, `bestof`, `grouch`, `hypebot`,
+     `replyguy`, `welcome`. `runBotFleet` writes `beat('bot:<name>')` only after the bot returns without error. So each
+     of the six is skipped or throws on every tick. The other 39 beat within the hour. The Deno Deploy logs are the
+     missing evidence.
+  2. Already ruled out: all six have `BOT_<NAME>_EMAIL` and `_PASSWORD` in local `bots.env`; each pair matches its `usr`
+     row (`password = crypt(...)`); all six `bot_*` users exist. `critic` also uses `verdictBot` and beats, so a missing
+     Anthropic key does not explain it. `bot_grouch`, `bot_hypebot` and `bot_replyguy` have 0 posts ever; `bot_album`
+     last posted 2026-09-14; `bot_bestof` 2026-07-27; `bot_welcome` 2026-08-09 (it posts only for a fresh signup, but it
+     still beats on a no-op run).
+  3. In Deno Deploy logs, search the last tick for `bot album`, `bot welcome`, and so on. A line that starts with
+     `no BOT_<NAME>_EMAIL/_PASSWORD` means the env is missing: upload `bots.env` to the Deploy project env. A line that
+     starts with `bot <name> failed:` means a code error: fix the bot and add a regression test in `bots.test.ts`.
+  4. Fix the status message too: `checks` should name the stale bots (`select name from beat ...`), because "a bot
+     threw" gives no name today.
+
 - [ ] You read ding's graded production status in snitch's 4:30 report. The code is in, and production has run
       `migrate.sql`; the deploy is left.
   1. `deno task deploy`.
