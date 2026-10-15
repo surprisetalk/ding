@@ -411,10 +411,10 @@ JS.
 
 ## Share (?submit=)
 
-`GET /?submit=<url>` prefills compose from a foreign page: `<title>\n<url>` in the textarea, and up to 8 images as
-`GET /img` thumbnails that a click appends to the post. A logged-out request redirects to `/u?next=` BEFORE any fetch,
-so anonymous traffic can never make ding fetch a page. A page that cannot be read still prefills the bare link and shows
-the reason.
+`GET /?submit=<url>` prefills compose from a foreign page: `<title>\n<url>` in the textarea, up to 8 images as
+`GET /img` thumbnails that a click adds to the post, and up to 3 `#tags` in the labels input. A logged-out request
+redirects to `/u?next=` BEFORE any fetch, so anonymous traffic can never make ding fetch a page. A page that cannot be
+read still prefills the bare link and shows the reason.
 
 - **`fetchPage`** is the single foreign-page fetch (3s, `ding/1.0`, first 1 MB, linkedom): reuse it, do not add another.
   Its `images` are the `og:image`/`twitter:image` only, which is all `resolveThumbnail` needs. Readability runs in the
@@ -427,14 +427,25 @@ the reason.
   upload previews its local file (`localSrc`), because its `i.ding.bar` URL has no bytes yet.
 - `GET /img` answers with `Content-Security-Policy: sandbox` and `nosniff`, so a relayed SVG cannot run script on the
   ding origin.
+- **A thumbnail click copies the image; a post never hotlinks it.** `client.js` POSTs `url` (not `file`) to `POST /i`.
+  The server fetches it through `fetchPublic`, takes the extension from the response `content-type` (a `.png` link can
+  serve webp), draws the id itself, uploads with `noOverwrite`, and answers the `i.ding.bar` URL. On any refusal (SVG,
+  over 25 MB, a dead or private host) the client adds the original link instead. Refusals answer one generic line, and
+  the detail goes to the log, as in `GET /img`. A copy makes the server fetch up to 25 MB for a ~100-byte request, so it
+  counts against `postRate`. The button keeps the copy in `data-mirror`, so a click after × reuses it.
+- **The tagger** is one Haiku call (`claude()`, 3s, temperature 0) after Readability. It may pick only candidates: the
+  top 150 `stat_tag` tags plus the viewer's ▲'d tags, minus the ▼'d ones. Any other word in the answer is dropped and
+  logged, so prompt injection in the page can at worst pick a wrong candidate. It never picks `*org` or `@user`, because
+  those change who can read the post. A failure (no key, timeout, 529) leaves the labels to the viewer and logs
+  `tags not suggested`. `stat_tag` is materialized, so a brand-new tag is not a candidate until `refreshStats` runs.
 
-**User-chosen URLs go through `fetchPublic`** (`fetchPage` and `GET /img` both do). Before each hop, the first and every
-redirect (followed by hand, at most 5), it resolves the host and refuses unless every address is public unicast by
-`ipaddr.js` (`range() === "unicast"`): no loopback, private, link-local (cloud metadata), CGNAT, or IPv4-mapped tricks.
-Known gap: `fetch` resolves the name again, so DNS rebinding between the check and the connect gets through. Tests serve
-fixtures on 127.0.0.1 and add it to `fetchGuard.allow`; production never does. Failure text never reaches the user (the
-`?submit=` line and `/img`'s 502 are generic) because it would tell a caller which hosts and ports answer; the detail
-goes to the log.
+**User-chosen URLs go through `fetchPublic`** (`fetchPage`, `GET /img`, and the `POST /i` copy all do). Before each hop,
+the first and every redirect (followed by hand, at most 5), it resolves the host and refuses unless every address is
+public unicast by `ipaddr.js` (`range() === "unicast"`): no loopback, private, link-local (cloud metadata), CGNAT, or
+IPv4-mapped tricks. Known gap: `fetch` resolves the name again, so DNS rebinding between the check and the connect gets
+through. Tests serve fixtures on 127.0.0.1 and add it to `fetchGuard.allow`; production never does. Failure text never
+reaches the user (the `?submit=` line and `/img`'s 502 are generic) because it would tell a caller which hosts and ports
+answer; the detail goes to the log.
 
 ## Embeddable comments (/embed)
 

@@ -18,7 +18,7 @@ import Stripe from "stripe";
 import { parseHTML } from "linkedom";
 import { Readability } from "@mozilla/readability";
 import ipaddr from "ipaddr.js";
-import { type Api, R2Conflict, uploadToR2 } from "./bots.ts";
+import { type Api, claude, R2Conflict, uploadToR2 } from "./bots.ts";
 import { BOTS } from "./bots/mod.ts";
 export const r2 = { uploadToR2 };
 import { runCheckmark } from "./bots/checkmark.ts";
@@ -802,6 +802,10 @@ if (!Deno.env.get(`RESEND_API_KEY`)) {
     "RESEND_API_KEY is missing. Verification + password reset emails will fail.",
   );
 }
+
+// The LLM bots fail without it too, so the bot status condition already fails.
+if (!Deno.env.get("ANTHROPIC_API_KEY"))
+  console.warn("ANTHROPIC_API_KEY is missing. The ?submit= tagger and the LLM bots will fail.");
 
 const logEmailFailure = (where: string, email: string, err: unknown) =>
   console.error(
@@ -2050,35 +2054,76 @@ app.get("/", async (c) => {
   // Starts before the feed queries so the fetch overlaps them. It never rejects: a page that cannot be
   // read still prefills the bare link. The reason goes to the log only, because the page text would let a
   // user probe which hosts and ports answer.
-  const sharing = q.submit === undefined ? null : ((url) =>
-    fetchPage(url).then(
-      ({ title, images, document, base }) => {
-        // Readability rewrites the document it reads, and only ?submit= pays its cost: a thumbnail needs no article.
-        let inArticle: string[] = [];
-        try {
-          const article = new Readability(document as unknown as Document, { maxElemsToParse: 20_000 }).parse();
-          if (article?.content) {
-            inArticle = [...parseHTML(`<html><body>${article.content}</body></html>`).document.querySelectorAll("img")]
-              .map((img) => img.getAttribute("src") ?? "");
-          }
-        } catch (e) {
-          console.error(`share ${url}: article not read: ${e instanceof Error ? e.message : e}`);
+  const sharing = q.submit === undefined ? null : (async (url) => {
+    const why = (e: unknown) => e instanceof Error ? e.message : String(e);
+    let page;
+    try {
+      page = await fetchPage(url);
+    } catch (e) {
+      console.error(`share ${url}: ${why(e)}`);
+      return { url, title: "", images: [] as string[], tags: [] as string[], failed: true };
+    }
+    const { title, images, document, base } = page;
+    // Readability rewrites the document it reads, and only ?submit= pays its cost: a thumbnail needs no article.
+    let inArticle: string[] = [], text = "";
+    try {
+      const article = new Readability(document as unknown as Document, { maxElemsToParse: 20_000 }).parse();
+      text = article?.textContent?.replace(/\s+/g, " ").trim() ?? "";
+      if (article?.content) {
+        inArticle = [...parseHTML(`<html><body>${article.content}</body></html>`).document.querySelectorAll("img")]
+          .map((img) => img.getAttribute("src") ?? "");
+      }
+    } catch (e) {
+      console.error(`share ${url}: article not read: ${why(e)}`);
+    }
+    // Haiku picks up to 3 tags, but only from the candidates: public tags in real use plus the viewer's ▲'d ones,
+    // minus the ▼'d ones. A guess never picks a *org or an @user, because those change who can read the post.
+    // Prompt injection in the page can at worst pick a wrong candidate, and the viewer sees it before publishing.
+    let tags: string[] = [];
+    try {
+      const known = new Set(
+        (await sql<{ tag: string }[]>`
+          (select tag from stat_tag where posts_count >= 3 order by posts_count desc limit 150)
+          union select val::text from pref where uid = ${name} and kind = 'tag' and vote = 1
+          except select val::text from pref where uid = ${name} and kind = 'tag' and vote = -1
+        `).map((r) => r.tag),
+      );
+      if (known.size) {
+        const answer = await claude(
+          `title: ${title}\nsite: ${new URL(base).hostname}\ntext: ${text.slice(0, 1500)}\n\ntags: ${
+            [...known].join(" ")
+          }`,
+          {
+            system:
+              "You tag links on a small social site. Pick 1 to 3 tags from the list that fit the page. Answer with the tags separated by spaces, nothing else.",
+            maxTokens: 30,
+            temperature: 0,
+            timeoutMs: 3000,
+          },
+        );
+        const words = answer.split(/[\s,]+/).map((w) => w.replace(/^#/, "").toLowerCase()).filter(Boolean);
+        const unknown = words.filter((w) => !known.has(w));
+        if (unknown.length) {
+          console.error(
+            `share ${url}: tagger answered ${
+              JSON.stringify(unknown.join(" "))
+            }, which is not a candidate tag. dropped.`,
+          );
         }
-        // formatBody shows only URLs with an image extension as images, so any other URL would post as a bare link.
-        return {
-          url,
-          title,
-          images: pageImages([...images, ...inArticle], base).filter(isImageUrl).slice(0, 8),
-          failed: false,
-        };
-      },
-      (e) => (console.error(`share ${url}: ${e instanceof Error ? e.message : e}`), {
-        url,
-        title: "",
-        images: [] as string[],
-        failed: true,
-      }),
-    ))(shareUrl(q.submit));
+        tags = [...new Set(words.filter((w) => known.has(w)))].slice(0, 3);
+      }
+    } catch (e) {
+      console.error(`share ${url}: tags not suggested: ${why(e)}`);
+    }
+    // formatBody shows only URLs with an image extension as images, so any other URL would post as a bare link.
+    return {
+      url,
+      title,
+      images: pageImages([...images, ...inArticle], base).filter(isImageUrl).slice(0, 8),
+      tags,
+      failed: false,
+    };
+  })(shareUrl(q.submit));
   const [viewer] = name ? await sql`select orgs_r, orgs_w from usr where name = ${name}` : [{ orgs_r: [], orgs_w: [] }];
   const rT = viewer?.orgs_r || [],
     wT = viewer?.orgs_w || [];
@@ -2248,7 +2293,8 @@ app.get("/", async (c) => {
                 required
                 pattern={String.raw`.*(?:^|\s)[#*@]\S+.*`}
                 title="Add at least one #tag, *org, or @user before publishing"
-                value={decodeLabels(cur)}
+                value={[...new Set([...decodeLabels(cur).split(" "), ...(share?.tags ?? []).map((t) => `#${t}`)])]
+                  .filter(Boolean).join(" ")}
               />
               <ComposeTools />
               <button type="submit">publish</button>
@@ -3896,6 +3942,66 @@ app.post("/i", authed, async (c) => {
         e instanceof Error ? e.message : e
       }). nothing was saved; try again.`,
     });
+  }
+
+  // A ?submit= image click sends the image's URL, not its bytes, and the server copies it to R2. A post must not
+  // hotlink: a foreign link can rot, change its bytes, or log every reader. The server picks the id. The extension
+  // comes from the response content-type, not from the link, because a .png link can serve webp and i.ding.bar
+  // serves the type R2 holds. Every refusal answers one generic line and logs the detail, as GET /img does, so a
+  // caller cannot probe hosts. A copy costs the server a fetch of up to 25 MB, so it counts against postRate.
+  const src = f.get("url");
+  if (typeof src === "string") {
+    const refuse: (status: 400 | 413 | 415 | 502, detail: string) => never = (status, detail) => {
+      console.error(`/i url ${src}: ${detail}`);
+      throw new HTTPException(status, {
+        message: "could not copy that image. expected: a public jpg, png, gif, or webp under 25 MB. fix: link it.",
+      });
+    };
+    if (!URL.canParse(src) || !["http:", "https:"].includes(new URL(src).protocol))
+      refuse(400, "expected an http or https URL.");
+    if (!rateHit(postRate, c.get("name"), POST_RATE_MAX, POST_RATE_MS)) {
+      throw new HTTPException(429, {
+        message: `too many posts and image copies. expected: at most ${POST_RATE_MAX} a minute. fix: wait a minute.`,
+      });
+    }
+    const res = await fetchPublic(src, { headers: { "User-Agent": "ding/1.0" }, signal: AbortSignal.timeout(5000) })
+      .catch((e) => refuse(502, e instanceof Error ? e.message : String(e)));
+    const type = (res.headers.get("content-type") ?? "").split(";")[0].trim().toLowerCase();
+    const ext = Object.keys(MIME_BY_EXT).find((e) => MIME_BY_EXT[e] === type && type.startsWith("image/"));
+    const len = +(res.headers.get("content-length") ?? 0);
+    const got = `received: HTTP ${res.status}, ${type || "no content-type"}, ${
+      len ? `${(len / MB).toFixed(1)} MB` : "no content-length"
+    }.`;
+    if (!res.ok || !res.body) {
+      await res.body?.cancel();
+      refuse(502, `expected HTTP 200 with a body. ${got}`);
+    }
+    if (!ext) {
+      await res.body.cancel();
+      refuse(415, `expected a jpg, png, gif, or webp content-type. ${got}`);
+    }
+    if (len > MAX_UPLOAD_BYTES) {
+      await res.body.cancel();
+      refuse(413, `expected at most ${MAX_UPLOAD_BYTES / MB} MB. ${got}`);
+    }
+    const chunks: Uint8Array[] = [];
+    let size = 0;
+    try {
+      for await (const chunk of res.body) {
+        size += chunk.length;
+        if (size > MAX_UPLOAD_BYTES) refuse(413, `expected at most ${MAX_UPLOAD_BYTES / MB} MB. received: more.`);
+        chunks.push(chunk);
+      }
+    } catch (e) {
+      if (e instanceof HTTPException) throw e;
+      refuse(502, `the body stopped after ${size} bytes: ${e instanceof Error ? e.message : e}`);
+    }
+    const bytes = new Uint8Array(size);
+    chunks.reduce((at, chunk) => (bytes.set(chunk, at), at + chunk.length), 0);
+    const alpha = "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789";
+    const key = `${[...crypto.getRandomValues(new Uint8Array(8))].map((b) => alpha[b % alpha.length]).join("")}.${ext}`;
+    await r2.uploadToR2(bytes, key, type, "i/", true);
+    return c.text(`https://i.ding.bar/${key}`);
   }
 
   const id = f.get("id")?.toString() ?? "";

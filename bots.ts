@@ -1063,27 +1063,40 @@ const CLAUDE_MODEL = "claude-haiku-4-5";
 
 export async function claude(
   prompt: string,
-  opts: { system?: string; maxTokens?: number; temperature?: number } = {},
+  opts: { system?: string; maxTokens?: number; temperature?: number; timeoutMs?: number } = {},
 ): Promise<string> {
   const key = Deno.env.get("ANTHROPIC_API_KEY");
   if (!key) throw new Error("Missing ANTHROPIC_API_KEY");
-  const res = await fetch("https://api.anthropic.com/v1/messages", {
-    method: "POST",
-    headers: {
-      "x-api-key": key,
-      "anthropic-version": "2023-06-01",
-      "content-type": "application/json",
-    },
-    body: JSON.stringify({
-      model: CLAUDE_MODEL,
-      max_tokens: opts.maxTokens ?? 250,
-      temperature: opts.temperature ?? 1,
-      system: opts.system,
-      messages: [{ role: "user", content: prompt }],
-    }),
-  });
-  if (!res.ok) throw new Error(`Claude API ${res.status}: ${await res.text()}`);
-  const data = await res.json();
+  const ms = opts.timeoutMs ?? 30_000;
+  // The signal also bounds the body read, so the timeout can fire after the headers arrive.
+  let res: Response, data;
+  try {
+    res = await fetch("https://api.anthropic.com/v1/messages", {
+      signal: AbortSignal.timeout(ms),
+      method: "POST",
+      headers: {
+        "x-api-key": key,
+        "anthropic-version": "2023-06-01",
+        "content-type": "application/json",
+      },
+      body: JSON.stringify({
+        model: CLAUDE_MODEL,
+        max_tokens: opts.maxTokens ?? 250,
+        temperature: opts.temperature ?? 1,
+        system: opts.system,
+        messages: [{ role: "user", content: prompt }],
+      }),
+    });
+    data = await res.text();
+  } catch (e) {
+    throw e instanceof DOMException && e.name === "TimeoutError" ? new Error(`Claude API: no answer in ${ms}ms`) : e;
+  }
+  if (!res.ok) throw new Error(`Claude API ${res.status}: ${data}`);
+  try {
+    data = JSON.parse(data);
+  } catch {
+    throw new Error(`Claude API: expected JSON, received ${JSON.stringify(data.slice(0, 80))}`);
+  }
   const text = data?.content?.[0]?.text;
   if (!text) throw new Error(`Claude returned no text: ${JSON.stringify(data)}`);
   return text.trim();

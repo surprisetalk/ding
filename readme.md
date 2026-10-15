@@ -28,8 +28,9 @@ http POST ding.bar ...     # TODO
 
 ## share
 
-`https://ding.bar/?submit=<url>` opens compose with the page's title, the link, and its images filled in. Save this as a
-bookmark, or use the same URL in an iOS Shortcut's Open URL action:
+`https://ding.bar/?submit=<url>` opens compose with the page's title, the link, and up to 3 suggested tags filled in.
+Click an image found on the page to add a copy of it, hosted on i.ding.bar. Save this as a bookmark, or use the same URL
+in an iOS Shortcut's Open URL action:
 
 ```
 javascript:location='https://ding.bar/?submit='+encodeURIComponent(location.href)

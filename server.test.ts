@@ -2408,8 +2408,6 @@ Deno.test(
 
       // The size checks all run after the body is buffered, so a caller that skips the
       // client-side guard would otherwise make the isolate read the whole thing to refuse it.
-      // The size checks all run after the body is buffered, so a caller that skips the
-      // client-side guard would otherwise make the isolate read the whole thing to refuse it.
       // The body here fails if read, so 413 (rather than the truncated-upload 400 above) is
       // what proves the declared-length check ran first.
       await t.step("POST /i refuses an oversized declared length before reading the body", async () => {
@@ -4836,6 +4834,9 @@ Deno.test(
       if (path === "/bogus") return html(`<title>Bogus</title>`, "text/html; charset=nonsense");
       if (path === "/json") return html(`{}`, "application/json");
       if (path === "/hop") return new Response(null, { status: 302, headers: { location: "http://10.0.0.1/secret" } });
+      // A .png path that serves webp: the copy must take its extension from the bytes.
+      if (path === "/pic.png") return html(new Uint8Array([0x52, 0x49, 0x46, 0x46]), "image/webp");
+      if (path === "/x.svg") return html("<svg xmlns='http://www.w3.org/2000/svg'/>", "image/svg+xml");
       if (path === "/article") {
         return html(
           `<html><head><title>No Meta</title></head><body><article><p>${prose}</p><img src="/inside.png"><p>${prose}</p></article></body></html>`,
@@ -4864,6 +4865,16 @@ Deno.test(
     };
     const textarea = (html: string) =>
       html.match(/<textarea[^>]*name="body"[^>]*>([\s\S]*?)<\/textarea>/)?.[1].trim().replaceAll("&amp;", "&");
+    const labels = (html: string) => html.match(/name="tags"[^>]*?value="([^"]*)"/)?.[1];
+    // claude() reads globalThis.fetch and ANTHROPIC_API_KEY at call time, so the tagger never reaches the real API.
+    const tagger = { status: 200, reply: "", prompt: "" };
+    const origFetch = globalThis.fetch, origKey = Deno.env.get("ANTHROPIC_API_KEY");
+    Deno.env.set("ANTHROPIC_API_KEY", "test");
+    globalThis.fetch = ((input: RequestInfo | URL, init?: RequestInit) => {
+      if (!String(input).startsWith("https://api.anthropic.com/")) return origFetch(input, init);
+      tagger.prompt = JSON.parse(String(init?.body)).messages[0].content;
+      return Promise.resolve(new Response(JSON.stringify({ content: [{ text: tagger.reply }] }), tagger));
+    }) as typeof fetch;
     // The page shows only a generic line, so the refusal detail is checked where the operator reads it: the log.
     const logged = async (f: () => Promise<void>) => {
       const lines: string[] = [], orig = console.error;
@@ -4948,6 +4959,73 @@ Deno.test(
         assertStringIncludes(html, `src="/img?url=${encodeURIComponent(`${origin}/og.png`)}"`);
       });
 
+      await t.step("an image click copies it to i.ding.bar with the extension of its bytes, or refuses", async () => {
+        const calls: unknown[] = [], orig = r2.uploadToR2;
+        r2.uploadToR2 = (_data, key, type, prefix, noOverwrite) => (
+          calls.push({ key, type, prefix, noOverwrite }), Promise.resolve("")
+        );
+        const copy = async (url: string) => {
+          const f = new FormData();
+          f.append("url", url);
+          const res = await app.request("/i", { method: "POST", body: f, headers: { cookie } });
+          return { status: res.status, text: await res.text() };
+        };
+        try {
+          const { status, text } = await copy(`${origin}/pic.png`);
+          assertEquals(status, 200);
+          const key = text.match(/^https:\/\/i\.ding\.bar\/([A-Za-z0-9]{8}\.webp)$/)?.[1];
+          assertEquals(calls, [{ key, type: "image/webp", prefix: "i/", noOverwrite: true }]);
+          const log = await logged(async () => {
+            assertEquals((await copy(`${origin}/x.svg`)).status, 415);
+            assertEquals((await copy("http://10.0.0.1/x.png")).status, 502);
+          });
+          assertStringIncludes(log, "received: HTTP 200, image/svg+xml");
+          assertStringIncludes(log, "10.0.0.1, not a public address");
+          // A copy costs a server fetch of up to 25 MB, so it shares the per-user post rate.
+          postRate.set("jane_doe", Array(10).fill(Date.now()));
+          assertEquals((await copy(`${origin}/pic.png`)).status, 429);
+          postRate.clear();
+          assertEquals(calls.length, 1);
+        } finally {
+          r2.uploadToR2 = orig;
+        }
+      });
+
+      await t.step("the tagger prefills up to 3 known tags, merged with the link's labels", async () => {
+        await refreshStats();
+        // A guess may only name a candidate tag: never a new tag, a *org, or an @user.
+        tagger.reply = "#coding rustlang *acme @jane_doe";
+        let html = "";
+        const log = await logged(async () => void ({ html } = await share(`${origin}/page`)));
+        assertEquals(labels(html), "#coding");
+        assertStringIncludes(log, `tagger answered "rustlang *acme @jane_doe", which is not a candidate tag`);
+        assertStringIncludes(tagger.prompt, "title: Fixture Title\nsite: 127.0.0.1\ntext: Readability keeps");
+        assertStringIncludes(tagger.prompt, " coding");
+
+        tagger.reply = "humor, coding, debugging, motivation";
+        const res = await app.request(`/?submit=${encodeURIComponent(`${origin}/page`)}&tag=humor`, {
+          headers: { cookie },
+        });
+        assertEquals(labels(await res.text()), "#humor #coding #debugging");
+
+        // A ▼ takes the tag out of the candidates, so even an answer that names it lands nothing.
+        await sql`insert into pref (uid, kind, val, vote) values ('jane_doe', 'tag', 'coding', -1)`;
+        tagger.reply = "coding";
+        html = (await share(`${origin}/page`)).html;
+        assertEquals(labels(html), "");
+        assertEquals(/^tags: .*\bcoding\b/m.test(tagger.prompt), false);
+      });
+
+      await t.step("a tagger failure still fills the share and leaves the labels to the viewer", async () => {
+        tagger.status = 529;
+        let html = "";
+        const log = await logged(async () => void ({ html } = await share(`${origin}/page`)));
+        assertEquals(textarea(html), `Fixture Title\n${origin}/page`);
+        assertEquals(labels(html), "");
+        assertStringIncludes(log, "tags not suggested: Claude API 529");
+        tagger.status = 200;
+      });
+
       await t.step("a link post's thumbnail is its og:image, never an article image", async () => {
         const post = async (link: string) => {
           const f = new FormData();
@@ -5013,6 +5091,9 @@ Deno.test(
         }
       });
     } finally {
+      globalThis.fetch = origFetch;
+      if (origKey === undefined) Deno.env.delete("ANTHROPIC_API_KEY");
+      else Deno.env.set("ANTHROPIC_API_KEY", origKey);
       fetchGuard.allow.clear();
       await fixture.shutdown();
     }

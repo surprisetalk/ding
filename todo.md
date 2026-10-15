@@ -1,6 +1,19 @@
+- [ ] The `?submit=` tagger stops at a daily cap, so a share loop cannot run up the Anthropic bill.
+  1. Count tagger calls per UTC day in Postgres: one upsert per call, before the call.
+  2. Past the cap, skip the call and log `share <url>: tags not suggested: daily cap of <N> Haiku calls reached`.
+  3. A status condition grades the day's count against the cap, so the 4:30 report shows the spend.
+  4. Test: with the cap at 1, the second share makes no API call and its labels box stays empty.
+
+- [ ] (maybe) When the Haiku tagger fails or hits its cap, `?submit=` falls back to a SQL guess instead of an empty
+      labels box. Build only after the empty box shows up as a real complaint.
+  1. Candidates: `stat_tag` tags that equal a title word or a `meta[name=keywords]`/`article:tag` value, plus the top
+     tags that humans (`created_by !~ '^bot_'`) put on public root posts with the same `~domain`.
+  2. Minus your ▼'d tags. Order by domain count, then `posts_count`. Limit 3.
+  3. Weakness: no synonyms, and a title word can match a generic tag such as `#new`.
+
 - [ ] You paste a link into compose and get tag chips to click, instead of typing labels from memory.
-  1. `GET /t?url=` returns up to 6 tags: `stat_tag` rows whose tag appears in the page title (from `fetchPage`) or the
-     URL host, plus your ▲'d tags, minus your ▼'d ones (a ▼ must suppress here too, like everywhere else).
+  1. `GET /t?url=` returns up to 3 tags from the `?submit=` tagger in `GET /` (Haiku over `stat_tag` + your ▲ − your ▼).
+     Move the tagger out of the `sharing` promise into a function, now that it has a second call site.
   2. Cache by URL in an isolate-local Map with a bound (200 entries, drop oldest) — a suggestion endpoint must never
      become a per-keystroke fetch of a foreign site.
   3. `public/client.js`: on paste or blur of the textarea, if it holds a URL, fetch and render the chips into the

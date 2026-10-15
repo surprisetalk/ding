@@ -559,13 +559,15 @@ details.danger[open] > summary {
 
 .body-image {
   position: relative;
+  max-width: 100%;
 }
 
 .body-image img {
   display: block;
-  width: 96px;
-  height: 96px;
-  object-fit: cover;
+  height: 192px;
+  width: auto;
+  max-width: 100%;
+  object-fit: contain;
   border: 1px solid var(--border);
 }
 

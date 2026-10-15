@@ -150,18 +150,41 @@ document.querySelectorAll("pre").forEach((x) => {
     const kept = new Map([...row.children].map((el) => [el.dataset.url, el]));
     row.replaceChildren(...urls.map((u) => kept.get(u) || previewOf(ta, u)));
     row.hidden = !urls.length;
-    ta.form?.querySelectorAll(".share-image").forEach((b) => b.disabled = urls.includes(b.dataset.url));
+    ta.form?.querySelectorAll(".share-image:not([aria-busy])").forEach((b) =>
+      b.disabled = urls.includes(b.dataset.url) || urls.includes(b.dataset.mirror)
+    );
   };
   document.addEventListener("input", (e) => {
     if (e.target.matches?.("textarea[name=body]")) render(e.target);
   });
   allTas().forEach(render);
-  // ?submit= thumbnails: a click adds that image's URL to the post. render() disables it while it is there.
+  // ?submit= thumbnails: a click has the server copy the image to i.ding.bar and adds the copy's URL. When the
+  // copy fails (an SVG, over 25 MB, a dead host), the post links the original. data-mirror keeps the copy, so a
+  // click after × does not copy again. render() disables the button while either URL is in the post.
   document.querySelectorAll(".share-image").forEach((b) => {
     b.querySelector("img")?.addEventListener("error", () => b.remove());
-    b.addEventListener("click", () => {
+    b.addEventListener("click", async () => {
       const ta = b.closest("form")?.querySelector("textarea[name=body]");
-      if (ta) setValue(ta, ta.value + (ta.value && !ta.value.endsWith("\n") ? "\n" : "") + b.dataset.url);
+      if (!ta) return;
+      if (!b.dataset.mirror) {
+        b.disabled = true;
+        b.setAttribute("aria-busy", "true");
+        setPending(ta.form, 1);
+        const fd = new FormData();
+        fd.append("url", b.dataset.url);
+        try {
+          const r = await fetch("/i", { method: "POST", credentials: "same-origin", body: fd });
+          if (r.ok) b.dataset.mirror = (await r.text()).trim();
+          else console.warn("could not copy " + b.dataset.url + " to i.ding.bar (HTTP " + r.status + "): linking it");
+        } catch (e) {
+          console.warn("could not copy " + b.dataset.url + " to i.ding.bar (" + e + "): linking it");
+        } finally {
+          b.removeAttribute("aria-busy");
+          setPending(ta.form, -1);
+        }
+      }
+      const u = b.dataset.mirror || b.dataset.url;
+      setValue(ta, ta.value + (ta.value && !ta.value.endsWith("\n") ? "\n" : "") + u);
     });
   });
   let lastTa = null;

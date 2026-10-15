@@ -1,6 +1,7 @@
 import { assertEquals, assertRejects, assertThrows } from "@std/assert";
 import {
   type Api,
+  claude,
   decodeEntities,
   extractPubDate,
   isFresh,
@@ -354,6 +355,25 @@ const withClaude = async (reply: string, f: () => Promise<unknown>) => {
     else Deno.env.set("ANTHROPIC_API_KEY", origKey);
   }
 };
+
+Deno.test("claude: a call past its timeout names the bound", async () => {
+  const origFetch = globalThis.fetch;
+  const origKey = Deno.env.get("ANTHROPIC_API_KEY");
+  Deno.env.set("ANTHROPIC_API_KEY", "test");
+  // Never answers: rejects only when the caller's signal fires, as a stalled API does.
+  globalThis.fetch =
+    ((_input: RequestInfo | URL, init?: RequestInit) =>
+      new Promise((_, reject) =>
+        init?.signal?.addEventListener("abort", () => reject(init.signal!.reason))
+      )) as typeof fetch;
+  try {
+    await assertRejects(() => claude("hi", { timeoutMs: 20 }), Error, "Claude API: no answer in 20ms");
+  } finally {
+    globalThis.fetch = origFetch;
+    if (origKey === undefined) Deno.env.delete("ANTHROPIC_API_KEY");
+    else Deno.env.set("ANTHROPIC_API_KEY", origKey);
+  }
+});
 
 Deno.test("verdictBot: dispatches verdicts to actions", async () => {
   const { api, posts } = verdictApi({ fresh: [freshPost(1), freshPost(2)] });
