@@ -129,6 +129,7 @@ const fakeApi = (pages: unknown[][]): Api => {
   return {
     botUsername: "bot_test",
     orgsR: [],
+    users: () => Promise.resolve([]),
     feed: () => Promise.resolve(pages[i++] ?? []),
     post: () => Promise.resolve(true),
   };
@@ -187,6 +188,7 @@ const mentionApi = (opts: {
   const api: Api = {
     botUsername: "bot_test",
     orgsR: [],
+    users: () => Promise.resolve([]),
     // The real `/c` treats `comments=1` as comments INSTEAD OF roots, so the harness must
     // issue both queries; serving mentions from only the root call proves it does.
     feed: (q) =>
@@ -317,6 +319,7 @@ const verdictApi = (opts: {
   const api: Api = {
     botUsername: "bot_test",
     orgsR: [],
+    users: () => Promise.resolve([]),
     feed: (q) =>
       Promise.resolve(
         q.reactionsOnly ? (opts.reacted ?? []) : q.usrs?.length || q.commentsOnly ? [] : opts.fresh,
@@ -502,6 +505,7 @@ const scanApi = (fresh: Partial<Post>[]) => {
   const api: Api = {
     botUsername: "bot_test",
     orgsR: [],
+    users: () => Promise.resolve([]),
     // The answered walk (usr + comments=1) returns nothing; everything else is the fresh feed.
     feed: (q) => Promise.resolve(q.usrs?.length ? [] : fresh),
     post: (body, o) => {

@@ -52,8 +52,10 @@ export const parseLabels = (input: string): Labels => {
   const labels: Labels = { tag: [], org: [], usr: [], www: [], text: "" };
   input.split(/\s+/).filter(Boolean).forEach((t) => {
     const k = PFX[t[0]];
-    if (k) (labels[k] as string[]).push(k === "usr" ? t.slice(1) : t.slice(1).toLowerCase());
-    else labels.text = labels.text ? labels.text + " " + t : t;
+    // Sigils alone ("#", "*", "##") name nothing: they must not become a label. "#c#" names c#.
+    if (k) {
+      if (/[^#*@~]/.test(t.slice(1))) (labels[k] as string[]).push(k === "usr" ? t.slice(1) : t.slice(1).toLowerCase());
+    } else { labels.text = labels.text ? labels.text + " " + t : t; }
   });
   return labels;
 };

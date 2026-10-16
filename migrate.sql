@@ -249,5 +249,41 @@ commit;
 -- Run this BEFORE deploying: the crons and runBotFleet write beat.
 create table if not exists beat (name text primary key, at timestamptz not null);
 
+-- A spend row counts the paid calls a named feature made on one UTC day, e.g. ('2026-10-16', 'tagger', 37).
+create table if not exists spend (day date not null, name text not null, n int not null, primary key (day, name));
+
 -- Additive and instant (constant default). Old code never reads it.
 alter table usr add column if not exists pref_weight real not null default 1 check (pref_weight between 0 and 2);
+
+-- A reply in a DM thread names every author above it in usrs, or visibleTo hides it from the people it answers.
+-- createPost does this for new replies, level by level; this fixes the old ones. `want` walks down from each DM root:
+-- the parent's want, plus the reply's own usrs, plus the parent's author. Idempotent: it only adds missing names.
+with recursive t (cid, author, want) as (
+  select cid, created_by::text, usrs from com where parent_cid is null and usrs <> '{}'
+  union all
+  select r.cid, r.created_by::text, array(select distinct x from unnest(t.want || r.usrs || t.author) x where x is not null)
+  from com r join t on r.parent_cid = t.cid
+)
+update com c set usrs = c.usrs || array(select x from unnest(t.want) x where not (x = any(c.usrs)))
+from t
+where c.cid = t.cid and c.parent_cid is not null and not (c.usrs @> t.want);
+
+-- A user's reaction counts once per post. Concurrent clicks left duplicate reaction rows (4 in prod on 2026-10-16, none
+-- with children): delete all but the oldest, recount c_reactions and the score of each parent touched, then add the
+-- unique index that stops new twins. Idempotent: a rerun finds no duplicates, and the index has `if not exists`.
+begin;
+create temp table reaction_twin on commit drop as
+  select d.cid, d.parent_cid from com d join com k
+    on char_length(k.body) = 1 and k.parent_cid = d.parent_cid and k.created_by = d.created_by and k.body = d.body
+      and k.cid < d.cid
+  where char_length(d.body) = 1;
+delete from com where cid in (select cid from reaction_twin);
+update com p set c_reactions = coalesce(
+  (select hstore(array_agg(r.body), array_agg(r.n::text))
+     from (select body, count(*) n from com where parent_cid = p.cid and char_length(body) = 1 group by body) r),
+  ''::hstore)
+where p.cid in (select parent_cid from reaction_twin);
+select refresh_score(array(select distinct parent_cid from reaction_twin));
+commit;
+create unique index concurrently if not exists com_reaction_once on com (parent_cid, created_by, body)
+  where char_length(body) = 1;

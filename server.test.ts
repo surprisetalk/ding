@@ -16,7 +16,17 @@ import {
   verifyRow,
 } from "./dht.ts";
 import { backfill } from "./backfill.ts";
-import { directImageUrl, getPostedUrls, imageMentionBot, post, R2Conflict, reply, unansweredMentions } from "./bots.ts";
+import {
+  directImageUrl,
+  extractArticle,
+  fetchGuard,
+  getPostedUrls,
+  imageMentionBot,
+  post,
+  R2Conflict,
+  reply,
+  unansweredMentions,
+} from "./bots.ts";
 import cowsayBot from "./bots/cowsay.ts";
 import { BOTS } from "./bots/mod.ts";
 import { jsx } from "@hono/hono/jsx";
@@ -41,7 +51,6 @@ import app, {
   extractDomains,
   extractImageUrl,
   extractLinks,
-  fetchGuard,
   formatBody,
   formatLabels,
   gradeAll,
@@ -63,6 +72,7 @@ import app, {
   setSql,
   signupRate,
   stripe,
+  taggerCap,
   verified,
 } from "./server.tsx";
 
@@ -1038,6 +1048,139 @@ Deno.test(
       assertEquals("orgs_r" in body, false);
       assertEquals("orgs_w" in body, false);
     });
+
+    await t.step(
+      "write API: POST /c, react, POST /p and GET /n answer JSON over Basic Auth; bad credentials answer 401 JSON",
+      async () => {
+        const auth = basic("john@example.com", "password1!"), bad = basic("john@example.com", "wrong!");
+        const post = (path: string, o: Record<string, string>, headers: Record<string, string>) => {
+          const body = new FormData();
+          for (const [k, v] of Object.entries(o)) body.append(k, v);
+          return app.request(`http://api.ding.bar${path}`, { method: "POST", body, headers });
+        };
+
+        for (
+          const [path, o] of [["/c", { body: "hi", tags: "#misc" }], ["/p", { label: "#humor", vote: "1" }]] as const
+        ) {
+          for (const headers of [{}, bad]) {
+            const res = await post(path, o, headers);
+            assertEquals(res.status, 401, `POST ${path}`);
+            assertStringIncludes(res.headers.get("www-authenticate") ?? "", "Basic");
+            assertStringIncludes((await res.json()).error, "Basic Auth");
+          }
+        }
+        for (const headers of [{}, bad]) {
+          const res = await app.request("http://api.ding.bar/n", { headers });
+          assertEquals(res.status, 401);
+          // The JSON body must not drop basicAuth's challenge.
+          assertStringIncludes(res.headers.get("www-authenticate") ?? "", "Basic");
+          assertStringIncludes((await res.json()).error, "Basic Auth");
+        }
+
+        const created = await post("/c", { body: "write api post", tags: "#misc" }, auth);
+        assertEquals(created.status, 201);
+        const [row] = await created.json();
+        assertEquals(row.body, "write api post");
+        const cid = row.cid;
+
+        const other = basic("jane@example.com", "password1!");
+        const reacted = await post(`/c/${cid}`, { body: "▲" }, other);
+        assertEquals(reacted.status, 201);
+        const unreacted = await post(`/c/${cid}`, { body: "▲" }, other);
+        assertEquals(unreacted.status, 200);
+        assertEquals(await unreacted.json(), { kind: "unreacted", parent_cid: cid });
+
+        // A double-click counts once: concurrent reactions by one user store one row (com_reaction_once).
+        postRate.clear();
+        await Promise.all(
+          Array.from(
+            { length: 4 },
+            () => Promise.resolve(post(`/c/${cid}`, { body: "🔥" }, other)).then((r) => r.body?.cancel()),
+          ),
+        );
+        const [fire] = await sql`
+          select count(*)::int as n, (select c_reactions->'🔥' from com where cid = ${cid}) as counted
+          from com where parent_cid = ${cid} and body = '🔥'`;
+        assertEquals([fire.n, fire.counted], [1, "1"]);
+
+        const own = await post(`/c/${cid}`, { body: "▲" }, auth);
+        assertEquals(own.status, 400);
+        assertEquals(await own.json(), { error: "you cannot react to your own post." });
+
+        const long = await post("/c", { body: "x".repeat(100_000), tags: "#misc" }, auth);
+        assertEquals(long.status, 400);
+        assertEquals(typeof (await long.json()).error, "string");
+
+        const voted = await post("/p", { label: "#humor", vote: "1" }, auth);
+        assertEquals(voted.status, 200);
+        assertEquals(await voted.json(), { label: "#humor", vote: 1, ups: 1 });
+        const cleared = await post("/p", { label: "#humor", vote: "1" }, auth);
+        assertEquals(await cleared.json(), { label: "#humor", vote: null, ups: 0 });
+
+        // Bad input answers a 4xx that names it, never a 500.
+        const json = await app.request("http://api.ding.bar/c", {
+          method: "POST",
+          body: JSON.stringify({ body: "hi", tags: "#misc" }),
+          headers: { ...auth, "content-type": "application/json" },
+        });
+        assertEquals(json.status, 400);
+        assertStringIncludes((await json.json()).error, "expected a form body");
+        for (
+          const [path, o, status] of [
+            ["/c", { body: "   ", tags: "#misc" }, 400],
+            ["/c", { body: "\u200B", tags: "#misc" }, 400],
+            ["/c", { body: "nul\0byte", tags: "#misc" }, 400],
+            ["/c/abc", { body: "re" }, 404],
+            ["/c/%20" + cid, { body: "re" }, 404],
+          ] as const
+        ) {
+          const res = await post(path, o, auth);
+          assertEquals(res.status, status, `POST ${path} ${JSON.stringify(o)}`);
+          assertEquals(typeof (await res.json()).error, "string");
+        }
+        // RFC 7235: the scheme name is case-insensitive.
+        const lower = await post("/c", { body: "lowercase scheme", tags: "#misc" }, {
+          authorization: auth.Authorization.replace("Basic", "basic"),
+        });
+        assertEquals(lower.status, 201);
+        await lower.body?.cancel();
+
+        // A reply in a DM reaches the DM's sender, and two concurrent flags by one user count once.
+        const [dm] = await (await post("/c", { body: "just for jane", tags: "@jane_doe" }, auth)).json();
+        assertEquals((await post(`/c/${dm.cid}`, { body: "jane answers" }, other)).status, 201);
+        const [thread] = await (await app.request(`http://api.ding.bar/c/${dm.cid}`, { headers: auth })).json();
+        assertEquals(thread.child_comments.map((c: { body: string }) => c.body), ["jane answers"]);
+        await Promise.all(Array.from({ length: 4 }, () => post(`/c/${dm.cid}`, { body: "flag" }, other)));
+        const [flags] = await sql`select c_flags, flaggers from com where cid = ${dm.cid}`;
+        assertEquals([flags.c_flags, flags.flaggers], [1, ["jane_doe"]]);
+
+        // A body @mention notifies; a DM to someone else that mentions you does not, because you cannot read it.
+        postRate.clear();
+        for (const [body, tags] of [["hey @john_doe", "#misc"], ["psst about @john_doe", "@bob_smith"]]) {
+          const res = await post("/c", { body, tags }, other);
+          assertEquals(res.status, 201, body);
+          await res.body?.cancel();
+        }
+        const n = await app.request("http://api.ding.bar/n", { headers: auth });
+        assertEquals(n.status, 200);
+        const items: { body: string; kind: string }[] = await n.json();
+        assertEquals(items.map((i) => [i.body, i.kind]), [["hey @john_doe", "mention"], ["jane answers", "reply"], [
+          "🔥",
+          "reply",
+        ]]);
+
+        // Credentials are UTF-8 on every route, as hono's basicAuth reads them.
+        await sql`update usr set password = 'hashed:pässwörd' where name = 'jane_doe'`;
+        const utf8 = {
+          Authorization: "Basic " +
+            btoa(String.fromCharCode(...new TextEncoder().encode("jane@example.com:pässwörd"))),
+        };
+        postRate.clear();
+        const res = await post("/c", { body: "non-ascii password", tags: "#misc" }, utf8);
+        assertEquals(res.status, 201);
+        await res.body?.cancel();
+      },
+    );
   }),
 );
 
@@ -1298,11 +1441,16 @@ Deno.test(
       assertEquals(row.thumb, null);
     });
 
-    await t.step("POST /c root 400 with helpful message when no tag and no recipient", async () => {
-      const res = await app.request("/c", { method: "POST", body: fd({ body: "no tag", tags: "" }), headers: jAuth });
+    await t.step("POST /c root 400 with helpful message when no tag and no recipient (api caller)", async () => {
+      const res = await app.request("/c", {
+        method: "POST",
+        body: fd({ body: "no tag", tags: "" }),
+        headers: { ...jAuth, accept: "application/json" },
+      });
       assertEquals(res.status, 400);
       const body = await res.text();
-      assertStringIncludes(body, "#tag, *org, or @user");
+      assertStringIncludes(body, "This post has no #tag or @user");
+      assertStringIncludes(body, "an *org post needs a #tag too");
     });
 
     await t.step("POST /c over 4096 characters answers 400 with the count, not a database 500", async () => {
@@ -3660,7 +3808,7 @@ Deno.test(
 // because a Deno Deploy isolate cannot fetch its own origin.
 Deno.test(
   "bot fleet direct transport (feedPosts/createPost)",
-  pgtest(() => async (t) => {
+  pgtest((sql) => async (t) => {
     Deno.env.set("BOT_JOHN_EMAIL", "john@example.com");
     Deno.env.set("BOT_JOHN_PASSWORD", "password1!");
     const api = (await botApi("JOHN"))!;
@@ -3689,6 +3837,28 @@ Deno.test(
 
     await t.step("a missing credential is a skip, not a throw", async () => {
       assertEquals(await botApi("NOSUCHBOT"), null);
+    });
+
+    // welcome reads the verified-user list, which is not a /c path: it used to throw
+    // "bot api: unsupported path" on every tick.
+    await t.step("welcome greets a fresh signup through api.users", async () => {
+      await sql`insert into usr (name, email, password, bio, email_verified_at, invited_by)
+        values ('fresh_face', 'fresh@example.com', 'x', 'hi', now(), 'john_doe')`;
+      await BOTS["welcome"](api);
+      const rows = await sql`select body from com where created_by = 'john_doe' and body = 'welcome @fresh_face!'`;
+      assertEquals(rows.length, 1);
+    });
+
+    // A run where every welcome bounced used to return normally, so the fleet beat it as finished.
+    await t.step("welcome throws when every welcome bounces", async () => {
+      await sql`insert into usr (name, email, password, bio, email_verified_at, invited_by)
+        values ('late_face', 'late@example.com', 'x', 'hi', now(), 'john_doe')`;
+      postRate.set("john_doe", Array(10).fill(Date.now()));
+      try {
+        await assertRejects(() => Promise.resolve(BOTS["welcome"](api)), Error, "1 welcomes attempted, none landed");
+      } finally {
+        postRate.clear();
+      }
     });
 
     // The mocked bots.test.ts harness can't see this: only the real `/c` knows that
@@ -4209,6 +4379,20 @@ Deno.test(
         assertEquals((await sql`select cid from com where created_by = 'bot_pixel'`).length, 0);
       });
 
+      // A user chooses the image URL, so a post must not aim the bot at cloud metadata or the LAN.
+      await t.step("a mention whose image is a private address is refused before any fetch", async () => {
+        await reset();
+        await summon("http://169.254.169.254/x.png");
+        let err: Error | null = null;
+        const seen = await withImageFetch(png, async () => {
+          await imageMentionBot(pixApi, { transform: () => Promise.resolve("x") }).catch((e) => err = e);
+        });
+        assertExists(err, "imageMentionBot fetched a private address");
+        assertStringIncludes((err as Error).message, "not a public address");
+        assertEquals(seen, []);
+        assertEquals((await sql`select cid from com where created_by = 'bot_pixel'`).length, 0);
+      });
+
       // One unreachable image must not abort the mentions behind it.
       await t.step("one bad image does not block the rest of the run", async () => {
         await reset();
@@ -4669,6 +4853,7 @@ Deno.test(
       "The anonymous frontpage renders in 300ms.",
       "The dht ingested a row in the past 24h.",
       "Postgres uses under 80% of Neon's 0.5 GB free-tier storage.",
+      "The ?submit= tagger used under 80% of its daily cap of 200 Haiku calls.",
       "DNS lookups answer, so ding can fetch link previews and /img.",
     ];
     const get = async () => {
@@ -4686,6 +4871,14 @@ Deno.test(
       assertEquals(res.headers.get("cache-control"), "no-store");
       assertEquals(Object.keys(body), SENTENCES);
       for (const v of Object.values(body)) assertEquals(Object.keys(v), ["0"]);
+    });
+
+    await t.step("the tagger cap grades today's spend row", async () => {
+      await sql`delete from spend`;
+      assertEquals((await grades())[SENTENCES[SENTENCES.length - 2]], 160);
+      await sql`insert into spend (day, name, n) values ((now() at time zone 'utc')::date, 'tagger', 320)`;
+      assertEquals((await grades())[SENTENCES[SENTENCES.length - 2]], 0.5);
+      await sql`delete from spend`;
     });
 
     await t.step("bot_* posters do not count as humans; botany does", async () => {
@@ -4723,6 +4916,22 @@ Deno.test(
         [],
       );
       assertEquals(res.status, 200);
+    });
+
+    await t.step("a stale bot is named in the log when the grade drops", async () => {
+      await sql`delete from beat where name = 'bot:welcome'`;
+      const logged: string[] = [];
+      const orig = console.error;
+      console.error = (...a: unknown[]) => void logged.push(a.join(" "));
+      try {
+        const g = (await grades())[SENTENCES[4]];
+        assertEquals(g < 1, true);
+      } finally {
+        console.error = orig;
+      }
+      const line = logged.find((l) => l.includes("finish a run"));
+      assertEquals(line?.includes("welcome"), true, `no stale-bot log line naming welcome: ${logged.join("|")}`);
+      await beat("bot:welcome");
     });
 
     await t.step("runBotFleet beats only bots that finished", async () => {
@@ -4804,7 +5013,7 @@ Deno.test(
       const dns = Deno.resolveDns;
       Deno.resolveDns = (() => Promise.reject(new Error("resolver unreachable"))) as typeof Deno.resolveDns;
       try {
-        assertEquals((await get()).body[SENTENCES[9]]["0"], 0);
+        assertEquals((await get()).body[SENTENCES[10]]["0"], 0);
       } finally {
         Deno.resolveDns = dns;
       }
@@ -4834,6 +5043,8 @@ Deno.test(
       if (path === "/bogus") return html(`<title>Bogus</title>`, "text/html; charset=nonsense");
       if (path === "/json") return html(`{}`, "application/json");
       if (path === "/hop") return new Response(null, { status: 302, headers: { location: "http://10.0.0.1/secret" } });
+      // Only 301/302/303/307/308 redirect; a 304 that names a Location is an answer, not a hop.
+      if (path === "/304") return new Response(null, { status: 304, headers: { location: "/304" } });
       // A .png path that serves webp: the copy must take its extension from the bytes.
       if (path === "/pic.png") return html(new Uint8Array([0x52, 0x49, 0x46, 0x46]), "image/webp");
       if (path === "/x.svg") return html("<svg xmlns='http://www.w3.org/2000/svg'/>", "image/svg+xml");
@@ -4941,6 +5152,18 @@ Deno.test(
         assertStringIncludes(log, "10.0.0.1, not a public address");
       });
 
+      await t.step("extractArticle refuses a private address, at the first hop and at a redirect", async () => {
+        await assertRejects(() => extractArticle("http://169.254.169.254/latest"), Error, "not a public address");
+        await assertRejects(() => extractArticle(`${origin}/hop`), Error, "10.0.0.1, not a public address");
+      });
+
+      await t.step("a 304 with a Location is not followed", async () => {
+        const log = await logged(async () => {
+          assertStringIncludes((await share(`${origin}/304`)).html, "could not read the page");
+        });
+        assertStringIncludes(log, "HTTP 304");
+      });
+
       await t.step("an IPv4-compatible IPv6 literal is refused", async () => {
         const log = await logged(async () => {
           const { html } = await share("http://[::127.0.0.1]/");
@@ -4991,6 +5214,74 @@ Deno.test(
         }
       });
 
+      await t.step("a labelless root post comes back as compose with suggested tags and a note", async () => {
+        await refreshStats();
+        const note =
+          "a post needs at least one #tag or @user (an *org post needs a #tag too). check the labels, then publish.";
+        const post = (
+          text: string,
+          extra: Record<string, string> = {},
+          headers: Record<string, string> = { cookie },
+        ) => {
+          const f = new FormData();
+          f.append("body", text);
+          f.append("tags", "");
+          for (const [k, v] of Object.entries(extra)) f.set(k, v);
+          return app.request("/c", { method: "POST", body: f, headers });
+        };
+        tagger.reply = "coding";
+        // A form body carries CRLF line breaks, as a browser sends them.
+        const text = `Worth a read & more\r\n${origin}/page`;
+        const res = await post(text);
+        // Compose comes straight back from the POST: the text never travels in a URL.
+        assertEquals([res.status, res.headers.get("location")], [200, null]);
+        const html = await res.text();
+        assertEquals(textarea(html), text);
+        assertEquals(labels(html), "#coding");
+        assertStringIncludes(html, note);
+        assertEquals(html.includes("could not read the page"), false);
+        assertEquals(/name="tags"[^>]*\brequired\b/.test(html), false);
+
+        // No URL: the note, and the labels as typed. An *org alone is not enough, and it stays in the labels.
+        const plain = await (await post("just words", { tags: "*acme rust" })).text();
+        assertEquals(textarea(plain), "just words");
+        assertEquals(labels(plain), "*acme rust");
+        assertStringIncludes(plain, note);
+        // Sigils alone name nothing. The URL in "(see URL)." is the page, not "URL).".
+        for (const tags of ["#", "## @@"]) assertStringIncludes(await (await post("hello", { tags })).text(), note);
+        assertEquals(labels(await (await post(`see (${origin}/page).`)).text()), "#coding");
+        assertEquals((await post("a".repeat(4096))).status, 200);
+
+        // A label, a too-long body, an api caller, or a script with Basic Auth goes to createPost.
+        const labelled = await post("hello", { tags: "#coding" });
+        assertEquals(labelled.status, 302);
+        await labelled.body?.cancel();
+        const huge = await post("x".repeat(4000) + "é".repeat(100));
+        assertEquals(huge.status, 400);
+        assertStringIncludes(await huge.text(), "too long");
+        for (const headers of [{ cookie, accept: "application/json" }, basic("jane@example.com", "password1!")]) {
+          const refused = await post(text, { tags: "*acme" }, headers);
+          assertEquals(refused.status, 400);
+          assertStringIncludes(await refused.text(), "no #tag or @user");
+        }
+
+        // A NUL never echoes back into HTML, and a draft counts against postRate: it can fetch a page and call Haiku.
+        const nul = await post("a\0b");
+        assertEquals(nul.status, 400);
+        await nul.body?.cancel();
+        postRate.set("jane_doe", Array(10).fill(Date.now()));
+        try {
+          const limited = await post("one more draft");
+          assertEquals(limited.status, 429);
+          await limited.body?.cancel();
+        } finally {
+          postRate.clear();
+        }
+
+        const anon = await post(text, {}, {});
+        assertEquals(anon.headers.get("location"), `/u?next=${encodeURIComponent("/")}`);
+      });
+
       await t.step("the tagger prefills up to 3 known tags, merged with the link's labels", async () => {
         await refreshStats();
         // A guess may only name a candidate tag: never a new tag, a *org, or an @user.
@@ -5024,6 +5315,30 @@ Deno.test(
         assertEquals(labels(html), "");
         assertStringIncludes(log, "tags not suggested: Claude API 529");
         tagger.status = 200;
+      });
+
+      await t.step("past the daily cap the tagger makes no API call and leaves the labels empty", async () => {
+        const calls = { n: 0 }, f = globalThis.fetch;
+        globalThis.fetch = ((i: RequestInfo | URL, init?: RequestInit) => {
+          if (String(i).startsWith("https://api.anthropic.com/")) calls.n++;
+          return f(i, init);
+        }) as typeof fetch;
+        taggerCap.perDay = 1;
+        try {
+          await sql`delete from spend`;
+          tagger.reply = "humor";
+          assertEquals(labels((await share(`${origin}/page`)).html), "#humor");
+          assertEquals(calls.n, 1);
+          let html = "";
+          const log = await logged(async () => void ({ html } = await share(`${origin}/page`)));
+          assertEquals(calls.n, 1);
+          assertEquals(labels(html), "");
+          assertStringIncludes(log, "tags not suggested: daily cap of 1 Haiku calls reached");
+        } finally {
+          taggerCap.perDay = 200;
+          globalThis.fetch = f;
+          await sql`delete from spend`;
+        }
       });
 
       await t.step("a link post's thumbnail is its og:image, never an article image", async () => {

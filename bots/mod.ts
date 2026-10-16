@@ -4,7 +4,6 @@ import bot_8ball from "./8ball.ts";
 import album from "./album.ts";
 import aquarium from "./aquarium.ts";
 import arxiv from "./arxiv.ts";
-import bestof from "./bestof.ts";
 import { personas } from "./personas.ts";
 import blogs from "./blogs.ts";
 import bubbles from "./bubbles.ts";
@@ -52,7 +51,6 @@ export const BOTS: Record<string, (api: Api) => void | Promise<void>> = {
   album,
   aquarium,
   arxiv,
-  bestof,
   blogs,
   bubbles,
   clipart,

@@ -1,9 +1,9 @@
-import { type Api, getJson, isFresh, MAX_AGE_MS, paginate, post } from "../bots.ts";
+import { type Api, isFresh, MAX_AGE_MS, paginate, post } from "../bots.ts";
 
 const MAX_PER_RUN = 10;
 
 export default async (api: Api) => {
-  const users = await getJson<{ name: string; created_at: string }[]>(api, `/us?limit=500`);
+  const users = await api.users(500);
   const fresh = users.filter((u) => u.name.toLowerCase() !== api.botUsername.toLowerCase() && isFresh(u.created_at));
   if (!fresh.length) {
     console.log("No users in last 4h");
@@ -24,8 +24,12 @@ export default async (api: Api) => {
   console.log(`Found ${todo.length} new users to welcome (${fresh.length} fresh, ${welcomed.size} already welcomed)`);
   if (todo.length === MAX_PER_RUN) console.warn(`Hit MAX_PER_RUN=${MAX_PER_RUN}; signup spike?`);
 
+  let landed = 0;
   for (const u of todo) {
     const ok = await post(api, `welcome @${u.name}!`, `#welcome #bot`);
+    if (ok) landed++;
     console.log(`${ok ? "welcomed" : "FAILED"} @${u.name}`);
   }
+  // A run where every welcome bounced must not beat as finished.
+  if (todo.length && !landed) throw new Error(`welcome: ${todo.length} welcomes attempted, none landed`);
 };

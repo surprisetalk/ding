@@ -23,14 +23,17 @@ http ding.bar/u            # all users
 http ding.bar/u/123        # user profile
 http ding.bar/u?q=lisp     # search users
 
-http POST ding.bar ...     # TODO
+http -a you@x.org:pw -f POST api.ding.bar/c body=hi tags='#misc'
+http -a you@x.org:pw -f POST api.ding.bar/c/45 body=▲
+http -a you@x.org:pw -f POST api.ding.bar/p label='#humor' vote=1
+http -a you@x.org:pw api.ding.bar/n
 ```
 
 ## share
 
 `https://ding.bar/?submit=<url>` opens compose with the page's title, the link, and up to 3 suggested tags filled in.
-Click an image found on the page to add a copy of it, hosted on i.ding.bar. Save this as a bookmark, or use the same URL
-in an iOS Shortcut's Open URL action:
+Publishing with no labels brings the text back to compose with suggested tags. Click an image found on the page to add a
+copy of it, hosted on i.ding.bar. Save this as a bookmark, or use the same URL in an iOS Shortcut's Open URL action:
 
 ```
 javascript:location='https://ding.bar/?submit='+encodeURIComponent(location.href)

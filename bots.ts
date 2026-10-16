@@ -2,6 +2,75 @@
 
 import { parseHTML } from "linkedom";
 import { Readability } from "@mozilla/readability";
+import ipaddr from "ipaddr.js";
+
+// ---- Public fetch ----
+
+// Tests serve their fixture pages on 127.0.0.1, so they add it here. Production code never does.
+export const fetchGuard = { allow: new Set<string>() };
+
+const MAX_HOPS = 5;
+
+// fetch() for a URL a user chose. Every hop, the first and each redirect, must resolve only to public unicast
+// addresses: no loopback, private, link-local (cloud metadata), or other special ranges. Known gap: fetch resolves
+// the name again, so a DNS answer that changes between this check and the connect (DNS rebinding) gets through.
+export const fetchPublic = async (url: string, init: { headers: Record<string, string>; signal: AbortSignal }) => {
+  let next = new URL(url);
+  for (let hop = 0; hop <= MAX_HOPS; hop++) {
+    if (next.protocol !== "http:" && next.protocol !== "https:")
+      throw new Error(`refused ${next.href}: only http and https`);
+    const host = next.hostname.replace(/^\[|\]$/g, "");
+    const ips = ipaddr.isValid(host) ? [host] : (await Promise.all(
+      (["A", "AAAA"] as const).map((type) =>
+        Deno.resolveDns(host, type, { signal: init.signal }).catch((e) => {
+          if (e instanceof Deno.errors.NotFound) return [];
+          throw e;
+        })
+      ),
+    )).flat();
+    if (!ips.length) throw new Error(`refused ${next.href}: ${host} has no A or AAAA record`);
+    // ipaddr.js calls ::a.b.c.d (IPv4-compatible, inside ::/8) "unicast", so the IANA-reserved ::/8 is matched apart.
+    const bad = ips.find((ip) => {
+      if (fetchGuard.allow.has(ip)) return false;
+      const addr = ipaddr.process(ip);
+      return addr.range() !== "unicast" || (addr.kind() === "ipv6" && addr.match(ipaddr.IPv6.parseCIDR("::/8")));
+    });
+    if (bad) throw new Error(`refused ${next.href}: ${host} is ${bad}, not a public address`);
+    const res = await fetch(next, { ...init, redirect: "manual" });
+    const location = res.headers.get("location");
+    // A 304 or 300 can carry a Location too, but only these five are redirects (fetch spec).
+    if (![301, 302, 303, 307, 308].includes(res.status) || !location) return res;
+    await res.body?.cancel();
+    if (!URL.canParse(location, next))
+      throw new Error(`refused ${next.href}: its redirect Location ${JSON.stringify(location)} is not a URL`);
+    next = new URL(location, next);
+  }
+  throw new Error(`refused ${url}: more than ${MAX_HOPS} redirects`);
+};
+
+// The first `max` bytes of a body. A host that a user chose can stream forever, so every such read is bounded.
+// `whole` is false when the body ran past `max`; the rest is cancelled, never read.
+export const readCapped = async (body: ReadableStream<Uint8Array>, max: number) => {
+  const chunks: Uint8Array[] = [];
+  let size = 0, whole = true;
+  try {
+    for await (const chunk of body) {
+      if (size + chunk.length > max) {
+        chunks.push(chunk.subarray(0, max - size));
+        size = max;
+        whole = false;
+        break;
+      }
+      chunks.push(chunk);
+      size += chunk.length;
+    }
+  } catch (e) {
+    throw new Error(`the body stopped after ${size} bytes: ${e instanceof Error ? e.message : e}`);
+  }
+  const bytes = new Uint8Array(size);
+  chunks.reduce((at, chunk) => (bytes.set(chunk, at), at + chunk.length), 0);
+  return { bytes, whole };
+};
 
 // ---- Bot init ----
 
@@ -19,6 +88,7 @@ export type Api = {
   // Typed as a structural contract so bots.ts never imports server.tsx (that would be a
   // cycle: server.tsx -> bots/mod.ts -> bots/*.ts -> bots.ts).
   feed: (q: BotFeedQuery) => Promise<unknown[]>;
+  users: (limit: number) => Promise<{ name: string; created_at: string }[]>;
   post: (body: string, opts: { parentCid?: number | null; labels?: string }) => Promise<boolean>;
 };
 
@@ -459,14 +529,17 @@ export function isLinkPost(body: string, threshold = 140): boolean {
 export async function extractArticle(
   url: string,
 ): Promise<{ title: string; text: string } | null> {
-  const res = await fetch(url, {
+  const res = await fetchPublic(url, {
     headers: { "user-agent": "Mozilla/5.0 ding-reader" },
-    redirect: "follow",
+    signal: AbortSignal.timeout(10_000),
   });
-  if (!res.ok) return null;
   const ct = res.headers.get("content-type") || "";
-  if (!ct.includes("html")) return null;
-  const html = await res.text();
+  if (!res.ok || !ct.includes("html") || !res.body) {
+    await res.body?.cancel();
+    throw new Error(`expected HTTP 200 with an HTML body, received HTTP ${res.status} ${ct || "with no content-type"}`);
+  }
+  // Like fetchPage: the first 1 MB holds the article, and the rest of a page could fill the isolate's memory.
+  const html = new TextDecoder().decode((await readCapped(res.body, 1_000_000)).bytes);
   const doc = parseHTML(html).document as unknown as Document;
   const article = new Readability(doc).parse();
   if (!article?.content) return null;
@@ -1003,9 +1076,18 @@ export async function imageMentionBot(api: Api, opts: {
     const src = directImageUrl(imageUrl);
     console.log(`cid=${post.cid}: processing ${src}`);
     try {
-      const imgRes = await fetch(src);
-      if (!imgRes.ok) throw new Error(`HTTP ${imgRes.status}`);
-      const out = await opts.transform(new Uint8Array(await imgRes.arrayBuffer()), post);
+      const imgRes = await fetchPublic(src, {
+        headers: { "User-Agent": "ding/1.0" },
+        signal: AbortSignal.timeout(15_000),
+      });
+      if (!imgRes.ok || !imgRes.body) {
+        await imgRes.body?.cancel();
+        throw new Error(`HTTP ${imgRes.status}`);
+      }
+      // POST /i takes at most 25 MB, so every image hosted on ding fits.
+      const img = await readCapped(imgRes.body, 25 * 1024 * 1024);
+      if (!img.whole) throw new Error("expected an image of at most 25 MB, received more");
+      const out = await opts.transform(img.bytes, post);
       let body: string;
       if (typeof out === "string") body = out;
       else {

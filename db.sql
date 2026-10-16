@@ -90,6 +90,9 @@ create index com_mentions_idx on com using gin (mentions);
 create index com_links_idx on com using gin (links);
 -- (parent_cid, created_at desc) also serves plain parent_cid lookups, so no separate index.
 create index com_parent_created_idx on com (parent_cid, created_at desc);
+-- A user's reaction counts once per post. createPost checks for the row before it inserts, so without this two
+-- concurrent clicks both pass the check and both insert.
+create unique index com_reaction_once on com (parent_cid, created_by, body) where char_length(body) = 1;
 create index com_by_created_idx on com (created_by, created_at desc);
 create index com_created_at_idx on com (created_at desc);
 create index com_score_idx on com (score desc);
@@ -256,3 +259,6 @@ $$;
 
 -- A beat row is the last time a named event happened (a cron tick, a bot run). /status reads it.
 create table beat (name text primary key, at timestamptz not null);
+
+-- A spend row counts the paid calls a named feature made on one UTC day, e.g. ('2026-10-16', 'tagger', 37).
+create table spend (day date not null, name text not null, n int not null, primary key (day, name));

@@ -17,8 +17,7 @@ export const resend = new Resend(Deno.env.get("RESEND_API_KEY") ?? "");
 import Stripe from "stripe";
 import { parseHTML } from "linkedom";
 import { Readability } from "@mozilla/readability";
-import ipaddr from "ipaddr.js";
-import { type Api, claude, R2Conflict, uploadToR2 } from "./bots.ts";
+import { type Api, claude, fetchPublic, R2Conflict, readCapped, uploadToR2 } from "./bots.ts";
 import { BOTS } from "./bots/mod.ts";
 export const r2 = { uploadToR2 };
 import { runCheckmark } from "./bots/checkmark.ts";
@@ -127,7 +126,16 @@ export type Com = {
 
 const escapeXml = (s: string) =>
   s.replace(/[&<>"']/g, (m) => `&${({ "&": "amp", "<": "lt", ">": "gt", '"': "quot", "'": "apos" })[m]};`);
-const extractFirstUrl = (b: string) => b.match(/https?:\/\/[^\s]+/)?.[0] || null;
+// Trailing punctuation belongs to the prose around a URL: "(see https://x.org/a)." or "**https://x.org/a**,".
+// A closing paren stays when the URL opened one, as in https://en.wikipedia.org/wiki/Foo_(bar).
+const extractFirstUrl = (b: string) => {
+  const url = b.match(/https?:\/\/[^\s<>"]+/)?.[0];
+  if (!url) return null;
+  const core = url.replace(/[.,;:!?*'\])]+$/, "");
+  const open = core.split("(").length - core.split(")").length;
+  const closes = url.slice(core.length).split(")").length - 1;
+  return core + ")".repeat(Math.max(0, Math.min(open, closes)));
+};
 export const extractLinks = (b: string) => [...b.matchAll(/https:\/\/ding\.bar\/c\/(\d+)/g)].map((m) => parseInt(m[1]));
 export const extractMentions = (b: string) => [
   ...new Set(
@@ -189,45 +197,6 @@ const pageImages = (srcs: string[], base: string) => [
       .map((u) => u.href),
   ),
 ];
-
-// Tests serve their fixture pages on 127.0.0.1, so they add it here. Production code never does.
-export const fetchGuard = { allow: new Set<string>() };
-
-const MAX_HOPS = 5;
-
-// fetch() for a URL a user chose. Every hop, the first and each redirect, must resolve only to public unicast
-// addresses: no loopback, private, link-local (cloud metadata), or other special ranges. Known gap: fetch resolves
-// the name again, so a DNS answer that changes between this check and the connect (DNS rebinding) gets through.
-const fetchPublic = async (url: string, init: { headers: Record<string, string>; signal: AbortSignal }) => {
-  let next = new URL(url);
-  for (let hop = 0; hop <= MAX_HOPS; hop++) {
-    if (next.protocol !== "http:" && next.protocol !== "https:")
-      throw new Error(`refused ${next.href}: only http and https`);
-    const host = next.hostname.replace(/^\[|\]$/g, "");
-    const ips = ipaddr.isValid(host) ? [host] : (await Promise.all(
-      (["A", "AAAA"] as const).map((type) =>
-        Deno.resolveDns(host, type, { signal: init.signal }).catch((e) => {
-          if (e instanceof Deno.errors.NotFound) return [];
-          throw e;
-        })
-      ),
-    )).flat();
-    if (!ips.length) throw new Error(`refused ${next.href}: ${host} has no A or AAAA record`);
-    // ipaddr.js calls ::a.b.c.d (IPv4-compatible, inside ::/8) "unicast", so the IANA-reserved ::/8 is matched apart.
-    const bad = ips.find((ip) => {
-      if (fetchGuard.allow.has(ip)) return false;
-      const addr = ipaddr.process(ip);
-      return addr.range() !== "unicast" || (addr.kind() === "ipv6" && addr.match(ipaddr.IPv6.parseCIDR("::/8")));
-    });
-    if (bad) throw new Error(`refused ${next.href}: ${host} is ${bad}, not a public address`);
-    const res = await fetch(next, { ...init, redirect: "manual" });
-    const location = res.headers.get("location");
-    if (res.status < 300 || res.status > 399 || !location) return res;
-    await res.body?.cancel();
-    next = new URL(location, next);
-  }
-  throw new Error(`refused ${url}: more than ${MAX_HOPS} redirects`);
-};
 
 // The one fetch of a foreign page: thumbnails and the ?submit= prefill both read it. Throws on any failure.
 // `images` holds the og:image and twitter:image only. ?submit= runs Readability on `document` for the rest.
@@ -1374,7 +1343,10 @@ const form = async (c: Context) => {
   const ct = c.req.header("content-type") || "";
   if (!ct.includes("form") && !ct.includes("multipart")) {
     throw new HTTPException(400, {
-      message: `Expected form content-type, got "${ct || "none"}"`,
+      message:
+        `expected a form body (application/x-www-form-urlencoded or multipart/form-data), received content-type "${
+          ct || "none"
+        }". fix: send form fields, e.g. httpie -f or curl -F.`,
     });
   }
   return Object.fromEntries(
@@ -1402,9 +1374,11 @@ const ok = (c: Context) => host(c) === "api" ? c.body(null, 204) : c.redirect("/
 
 const basicAuthName = async (c: Context): Promise<string | null> => {
   const a = c.req.header("Authorization");
-  if (!a?.startsWith("Basic ")) return null;
+  if (!a || !/^basic /i.test(a)) return null;
   try {
-    const [u, ...rest] = atob(a.slice(6)).split(":");
+    // UTF-8, as hono's basicAuth decodes it: raw atob would read a non-ASCII password as latin-1.
+    const raw = new TextDecoder().decode(Uint8Array.from(atob(a.slice(6).trim()), (ch) => ch.charCodeAt(0)));
+    const [u, ...rest] = raw.split(":");
     const [usr] = await sql`select name from usr where (email=${u} or name=${u}) and password=crypt(${
       rest.join(
         ":",
@@ -1446,6 +1420,8 @@ const authed = some(
   }),
   basicAuth({
     verifyUser: async (u, p, c) => {
+      // Postgres text cannot hold a NUL; the query would raise a 500 instead of refusing the credentials.
+      if (u.includes("\0") || p.includes("\0")) return false;
       const [usr] =
         await sql`select name, (password = crypt(${p}, password)) as ok from usr where email=${u} or name=${u}`;
       if (!usr?.ok) return false;
@@ -1833,9 +1809,19 @@ const errCopy: Record<number, string> = {
   500: "Something broke on our end. Try again in a moment, or email support@ding.bar.",
 };
 
+const noAuthMsg =
+  "expected Basic Auth with a ding email or name and password, received none or credentials that match no user. Fix: send -a you@x.org:pw (httpie) or -u you@x.org:pw (curl).";
+
 app.onError((err, c) => {
   const h = host(c), http = err instanceof HTTPException, status = http ? err.status : 500;
   if (!http) console.error(err);
+  if (http && h === "api") {
+    c.status(status);
+    const challenge = err.getResponse().headers.get("www-authenticate") ??
+      (status === 401 ? 'Basic realm="ding"' : null);
+    if (challenge) c.header("WWW-Authenticate", challenge);
+    return c.json({ error: err.message || (status === 401 ? noAuthMsg : errCopy[status] || errCopy[500]) });
+  }
   if (http && h) return err.getResponse();
   if (h === "api") return c.json({ error: errCopy[500] }, 500);
   if (h === "rss") return c.text(errCopy[500], 500);
@@ -1866,14 +1852,16 @@ const visibleTo = (rT: string[], me: string) =>
 
 type Frag = ReturnType<typeof visibleTo>;
 
-// A notification is someone else's post, inside my readable orgs, that either @-mentions me or
-// replies to something I wrote. Shared by the nav badge, GET /n and GET /n/unread — they each
+// A notification is someone else's post, inside my readable orgs, that names me in its @user label, replies to
+// something I wrote, or @-mentions me in its body. A body mention counts only on a post with no @user label: a DM
+// that mentions me is not mine to read. Shared by the nav badge, GET /n and GET /n/unread — they each
 // had their own copy, and the badge's had already drifted to a correlated orgs_r subselect.
 // Columns are unqualified, so the /n cross-join's subquery must expose ONLY last_seen_at —
 // adding created_by/orgs/usrs/parent_cid to it would make this ambiguous at runtime.
 const notifWhere = (me: string, orgs: Frag) =>
   sql`created_by != ${me} and orgs <@ ${orgs}
-      and (${me}::text = any(usrs) or parent_cid in (select cid from com where created_by = ${me}))`;
+      and (${me}::text = any(usrs) or parent_cid in (select cid from com where created_by = ${me})
+        or (mentions @> array[lower(${me}::text)] and usrs = '{}'))`;
 
 // "top" sorts on the denormalized c_reactions hstore, not the reaction_count alias. Both are
 // per-row subqueries, but an alias in ORDER BY is evaluated for every candidate row rather
@@ -2018,6 +2006,9 @@ const prefStat = (me: string, kind: string, val: string) =>
     select (select vote from pref where uid = ${me} and kind = ${kind} and val = ${val}) as vote,
            (select count(*)::int from pref where kind = ${kind} and val = ${val} and vote = 1) as ups`;
 
+// Haiku calls the ?submit= tagger may make per UTC day; the spend table counts them. An object so tests can shrink it.
+export const taggerCap = { perDay: 200 };
+
 // A share sheet hands over a bare host, so a value without a scheme gets https://.
 // In "localhost:3000" a digit follows the colon: that is a port, not a scheme.
 const shareUrl = (input: string) => {
@@ -2039,7 +2030,9 @@ const shareUrl = (input: string) => {
 // of the global order, and the two meet exactly on a page boundary.
 const PREF_WINDOW = 300;
 
-app.get("/", async (c) => {
+// The frontpage. POST /c renders it too, with `draft`, when a browser posts with no #tag or @user: the text comes back in
+// compose without passing through a URL, so it never lands in browser history or the request log.
+const home = async (c: Context<{ Variables: { name: string } }>, draft?: { body: string; labels: string }) => {
   const q = c.req.query(),
     p = pageParam(q.p, 25),
     // Normalized once, because orderBy treats any unknown sort as "hot" — reading q.sort
@@ -2054,7 +2047,13 @@ app.get("/", async (c) => {
   // Starts before the feed queries so the fetch overlaps them. It never rejects: a page that cannot be
   // read still prefills the bare link. The reason goes to the log only, because the page text would let a
   // user probe which hosts and ports answer.
-  const sharing = q.submit === undefined ? null : (async (url) => {
+  // A draft's first URL, if any, runs the same pipeline as ?submit=.
+  const draftUrl = draft ? extractFirstUrl(draft.body) : null;
+  let target: string | null = null;
+  if (q.submit !== undefined) target = shareUrl(q.submit);
+  else if (draftUrl && URL.canParse(draftUrl) && ["http:", "https:"].includes(new URL(draftUrl).protocol))
+    target = new URL(draftUrl).href;
+  const sharing = target === null ? null : (async (url) => {
     const why = (e: unknown) => e instanceof Error ? e.message : String(e);
     let page;
     try {
@@ -2089,6 +2088,14 @@ app.get("/", async (c) => {
         `).map((r) => r.tag),
       );
       if (known.size) {
+        const [{ n }] = await sql<{ n: number }[]>`
+          insert into spend (day, name, n) values ((now() at time zone 'utc')::date, 'tagger', 1)
+          on conflict (day, name) do update set n = spend.n + 1 returning n`;
+        if (n > taggerCap.perDay) {
+          throw new Error(
+            `daily cap of ${taggerCap.perDay} Haiku calls reached. expected: at most ${taggerCap.perDay} calls this UTC day. received: call ${n}. source: the spend row for today and 'tagger'. fix: find the client that repeats GET /?submit=, or raise taggerCap.perDay in server.tsx.`,
+          );
+        }
         const answer = await claude(
           `title: ${title}\nsite: ${new URL(base).hostname}\ntext: ${text.slice(0, 1500)}\n\ntags: ${
             [...known].join(" ")
@@ -2123,7 +2130,7 @@ app.get("/", async (c) => {
       tags,
       failed: false,
     };
-  })(shareUrl(q.submit));
+  })(target);
   const [viewer] = name ? await sql`select orgs_r, orgs_w from usr where name = ${name}` : [{ orgs_r: [], orgs_w: [] }];
   const rT = viewer?.orgs_r || [],
     wT = viewer?.orgs_w || [];
@@ -2268,9 +2275,15 @@ app.get("/", async (c) => {
               minlength={1}
               maxlength={4096}
             >
-              {share ? (share.title ? `${share.title}\n${share.url}` : share.url) : cur.get("body") ?? ""}
+              {draft?.body ??
+                (share ? (share.title ? `${share.title}\n${share.url}` : share.url) : cur.get("body") ?? "")}
             </textarea>
-            {share?.failed && (
+            {draft && (
+              <p class="note-sm">
+                a post needs at least one #tag or @user (an *org post needs a #tag too). check the labels, then publish.
+              </p>
+            )}
+            {share?.failed && !draft && (
               <p class="note-sm">
                 could not read the page. expected: a public web page that answers with HTML within 3 seconds. fix: type
                 the title by hand. The link is filled in.
@@ -2290,11 +2303,13 @@ app.get("/", async (c) => {
                 type="text"
                 name="tags"
                 aria-label="labels"
-                required
-                pattern={String.raw`.*(?:^|\s)[#*@]\S+.*`}
-                title="Add at least one #tag, *org, or @user before publishing"
-                value={[...new Set([...decodeLabels(cur).split(" "), ...(share?.tags ?? []).map((t) => `#${t}`)])]
-                  .filter(Boolean).join(" ")}
+                value={[
+                  ...new Set([
+                    ...decodeLabels(cur).split(" "),
+                    ...(draft?.labels.split(/\s+/) ?? []),
+                    ...(share?.tags ?? []).map((t) => `#${t}`),
+                  ]),
+                ].filter(Boolean).join(" ")}
               />
               <ComposeTools />
               <button type="submit">publish</button>
@@ -2329,7 +2344,8 @@ app.get("/", async (c) => {
     </>,
     { title: meta || undefined },
   );
-});
+};
+app.get("/", (c) => home(c));
 
 app.post("/login", async (c) => {
   const { email, password } = await form(c);
@@ -2864,7 +2880,10 @@ app.post("/u", authed, async (c) => {
 const notifQuery = (name: string, orgs_r: string[]) =>
   sql<Com[]>`
   select c.*, (c.created_at > u.last_seen_at) as unread,
-    case when ${name}::text = any(c.usrs) then 'mention' else 'reply' end as kind
+    -- A reply to my post is a reply even inside a DM, where usrs now names me too.
+    case when c.parent_cid in (select cid from com where created_by = ${name}) then 'reply'
+      when ${name}::text = any(c.usrs) or c.mentions @> array[lower(${name}::text)] then 'mention'
+      else 'reply' end as kind
   from com c
   cross join (select last_seen_at from usr where name = ${name}) u
   where ${notifWhere(name, sql`${orgs_r}::text[]`)}
@@ -2964,15 +2983,14 @@ app.get("/u/:name", async (c) => {
   );
 });
 
-app.get("/us", async (c) => {
-  const limit = Math.min(+(c.req.query("limit") || 100), 500);
-  const us = await sql`
+const verifiedUsers = (limit: number) =>
+  sql<{ name: string; created_at: Date }[]>`
     select name, created_at from usr
     where email_verified_at is not null
     order by created_at desc limit ${limit}
   `;
-  return c.json(us, 200);
-});
+
+app.get("/us", async (c) => c.json(await verifiedUsers(Math.min(+(c.req.query("limit") || 100), 500)), 200));
 
 app.get("/o/new", authed, (c) =>
   c.render(
@@ -3318,6 +3336,10 @@ export type PostOutcome =
   | { kind: "flagged"; parentCid: number; grandparent: number | null }
   | { kind: "self"; what: "react" | "flag"; parentCid: number; grandparent: number | null };
 
+// The one rule for "this root post names who reads it": a #tag or an @user. An *org alone is not enough, because
+// com_tags_pub_check (db.sql) wants one of those on every root. The POST /c draft and createPost both ask it.
+const labelled = (l: Labels) => l.tag.length > 0 || l.usr.length > 0;
+
 export const createPost = async (
   author: string,
   body: string,
@@ -3334,6 +3356,19 @@ export const createPost = async (
         } characters, or split it into a reply.`,
     });
   }
+  // trim() keeps zero-width characters, so a post of only U+200B would pass as text.
+  if (!body.replace(/[\u200B-\u200D\u2060\uFEFF]/g, "").trim()) {
+    throw new HTTPException(400, {
+      message:
+        "This post is empty. expected: at least one character that is not a space. received: none. fix: write something.",
+    });
+  }
+  // Postgres text cannot hold a NUL; without this the driver raises and the caller gets an opaque 500.
+  if (body.includes("\0") || opts.labels?.includes("\0"))
+    throw new HTTPException(400, { message: "This post contains a NUL byte. fix: remove it." });
+  // cid is an int, so anything else (abc, 1.5, " 301", 99999999999) is a parent that cannot exist.
+  if (pid !== null && !(/^\d{1,10}$/.test(String(pid)) && +pid <= 2147483647))
+    throw new HTTPException(404, { message: "Parent post not found." });
   if (!rateHit(postRate, author, POST_RATE_MAX, POST_RATE_MS))
     throw new HTTPException(429, { message: "slow down. try again in a minute." });
 
@@ -3348,14 +3383,13 @@ export const createPost = async (
     prm_parent: number | null;
     prm_hash: string | null;
     domains: string[];
-    flaggers: string[];
   };
   let prm: Prm | undefined;
 
   if (pid) {
     [prm] = await sql<
       Prm[]
-    >`select tags, orgs, usrs, created_by, parent_cid as prm_parent, hash as prm_hash, domains, flaggers from com where cid = ${pid}`;
+    >`select tags, orgs, usrs, created_by, parent_cid as prm_parent, hash as prm_hash, domains from com where cid = ${pid}`;
     if (!prm) throw new HTTPException(404, { message: "Parent post not found." });
     if (
       !prm.orgs.every((t) => usr.orgs_r.includes(t)) ||
@@ -3365,7 +3399,8 @@ export const createPost = async (
     }
     tags = prm.tags;
     orgs = prm.orgs;
-    usrs = prm.usrs;
+    // A reply in a DM thread names the parent's author too, or visibleTo hides it from the person it answers.
+    usrs = prm.usrs.length && prm.created_by ? [...new Set([...prm.usrs, prm.created_by])] : prm.usrs;
 
     if (isReaction(body)) {
       if (prm.created_by === author)
@@ -3386,8 +3421,14 @@ export const createPost = async (
     }
   } else {
     const l = parseLabels(opts.labels ?? "");
-    if (!l.tag.length && !l.usr.length && !l.org.length)
-      throw new HTTPException(400, { message: "post needs at least one #tag, *org, or @user recipient" });
+    if (!labelled(l)) {
+      throw new HTTPException(400, {
+        message:
+          `This post has no #tag or @user. expected: at least one #tag or @user (an *org post needs a #tag too). received: labels ${
+            JSON.stringify(opts.labels ?? "")
+          }. fix: add a #tag.`,
+      });
+    }
     const badOrg = l.org.find((t) => !usr.orgs_w.includes(t));
     if (badOrg) throw new HTTPException(403, { message: `you cannot write to org *${badOrg}` });
     tags = l.tag;
@@ -3402,8 +3443,10 @@ export const createPost = async (
       // signed post -> sign a flag row; ingestMsg recomputes c_flags from distinct flaggers
       const key = await ensureKey(author);
       await ingestMsg(await signRow("flag", nowSec(), { target: prm.prm_hash }, key.priv, key.pub));
-    } else if (!prm.flaggers.includes(author)) {
-      await sql`update com set c_flags = c_flags + 1, flaggers = array_append(flaggers, ${author}) where cid = ${pid}`;
+    } else {
+      // One statement, so two concurrent flags by one user cannot both pass the "not yet a flagger" test.
+      await sql`update com set c_flags = c_flags + 1, flaggers = array_append(flaggers, ${author}::citext)
+        where cid = ${pid} and not (${author}::citext = any(flaggers))`;
     }
     return { kind: "flagged", parentCid: +pid, grandparent: prm.prm_parent };
   }
@@ -3422,8 +3465,17 @@ export const createPost = async (
     cm = { cid };
   } else {
     const { mentions, links, domains, thumb } = await deriveBody(body, !pid);
-    [cm] =
-      await sql`insert into com (parent_cid, created_by, body, tags, orgs, usrs, mentions, links, thumb, domains) values (${pid}, ${author}, ${body}, ${tags}, ${orgs}, ${usrs}, ${mentions}, ${links}, ${thumb}, ${domains}) returning cid`;
+    [cm] = await sql`
+      insert into com (parent_cid, created_by, body, tags, orgs, usrs, mentions, links, thumb, domains)
+      values (${pid}, ${author}, ${body}, ${tags}, ${orgs}, ${usrs}, ${mentions}, ${links}, ${thumb}, ${domains})
+      on conflict (parent_cid, created_by, body) where char_length(body) = 1 do nothing
+      returning cid`;
+    // No row back: a concurrent click by the same user already stored this reaction (com_reaction_once).
+    if (!cm) {
+      const [twin] = await sql<{ cid: number }[]>`
+        select cid from com where parent_cid = ${pid} and created_by = ${author} and body = ${body}`;
+      return { kind: "created", cid: twin.cid, parentCid: pid ? +pid : null, grandparent: prm?.prm_parent ?? null };
+    }
     if (pid) {
       await bumpCounts(sql, pid, body);
       await refreshScores(pid);
@@ -3437,14 +3489,38 @@ export const createPost = async (
 app.post("/c/:p?", async (c) => {
   const pid = c.req.param("p") || null;
   const n = await viewer(c);
-  if (!n)
+  if (!n) {
+    if (host(c) === "api") throw new HTTPException(401, { message: noAuthMsg });
     return c.redirect(`/u?next=${encodeURIComponent(pid ? `/c/${pid}` : "/")}`);
+  }
 
-  const f = await c.req.formData();
-  const r = await createPost(n, f.get("body")?.toString() || "", {
-    parentCid: pid,
-    labels: f.get("tags")?.toString() || "",
-  });
+  const f = await form(c);
+  const text = f.body ?? "", labels = f.tags ?? "";
+  // A browser root post with no #tag or @user comes back as compose, with its text and suggested tags. createPost keeps
+  // its 400 for bots, api callers, and any script that sends Basic Auth, so a script never gets an HTML page instead.
+  if (
+    !pid && host(c) !== "api" && !c.req.header("authorization") && text.trim() && [...text].length <= 4096 &&
+    !text.includes("\0") && !labels.includes("\0") && !labelled(parseLabels(labels))
+  ) {
+    // A draft can fetch a page and spend a tagger call, so it counts as a post attempt.
+    if (!rateHit(postRate, n, POST_RATE_MAX, POST_RATE_MS))
+      throw new HTTPException(429, { message: "slow down. try again in a minute." });
+    return home(c, { body: text, labels });
+  }
+  const r = await createPost(n, text, { parentCid: pid, labels });
+
+  if (host(c) === "api") {
+    if (r.kind === "created") {
+      const [u] = await sql`select orgs_r from usr where name = ${n}`;
+      return c.json(await feedPosts({ cid: String(r.cid), viewer: n, orgsR: u?.orgs_r || [] }), 201);
+    }
+    if (r.kind === "self") {
+      throw new HTTPException(400, {
+        message: `you cannot ${r.what === "react" ? "react to" : "flag"} your own post.`,
+      });
+    }
+    return c.json({ kind: r.kind, parent_cid: r.parentCid });
+  }
 
   // Redirect shapes are unchanged from when this logic lived inline; only their inputs
   // now come from the outcome instead of local state.
@@ -3456,7 +3532,7 @@ app.post("/c/:p?", async (c) => {
     return c.redirect(ref ? `${ref}#${r.parentCid}` : thread());
   }
   if (r.parentCid === null) return c.redirect(`/c/${r.cid}`);
-  if (isReaction(f.get("body")?.toString() || "")) {
+  if (isReaction(text)) {
     const ref = refBack(c);
     if (ref) return c.redirect(`${ref}#${r.parentCid}`);
   }
@@ -3475,7 +3551,10 @@ const PREF_RATE_MAX = 60,
 app.post("/p", async (c) => {
   const n = await viewer(c);
   const back = refBack(c) ?? "/";
-  if (!n) return c.redirect(`/u?next=${encodeURIComponent(back)}`);
+  if (!n) {
+    if (host(c) === "api") throw new HTTPException(401, { message: noAuthMsg });
+    return c.redirect(`/u?next=${encodeURIComponent(back)}`);
+  }
   if (!rateHit(prefRate, n, PREF_RATE_MAX, PREF_RATE_MS))
     throw new HTTPException(429, { message: "slow down. try again in a minute." });
 
@@ -3536,6 +3615,10 @@ app.post("/p", async (c) => {
     insert into pref (uid, kind, val, vote)
     select ${n}, ${kind}, ${val}, ${vote} where not exists (select 1 from del)
     on conflict (uid, kind, val) do update set vote = excluded.vote, created_at = current_timestamp`;
+  if (host(c) === "api") {
+    const [st] = await prefStat(n, kind, val);
+    return c.json({ label: `${Object.keys(PFX).find((k) => PFX[k] === kind)}${val}`, vote: st.vote, ups: st.ups });
+  }
   return c.redirect(back);
 });
 
@@ -3984,20 +4067,8 @@ app.post("/i", authed, async (c) => {
       await res.body.cancel();
       refuse(413, `expected at most ${MAX_UPLOAD_BYTES / MB} MB. ${got}`);
     }
-    const chunks: Uint8Array[] = [];
-    let size = 0;
-    try {
-      for await (const chunk of res.body) {
-        size += chunk.length;
-        if (size > MAX_UPLOAD_BYTES) refuse(413, `expected at most ${MAX_UPLOAD_BYTES / MB} MB. received: more.`);
-        chunks.push(chunk);
-      }
-    } catch (e) {
-      if (e instanceof HTTPException) throw e;
-      refuse(502, `the body stopped after ${size} bytes: ${e instanceof Error ? e.message : e}`);
-    }
-    const bytes = new Uint8Array(size);
-    chunks.reduce((at, chunk) => (bytes.set(chunk, at), at + chunk.length), 0);
+    const { bytes, whole } = await readCapped(res.body, MAX_UPLOAD_BYTES).catch((e) => refuse(502, e.message));
+    if (!whole) refuse(413, `expected at most ${MAX_UPLOAD_BYTES / MB} MB. received: more.`);
     const alpha = "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789";
     const key = `${[...crypto.getRandomValues(new Uint8Array(8))].map((b) => alpha[b % alpha.length]).join("")}.${ext}`;
     await r2.uploadToR2(bytes, key, type, "i/", true);
@@ -4069,6 +4140,7 @@ export const botApi = async (envPrefix: string): Promise<Api | null> => {
   return {
     botUsername: usr.name,
     orgsR: usr.orgs_r,
+    users: async (limit) => JSON.parse(JSON.stringify(await verifiedUsers(limit))),
     feed: async (q) => {
       const rows = await feedPosts(q as FeedQuery);
       // Bots were written against JSON responses, so hand them JSON-shaped rows: postgres.js
@@ -4186,11 +4258,22 @@ export const checks: { cond: string; fix: string; grade: () => Promise<number> }
     cond: "Every bot in bots/mod.ts finished a run in the past hour.",
     fix:
       "a bot threw or lost its BOT_<NAME>_EMAIL/_PASSWORD: see the Deno Deploy logs for 'bot <name> failed' or 'skipping'",
-    grade: async () =>
-      await count(sql<{ n: number }[]>`
-        select count(*)::int as n from beat
-        where name = any(${Object.keys(BOTS).map((k) => `bot:${k}`)}::text[]) and at > now() - interval '1 hour'`) /
-      Object.keys(BOTS).length,
+    grade: async () => {
+      const names = Object.keys(BOTS);
+      const fresh = (await sql<{ name: string }[]>`
+        select name from beat
+        where name = any(${names.map((k) => `bot:${k}`)}::text[]) and at > now() - interval '1 hour'`)
+        .map((r) => r.name.slice(4));
+      const stale = names.filter((n) => !fresh.includes(n)).sort();
+      if (stale.length) {
+        console.error(
+          `status: expected every bot in bots/mod.ts to finish a run in the past hour, but ${stale.length} did not: ` +
+            `${stale.join(", ")}. Source: the beat table, rows named bot:<name>. ` +
+            `Fix: search the Deno Deploy logs for "bot <name> failed" or "skipping".`,
+        );
+      }
+      return fresh.length / names.length;
+    },
   },
   {
     cond: "Every cron ran inside twice its period.",
@@ -4232,6 +4315,16 @@ export const checks: { cond: string; fix: string; grade: () => Promise<number> }
     grade: async () => {
       const [row] = await sql<{ n: number }[]>`select pg_database_size(current_database())::float8 as n`;
       return (0.8 * 0.5 * 1024 ** 3) / row.n;
+    },
+  },
+  {
+    cond: `The ?submit= tagger used under 80% of its daily cap of ${taggerCap.perDay} Haiku calls.`,
+    fix:
+      "the tagger is near its daily cap: look for a script hitting GET /?submit=, or raise taggerCap.perDay in server.tsx",
+    grade: async () => {
+      const [row] = await sql<{ n: number }[]>`
+        select n from spend where name = 'tagger' and day = (now() at time zone 'utc')::date`;
+      return (0.8 * taggerCap.perDay) / Math.max(row?.n ?? 0, 1);
     },
   },
   {

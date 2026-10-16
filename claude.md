@@ -44,13 +44,14 @@ POSTGRES, DHT, RESEND, STRIPE, COMPONENTS, HONO. The `GET /` and `GET /c` feed q
 (`visibleTo` ACL, `aggCols`/`aggPairs` per-row aggregates, `orderBy`) so the two feeds can't drift; `visibleTo` is
 applied per nesting level (children and grandchildren too — a DM or `*org` reply under a public root must not leak to
 strangers). `wireRow` is the single definition of the NDJSON wire format (WS live-tail + HTTP drain must stay
-byte-identical). `notifWhere` is the single definition of the notification predicate (nav badge + `/n` + `/n/unread`);
-the badge is skipped on `/n/unread` so the 60s poller doesn't run the count twice. `visibleTo` emits `orgs = '{}'`
-rather than `orgs <@ '{}'` for the common no-readable-orgs case — gin's `<@` cannot seek, so it scans the whole index.
-`?sort=top` orders on the denormalized `c_reactions` hstore, NOT the `reaction_count` select alias: an alias in ORDER BY
-makes postgres run that correlated subquery for every candidate row, not just the 25 returned. `GET /` renders roots
-only (`Post` never touches `child_comments`), so it must NOT select a `child_comments` array — only `GET /c` does, and
-only `GET /c` needs `visibleTo` at the child + grandchild levels.
+byte-identical). `notifWhere` is the single definition of the notification predicate (nav badge + `/n` + `/n/unread`):
+an `@user` label that names me, a reply to my post, or a body `@mention` of me on a post with no `@user` label (a DM to
+others that mentions me is not mine to read); the badge is skipped on `/n/unread` so the 60s poller doesn't run the
+count twice. `visibleTo` emits `orgs = '{}'` rather than `orgs <@ '{}'` for the common no-readable-orgs case — gin's
+`<@` cannot seek, so it scans the whole index. `?sort=top` orders on the denormalized `c_reactions` hstore, NOT the
+`reaction_count` select alias: an alias in ORDER BY makes postgres run that correlated subquery for every candidate row,
+not just the 25 returned. `GET /` renders roots only (`Post` never touches `child_comments`), so it must NOT select a
+`child_comments` array — only `GET /c` does, and only `GET /c` needs `visibleTo` at the child + grandchild levels.
 
 **Client JS lives in `public/client.js`**, served statically and cached — it is NOT inlined into every page.
 
@@ -203,13 +204,17 @@ signed.
   Unbounded history walks past `paginate`'s `maxPages=50` cap and throws — that silently killed bot_hn and bot_smallweb
   for months under Actions' `continue-on-error`. `com.links` is internal cids, not external URLs, so no index can answer
   exact-URL dedup; the window is the fix.
-- **Bots talk to the DATABASE, not the API.** `Api` carries `feed`/`post` — that's the seam, injected by `botApi()` in
-  `server.tsx` and backed by `feedPosts`/`createPost`. There is no HTTP hop at all any more (`botFetch` is gone), for
-  both the cron and `deno task bot <name>`, so **standalone runs now need `DATABASE_URL`, not `DING_API_URL`**. The
-  reason: the in-process hop re-ran routing, the whole middleware chain, and Basic Auth on every action — and Basic Auth
-  is a **bcrypt comparison inside Postgres, ~49ms of DB CPU per request**. It is now one bcrypt per bot per run (in
-  `botApi`, which is also what resolves the real `usr.name` instead of guessing it from the email local part) and **zero
-  per action**.
+- **Bots talk to the DATABASE, not the API.** `Api` carries `feed`/`post`/`users` — that's the seam, injected by
+  `botApi()` in `server.tsx` and backed by `feedPosts`/`createPost`/`verifiedUsers` (the same query as `GET /us`). There
+  is no HTTP hop at all any more (`botFetch` is gone), for both the cron and `deno task bot <name>`, so **standalone
+  runs now need `DATABASE_URL`, not `DING_API_URL`**. The reason: the in-process hop re-ran routing, the whole
+  middleware chain, and Basic Auth on every action — and Basic Auth is a **bcrypt comparison inside Postgres, ~49ms of
+  DB CPU per request**. It is now one bcrypt per bot per run (in `botApi`, which is also what resolves the real
+  `usr.name` instead of guessing it from the email local part) and **zero per action**.
+- **`createPost` validates its own input** for every caller: a blank body, a NUL byte, or a parent id that is not an int
+  is a 4xx, never a postgres 500. A reply in a DM thread adds the parent's author to `usrs`, or `visibleTo` would hide
+  it from the person it answers. A legacy (unsigned) flag is one `update ... where not (author = any(flaggers))`, so
+  concurrent flags by one user count once.
 - **This is only safe because the ACL never lived in the HTTP layer.** `visibleTo` is inside `feedPosts` and every
   parent/org-write/self-react/rate-limit check is inside `createPost`, so a direct caller is gated by exactly the code
   the route is. Do **not** add a check to a route handler that belongs in these two functions — that is precisely how
@@ -290,8 +295,9 @@ as a pref that could never match.
   user is a follow; mutual = both sides ▲. A mute has no read path off the voter's own `/u`.
 - **The primary key is the toggle.** Re-sending the same vote deletes the row, the opposite vote replaces it. Done in
   one statement with a data-modifying `del` CTE (postgres always runs it to completion), so a double-click can't stack
-  rows — unlike post reactions, which have no uniqueness constraint and where ▲/▼ are independent toggles a user can
-  hold both of.
+  rows. Post reactions differ: ▲ and ▼ are independent toggles a user can hold both of, and `com_reaction_once` (a
+  partial unique index on `(parent_cid, created_by, body)` where `char_length(body) = 1`) makes each one count once, so
+  `createPost` inserts with `on conflict do nothing` and a concurrent twin is a no-op.
 - **`pref` is invisible to `refresh_score`** and to `stat_tag`/`stat_usr`/`stat_domain`. Those stay global reputation;
   `pref` is per-viewer. That split is why personalization is a separate ranking stage, not a new term in the polynomial.
 - **Only a `usr` pref that will INSERT is validated.** `pref.val` has no FK (a partial one isn't expressible), so a
@@ -416,6 +422,15 @@ JS.
 redirects to `/u?next=` BEFORE any fetch, so anonymous traffic can never make ding fetch a page. A page that cannot be
 read still prefills the bare link and shows the reason.
 
+**A labelless post comes back as compose.** When a browser root post has no `#tag` or `@user`, `POST /c` answers the
+frontpage itself (`home(c, draft)`, status 200) instead of redirecting, so the text never enters a URL, browser history,
+or the request log. The textarea keeps the text, the labels keep what was typed, the first http(s) URL runs through the
+same `sharing` pipeline as `?submit=` (tags fill the labels, images fill the strip), and a note names the rule. It never
+fires for api callers, a request with `Authorization` (a script must get the 400, not an HTML page), a reply, or a body
+over 4096 code points; those reach `createPost`'s 400. `labelled` is the one rule both ask: a `#tag` or an `@user`. An
+`*org` alone is not enough, because `com_tags_pub_check` wants one of those on every root. The labels input has no
+`required`/`pattern`.
+
 - **`fetchPage`** is the single foreign-page fetch (3s, `ding/1.0`, first 1 MB, linkedom): reuse it, do not add another.
   Its `images` are the `og:image`/`twitter:image` only, which is all `resolveThumbnail` needs. Readability runs in the
   `?submit=` path alone, so a link post (bots included, every 5 min) never pays for article extraction.
@@ -437,15 +452,20 @@ read still prefills the bare link and shows the reason.
   top 150 `stat_tag` tags plus the viewer's ▲'d tags, minus the ▼'d ones. Any other word in the answer is dropped and
   logged, so prompt injection in the page can at worst pick a wrong candidate. It never picks `*org` or `@user`, because
   those change who can read the post. A failure (no key, timeout, 529) leaves the labels to the viewer and logs
-  `tags not suggested`. `stat_tag` is materialized, so a brand-new tag is not a candidate until `refreshStats` runs.
+  `tags not suggested`. `taggerCap.perDay` (200) caps Haiku calls per UTC day: each call first upserts the `spend` row
+  `(day, 'tagger', n)`, and `n` over the cap throws `daily cap of N Haiku calls reached` into that same catch, so the
+  labels stay empty. The `/status` condition "The ?submit= tagger used under 80% of its daily cap" grades today's row.
+  `stat_tag` is materialized, so a brand-new tag is not a candidate until `refreshStats` runs.
 
-**User-chosen URLs go through `fetchPublic`** (`fetchPage`, `GET /img`, and the `POST /i` copy all do). Before each hop,
-the first and every redirect (followed by hand, at most 5), it resolves the host and refuses unless every address is
-public unicast by `ipaddr.js` (`range() === "unicast"`): no loopback, private, link-local (cloud metadata), CGNAT, or
-IPv4-mapped tricks. Known gap: `fetch` resolves the name again, so DNS rebinding between the check and the connect gets
-through. Tests serve fixtures on 127.0.0.1 and add it to `fetchGuard.allow`; production never does. Failure text never
-reaches the user (the `?submit=` line and `/img`'s 502 are generic) because it would tell a caller which hosts and ports
-answer; the detail goes to the log.
+**User-chosen URLs go through `fetchPublic`** (defined in `bots.ts`, with `fetchGuard`, because the server imports bots
+and not the reverse). `fetchPage`, `GET /img`, the `POST /i` copy, `imageMentionBot` (15s), and `extractArticle` (10s)
+all use it; a bot never fetches a URL from a post body with bare `fetch`. Before each hop, the first and every redirect
+(followed by hand, at most 5), it resolves the host and refuses unless every address is public unicast by `ipaddr.js`
+(`range() === "unicast"`): no loopback, private, link-local (cloud metadata), CGNAT, or IPv4-mapped tricks. Known gap:
+`fetch` resolves the name again, so DNS rebinding between the check and the connect gets through. Tests serve fixtures
+on 127.0.0.1 and add it to `fetchGuard.allow`; production never does. Failure text never reaches the user (the
+`?submit=` line and `/img`'s 502 are generic) because it would tell a caller which hosts and ports answer; the detail
+goes to the log.
 
 ## Embeddable comments (/embed)
 
@@ -464,6 +484,11 @@ Routes return different formats based on subdomain or Accept header:
 - `api.ding.bar` or `Accept: application/json` → JSON
 - `rss.ding.bar` or `Accept: application/xml` → RSS/XML
 - Default → HTML
+
+Write API (api host, Basic Auth, form in, JSON out; `POST /c` reads its body with `form()`, so a JSON body is a 400 that
+says so): `POST /c` → 201 + the `GET /c/:cid` row array on create, 200 `{kind,parent_cid}` for unreact/flag; `POST /p` →
+200 `{label,vote,ups}` (`vote: null` = cleared). No viewer → 401 `{error}`. `app.onError` turns every `HTTPException` on
+api into `{error: message}` with its status. Browser redirects are unchanged.
 
 ## Authentication
 
@@ -519,6 +544,8 @@ public, so every request inside 30s shares one grading (`gradeMemo`).
 - **`beat(name)`** upserts "the last time X happened" into the `beat` table. Every `Deno.cron` beats its own name after
   a good tick, and `runBotFleet` beats `bot:<name>` for each bot that finishes. Cron name, schedule, and period are
   defined once in `CRONS`; keep each period equal to its schedule.
+- **The bot condition keeps one key.** When it grades below 1 it also `console.error`s the stale bot names (BOTS keys
+  with no `bot:<name>` beat in the past hour), so the Deploy logs say which bot to look at.
 - **Deploy order:** run `migrate.sql` BEFORE the deploy, because the crons and `runBotFleet` write `beat`.
 
 ## Testing
