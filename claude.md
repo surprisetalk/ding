@@ -242,10 +242,11 @@ signed.
   seeds its rng, so reordering the draws changes the artwork.
 - Most bots are thin configs over shared harnesses in `bots.ts`: `rssBot` (single RSS feed), `personaBot` (LLM replies),
   `mentionResponderBot` (reply to fresh `@bot` mentions), `imageMentionBot` (transform an image from a @mention),
-  `dailyPostBot` (one gated post per run). The mention harnesses share `unansweredMentions` — the **single** definition
-  of the mention trigger, plus the own-post/answered/stale filter and its `Found N unanswered @<bot> posts` log. It
-  fires **two** `/c?mention=<bot>` fetches on purpose: `comments=1` selects `parent_cid is not null`, i.e. comments
-  **instead of** roots, so one query can never see both (this silently made every mention bot comment-only).
+  `dailyPostBot` (one gated post per run; `lectures` drips the curated `bots/data/lectures.tsv`, and a bad row fails the
+  bot and the status condition). The mention harnesses share `unansweredMentions` — the **single** definition of the
+  mention trigger, plus the own-post/answered/stale filter and its `Found N unanswered @<bot> posts` log. It fires
+  **two** `/c?mention=<bot>` fetches on purpose: `comments=1` selects `parent_cid is not null`, i.e. comments **instead
+  of** roots, so one query can never see both (this silently made every mention bot comment-only).
   `cowsay`/`dice`/`8ball`/`sortinghat` are mention-triggered, **not** `#tag`-triggered (they used to be; `#cowsay` posts
   no longer get answered). `mentionResponderBot`'s `max` bounds _successful_ replies, so it throws when it attempted
   replies and none landed — otherwise a run that burns 20 LLM calls into a rate limit reports green. A `respond` that

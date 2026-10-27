@@ -1,3 +1,8 @@
+- [ ] You scroll a masonry feed of cards with image, title and excerpt on ding.bar. Decision: bucket "grow after the
+      main quest" in the projects strategy (~/Documents/tasks/todo.md, projects entry, 27 Oct).
+  1. Do step 1 of the masonry entry: add `.feed { columns: 260px }` and `break-inside: avoid` in public/style.css.
+  2. Add the mshots fallback to `resolveThumbnail` after og:image misses.
+  3. Run `deno task status` and read which conditions fail on production.
 - [ ] You scroll a feed of cards in masonry columns: each post fills its card with an image (og:image, a screenshot of
       the link, or an uploaded image), the title, and an article excerpt. Decision: the grid wins over the "craigslist
       density" direction, so text-only posts get a quiet default card instead of a dense row. Decision: masonry columns,
@@ -18,28 +23,20 @@
      it in one place.
   5. Test: a root post whose link has no og:image and no readable article still renders a card (favicon + no excerpt) —
      a column must never collapse.
-- [ ] @lectures.bsky.social posts one talk a day from a catalog Taylor curates. Decision: the catalog is
-      `bots/data/lectures.tsv`, next to `youtube_channels.txt`, and a new bot `lectures` drips it. Repasta copies its
-      posts to @lectures (~/Developer/repasta/todo.md, move-to-pc entry, step 7). Taylor approved this design on 19 Oct.
-  1. Data: one talk per row, 6 tab-separated columns: url, speaker, handle, title, tags, fave. Example:
-     `https://www.infoq.com/presentations/Simple-Made-Easy/	Rich Hickey		Simple Made Easy	design clojure	1`. A college
-     series or symposium row points at its playlist and carries the tag `series`.
-  2. Seed lectures.tsv once from the 68 old @lectures.bsky.social posts (public Bluesky API, "Speaker (@handle): Title
-     URL"), the "post to technical lectures" row in ~/Developer/taylor-town/ideas.tsv, HN "favorite talks" threads, and
-     curated talk lists. Taylor reviews the diff and sets fave to 1 on favorites.
-  3. `bots/lectures.ts`: a `dailyPostBot`, wired like `album`. Post the first fave row whose URL is not in the bot's
-     post history, else the first other row. Dedup reads the full history, like `rssBot`, not the 30-day
-     `DEDUP_WINDOW_MS`. Body: "Kevin Lynagh (@kevinlynagh.com): Choosing Features <url>", or "Rich Hickey: Simple Made
-     Easy <url>" with no handle. Tags: `#lecture #bot` plus the row's tags.
-  4. Status: a condition fails when lectures.tsv holds fewer than 14 unposted rows.
-  5. Tests, with these messages:
-     - `bots/data/lectures.tsv line 12: expected 6 tab-separated columns (url, speaker, handle, title, tags, fave), got
-       4. Fix the row.`
-     - `bots/data/lectures.tsv lines 3 and 40 share https://…: delete one.`
-     - `bots/data/lectures.tsv line 7: fave must be "" or "1", got "yes".`
-     - With no row left, the bot throws `bot_lectures: all 212 rows in bots/data/lectures.tsv are posted. Add rows.`
 
 ## Blocked on you
+
+- [ ] @lectures.bsky.social posts one talk a day from a catalog Taylor curates. Built and committed: `bots/lectures.ts`,
+      65 seeded rows in `bots/data/lectures.tsv` (63 from the old posts, 1 from ideas.tsv "lectures" draft, none from
+      the "technical lectures" rows: they hold no URLs), the runway status condition, and tests. Blocker: you set fave,
+      create the account, and deploy.
+  1. Open `bots/data/lectures.tsv`. Set `fave` to 1 on favorites and fill `tags`. Add rows from HN "favorite talks"
+     threads until it holds 100.
+  2. Create the `bot_lectures` account like `bot_album`. Put `BOT_LECTURES_EMAIL` and `BOT_LECTURES_PASSWORD` in
+     `bots.env` and in production.
+  3. Deploy with the entry below, then run `deno task status`. "bots/data/lectures.tsv holds 14 talks" and "Every bot
+     finished a run" must score at least 1.
+  4. Do step 7 of the move-to-pc entry in ~/Developer/repasta/todo.md: repasta copies `bot_lectures` posts to @lectures.
 
 - [ ] Today's changes reach ding.bar: the bot SSRF guard, the tagger cap, `album`/`welcome` fixes, `bestof` removed, the
       labelless-post compose, the JSON write API, DM-reply visibility, body-mention notifications, and once-only

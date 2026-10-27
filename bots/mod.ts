@@ -21,6 +21,7 @@ import haiku from "./haiku.ts";
 import hmmm from "./hmmm.ts";
 import hn from "./hn.ts";
 import hypebot from "./hypebot.ts";
+import lectures from "./lectures.ts";
 import lobsters from "./lobsters.ts";
 import lowpoly from "./lowpoly.ts";
 import mathgif from "./mathgif.ts";
@@ -67,6 +68,7 @@ export const BOTS: Record<string, (api: Api) => void | Promise<void>> = {
   hmmm,
   hn,
   hypebot,
+  lectures,
   lobsters,
   lowpoly,
   mathgif,

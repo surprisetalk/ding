@@ -19,6 +19,7 @@ import { parseHTML } from "linkedom";
 import { Readability } from "@mozilla/readability";
 import { type Api, claude, fetchPublic, R2Conflict, readCapped, uploadToR2 } from "./bots.ts";
 import { BOTS } from "./bots/mod.ts";
+import { LECTURES_PATH, parseLectures, unpostedCount } from "./bots/lectures.ts";
 export const r2 = { uploadToR2 };
 import { runCheckmark } from "./bots/checkmark.ts";
 import {
@@ -4273,6 +4274,19 @@ export const checks: { cond: string; fix: string; grade: () => Promise<number> }
         );
       }
       return fresh.length / names.length;
+    },
+  },
+  {
+    cond: "bots/data/lectures.tsv holds 14 talks that @lectures has not posted.",
+    fix: "add rows to bots/data/lectures.tsv: @lectures posts one a day and runs dry in under two weeks",
+    grade: async () => {
+      const rows = parseLectures(await Deno.readTextFile(LECTURES_PATH));
+      const posted = new Set((await sql<{ url: string }[]>`
+        select u.url from unnest(${rows.map((r) => r.url)}::text[]) u(url)
+        where exists (
+          select 1 from com where created_by = 'bot_lectures' and position(u.url in body) > 0)`)
+        .map((r) => r.url));
+      return unpostedCount(rows, posted) / 14;
     },
   },
   {

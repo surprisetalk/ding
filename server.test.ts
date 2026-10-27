@@ -29,6 +29,7 @@ import {
 } from "./bots.ts";
 import cowsayBot from "./bots/cowsay.ts";
 import { BOTS } from "./bots/mod.ts";
+import { LECTURES_PATH, parseLectures } from "./bots/lectures.ts";
 import { jsx } from "@hono/hono/jsx";
 import { pgtemp } from "@surprisetalk/pgtemp";
 import pg from "postgres";
@@ -4849,6 +4850,7 @@ Deno.test(
       "Somebody verified their email this week.",
       "Somebody paid for an org this month.",
       "Every bot in bots/mod.ts finished a run in the past hour.",
+      "bots/data/lectures.tsv holds 14 talks that @lectures has not posted.",
       "Every cron ran inside twice its period.",
       "The anonymous frontpage renders in 300ms.",
       "The dht ingested a row in the past 24h.",
@@ -4897,6 +4899,16 @@ Deno.test(
       assertEquals((await grades())[SENTENCES[0]], 0.01);
       await humans(["taylor"]);
       assertEquals((await grades())[SENTENCES[1]], 0.33); // botany only: taylor is excluded
+    });
+
+    await t.step("the lectures runway counts rows whose URL no bot_lectures post carries", async () => {
+      const rows = parseLectures(await Deno.readTextFile(LECTURES_PATH));
+      assertEquals((await grades())[SENTENCES[5]], Math.round(rows.length / 14 * 100) / 100);
+      await sql`insert into usr (name, email, password, bio, email_verified_at, invited_by)
+        values ('bot_lectures', 'bot-lectures@ding.bar', 'x', 'hi', now(), 'john_doe')`;
+      await sql`insert into com (created_by, body, tags, orgs, usrs)
+        values ('bot_lectures', ${"Ann: Talk " + rows[0].url}, '{lecture}', '{}', '{}')`;
+      assertEquals((await grades())[SENTENCES[5]], Math.round((rows.length - 1) / 14 * 100) / 100);
     });
 
     await t.step("a healthy db answers 200", async () => {
@@ -5006,14 +5018,14 @@ Deno.test(
       const { res, body } = await get();
       assertEquals(res.status, 503);
       assertEquals(Object.keys(body), SENTENCES);
-      assertEquals(body[SENTENCES[7]]["0"], 0);
+      assertEquals(body[SENTENCES[8]]["0"], 0);
     });
 
     await t.step("a resolver that fails grades the DNS condition 0", async () => {
       const dns = Deno.resolveDns;
       Deno.resolveDns = (() => Promise.reject(new Error("resolver unreachable"))) as typeof Deno.resolveDns;
       try {
-        assertEquals((await get()).body[SENTENCES[10]]["0"], 0);
+        assertEquals((await get()).body[SENTENCES[11]]["0"], 0);
       } finally {
         Deno.resolveDns = dns;
       }

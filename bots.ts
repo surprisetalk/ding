@@ -1118,10 +1118,14 @@ export async function imageMentionBot(api: Api, opts: {
 
 // One post per run, gated on time since the bot's last post. make returns the body
 // (or null to skip today); a failed post throws so the runner records the failure.
+// REVIEW: make may return {body, tags} so lectures can add each row's tags. Alternative: a
+// `tags` callback on the options. It splits one post's body and tags across two calls.
 export async function dailyPostBot(api: Api, opts: {
   tags: string;
   minGapMs?: number;
-  make: (ctx: Api) => string | null | Promise<string | null>;
+  make: (
+    ctx: Api,
+  ) => string | { body: string; tags: string } | null | Promise<string | { body: string; tags: string } | null>;
 }) {
   const ageMs = await getLastPostAge(api);
   console.log(`Last post was ${(ageMs / 3_600_000).toFixed(1)}h ago`);
@@ -1129,11 +1133,12 @@ export async function dailyPostBot(api: Api, opts: {
     console.log("Too soon, skipping");
     return;
   }
-  const body = await opts.make(api);
-  if (body == null) return;
+  const made = await opts.make(api);
+  if (made == null) return;
+  const { body, tags } = typeof made === "string" ? { body: made, tags: opts.tags } : made;
   console.log(`Posting: ${body.split("\n")[0].slice(0, 80)}`);
   // Throw, never Deno.exit — under the in-server cron an exit would kill the whole isolate.
-  if (!(await post(api, body, opts.tags))) throw new Error(`${api.botUsername}: POST /c rejected the post`);
+  if (!(await post(api, body, tags))) throw new Error(`${api.botUsername}: POST /c rejected the post`);
   console.log("Posted!");
 }
 
