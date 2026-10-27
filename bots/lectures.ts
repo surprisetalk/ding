@@ -34,6 +34,26 @@ export function parseLectures(text: string, path = PATH): Lecture[] {
       );
     }
     if (!speaker || !title) throw new Error(`${path} line ${n}: speaker and title must not be empty. Fix the row.`);
+    if (speaker !== speaker.trim() || title !== title.trim()) {
+      throw new Error(
+        `${path} line ${n}: speaker and title must not start or end with whitespace (CRLF?). Fix the row.`,
+      );
+    }
+    // getPostedUrls scans post bodies for URLs, so a URL inside a title marks another row as posted.
+    if (title.includes("://"))
+      throw new Error(`${path} line ${n}: title must not contain "://", got ${JSON.stringify(title)}.`);
+    if (handle && !/^[a-z0-9-]+(\.[a-z0-9-]+)+$/i.test(handle)) {
+      throw new Error(
+        `${path} line ${n}: handle must be a bare domain like name.bsky.social, got ${JSON.stringify(handle)}.`,
+      );
+    }
+    if (!/^[\w-]*( [\w-]+)*$/u.test(tags)) {
+      throw new Error(
+        `${path} line ${n}: tags must be space-separated words of letters, digits, _ or -, got ${
+          JSON.stringify(tags)
+        }.`,
+      );
+    }
     if (fave !== "" && fave !== "1")
       throw new Error(`${path} line ${n}: fave must be "" or "1", got ${JSON.stringify(fave)}.`);
     const first = seen.get(url);

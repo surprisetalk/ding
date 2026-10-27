@@ -112,3 +112,15 @@ Deno.test("lectures.tsv: the committed catalog parses and holds at least 14 rows
   const rows = parseLectures(Deno.readTextFileSync(LECTURES_PATH), P);
   assertEquals(rows.length >= 14, true);
 });
+
+Deno.test("parseLectures: rejects fields that corrupt the post or the dedup scan", () => {
+  const bad = (cols: string[], want: string) => assertThrows(() => parseLectures(row(...cols), P), Error, want);
+  const u = "https://a.example/1";
+  bad([u, "Ann", "@ann.example", "T", "", ""], `${P} line 1: handle must be a bare domain`);
+  bad([u, "Ann", "ann example", "T", "", ""], `${P} line 1: handle must be a bare domain`);
+  bad([u, "Ann", "", "T", "#design", ""], `${P} line 1: tags must be space-separated words`);
+  bad([u, "Ann", "", "T", "a/b", ""], `${P} line 1: tags must be space-separated words`);
+  bad([u, "Ann", "", "see https://other.example/2", "", ""], `${P} line 1: title must not contain "://"`);
+  bad([u, " Ann", "", "T", "", ""], `${P} line 1: speaker and title must not start or end with whitespace`);
+  bad([u, "Ann", "", "T\r", "", ""], `${P} line 1: speaker and title must not start or end with whitespace`);
+});
