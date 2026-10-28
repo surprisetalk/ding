@@ -65,7 +65,7 @@ const botApi = (history: { body: string; created_at: string }[]) => {
     botUsername: "bot_lectures",
     orgsR: [],
     users: () => Promise.resolve([]),
-    feed: (q) => Promise.resolve(q.limit === 1 ? history.slice(0, 1) : history),
+    feed: (q) => Promise.resolve(history.slice(q.offset ?? 0, (q.offset ?? 0) + (q.limit ?? 25))),
     post: (body, o) => {
       posts.push({ body, labels: o.labels });
       return Promise.resolve(true);
@@ -99,8 +99,7 @@ Deno.test("lectures bot: dedup reads history older than 30 days", async () => {
 Deno.test("lectures bot: no row left throws with the count", async () => {
   const rows = parseLectures(Deno.readTextFileSync(LECTURES_PATH), P);
   const old = new Date(Date.now() - 400 * 86_400_000).toISOString();
-  const { api } = botApi(rows.map((r) => ({ body: formatLecture(r), created_at: old })).slice(0, 100));
-  if (rows.length > 100) throw new Error("test fixture: history page holds 100 rows");
+  const { api } = botApi(rows.map((r) => ({ body: formatLecture(r), created_at: old })));
   await assertRejects(
     () => Promise.resolve(lectures(api)),
     Error,
