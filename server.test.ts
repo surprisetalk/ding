@@ -4903,12 +4903,12 @@ Deno.test(
 
     await t.step("the lectures runway counts rows whose URL no bot_lectures post carries", async () => {
       const rows = parseLectures(await Deno.readTextFile(LECTURES_PATH));
-      assertEquals((await grades())[SENTENCES[5]], Math.round(rows.length / 14 * 100) / 100);
+      assertEquals((await grades())[SENTENCES[5]], Math.floor(rows.length / 14 * 100) / 100);
       await sql`insert into usr (name, email, password, bio, email_verified_at, invited_by)
         values ('bot_lectures', 'bot-lectures@ding.bar', 'x', 'hi', now(), 'john_doe')`;
       await sql`insert into com (created_by, body, tags, orgs, usrs)
         values ('bot_lectures', ${"Ann: Talk " + rows[0].url}, '{lecture}', '{}', '{}')`;
-      assertEquals((await grades())[SENTENCES[5]], Math.round((rows.length - 1) / 14 * 100) / 100);
+      assertEquals((await grades())[SENTENCES[5]], Math.floor((rows.length - 1) / 14 * 100) / 100);
     });
 
     await t.step("a healthy db answers 200", async () => {
