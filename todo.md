@@ -23,6 +23,18 @@
      it in one place.
   5. Test: a root post whose link has no og:image and no readable article still renders a card (favicon + no excerpt) —
      a column must never collapse.
+- [ ] You share a link with `?submit=` and the labels box holds the tags a human would pick for it, not the bot feeds'
+      source tags. Today the 150 candidates are the top `stat_tag` rows by `posts_count`, and bots own almost every
+      `com` row, so bot tags fill the list. Decision: fix the candidates before the prompt.
+  1. Measure on prod, read-only: the top 30 public root tags overall vs. the top 30 where `created_by !~ '^bot_'`. Write
+     both lists under this entry. If they match, delete steps 2–3 and look at the prompt instead.
+  2. `stat_tag` gains `human_posts` (public roots by non-`bot_` authors). The tagger takes candidates with
+     `human_posts >= 2`, ordered by `human_posts`. Run `migrate.sql` before the deploy, and terminate the pooled
+     backends after: a matview rebuild changes the result type.
+  3. Add two candidate sources: the viewer's own posted tags (the `own` CTE of the presets query) and the tags humans
+     put on public roots with the same `~domain` as the link. Keep the ▼ exclusion last.
+  4. Test, in "share via ?submit=": a tag only `bot_` posts use is absent from `tagger.prompt`; a tag a human put on a
+     same-domain post is present.
 
 ## Blocked on you
 
