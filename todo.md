@@ -134,13 +134,13 @@
 
 - [ ] ding runs on `pc` against its local Postgres, and every LLM call goes to the local llama.cpp model, so neither
       Neon's 0.5 GB cap nor the Anthropic bill limits it. Serves "Postgres uses under 80% of Neon's 0.5 GB free-tier
-      storage." (0.7). The shape below is approved. Blockers, all yours: (a) the Deno Deploy env holds secrets this
-      laptop lacks (only `DATABASE_URL` and `KEY_WRAP_SECRET` are in `.env`): put the full set in `/var/lib/ding/env` on
-      pc, mode 0600, owner `taylor`; (b) `llama-cpp.service` on pc is failed since 2026-10-16 15:54 UTC:
-      `--device Vulkan0` finds no Vulkan device, so llama-server exits 1 (start-limit-hit after 10 restarts). The RX
-      5700 XT is not visible to Mesa RADV; vixing's cluster names stop too; (c) the cutover window, because DNS moves.
-      Decision: no bot prune. Bots own 148k of the 149k `com` rows and 144,682 of the 145,314 `dht` msg rows (581 MB in
-      all, growing about 30k rows a month). Local disk holds them.
+      storage." (0.64: the database is 639 MB on 10-31). The shape below is approved. Blockers, all yours: (a) the Deno
+      Deploy env holds secrets this laptop lacks (only `DATABASE_URL` and `KEY_WRAP_SECRET` are in `.env`): put the full
+      set in `/var/lib/ding/env` on pc, mode 0600, owner `taylor`; (b) `llama-cpp.service` on pc is failed since
+      2026-10-16 15:54 UTC: `--device Vulkan0` finds no Vulkan device, so llama-server exits 1 (start-limit-hit after 10
+      restarts). The RX 5700 XT is not visible to Mesa RADV; vixing's cluster names stop too; (c) the cutover window,
+      because DNS moves. Decision: no bot prune. Bots own 148k of the 149k `com` rows and 144,682 of the 145,314 `dht`
+      msg rows (581 MB in all, growing about 30k rows a month). Local disk holds them.
   1. `/etc/nixos/flake.nix`: `systemd.services.ding` runs `deno serve -A --host=127.0.0.1 --port=8046 server.tsx` in
      `/home/taylor/ding` (a git clone), `EnvironmentFile=/var/lib/ding/env`, and `DENO_DEPLOYMENT_ID=<git rev>`, so the
      crons and `?v=` asset caching stay on with no code change. Restart on failure, 5 s.
@@ -159,19 +159,26 @@
 - [ ] `grouch`, `hypebot`, and `replyguy` finish a run every hour. Blocker: only the Deno Deploy logs and env show why.
   1. They have 0 posts ever, and `critic` runs the same `verdictBot` harness and beats. So the likely cause is that
      their `BOT_<NAME>_EMAIL`/`_PASSWORD` never reached the Deploy env.
-  2. In the Deno Deploy logs, search the last tick for `bot grouch`. `no BOT_GROUCH_EMAIL/_PASSWORD` means the env is
+  2. `blogs` joins them: its beat was 10:10 UTC on 10-31 while the other bots beat at 14:20, so its run fails or hits
+     the 90 s `BOT_TIMEOUT_MS` (60 feeds sampled, 8 s each). Search the logs for `bot blogs failed`. Fix: lower `SAMPLE`
+     to 30 in bots/blogs.ts if it timed out.
+  3. In the Deno Deploy logs, search the last tick for `bot grouch`. `no BOT_GROUCH_EMAIL/_PASSWORD` means the env is
      missing: upload `bots.env` to the Deploy project env. `bot grouch failed:` means a code error: paste the line here.
 
-- [ ] Humans find ding and post each week. Serves "Somebody verified their email this week." (0), "3 humans besides
-      taylor posted this week." (0.33), "100 humans posted in the past 24h." (0.01), and "Somebody paid for an org this
-      month." (0).
-  1. Sign up with a fresh address on https://ding.bar/signup. Confirm that the verify email arrives. If it does not,
+- [ ] Humans find ding and post each week. Fact (10-31): 74 users, 70 verified, none in the past 7 days. The only
+      non-bot poster this week is `taylor_town` (11 posts). Serves "Somebody verified their email this week." (0), "3
+      humans besides taylor posted this week." (0.33), "100 humans posted in the past 24h." (0.01), and "Somebody paid
+      for an org this month." (0).
+  1. Fix the condition: server.tsx excludes `created_by <> 'taylor'`, but Taylor posts as `taylor_town`. That account
+     gives "3 humans besides taylor" its 0.33. Change it to `not in ('taylor', 'taylor_town')`. The score then drops to
+     0, which is true.
+  2. Sign up with a fresh address on https://ding.bar/signup. Confirm that the verify email arrives. If it does not,
      check `grep -c '^RESEND_API_KEY=' .env` and the Deno Deploy logs for 'Could not send verification email'.
-  2. Write the Slack migration guide as a post on ding, and send it to 3 people you know.
-  3. After the Slack import entry ships, post the guide to 20 target communities (r/True\* subreddits, small Discords,
+  3. Write the Slack migration guide as a post on ding, and send it to 3 people you know.
+  4. After the Slack import entry ships, post the guide to 20 target communities (r/True\* subreddits, small Discords,
      academic Zulip refugees). Keep the target list in `*ding`, not in this file.
-  4. Run `deno task status` after each signup. The first three conditions must rise above 0.
-  5. The 100-posters and paid-org goals wait on the Slack import entry. Do not build marketing code for them.
+  5. Run `deno task status` after each signup. The first three conditions must rise above 0.
+  6. The 100-posters and paid-org goals wait on the Slack import entry. Do not build marketing code for them.
 
 - [ ] You get an email from Neon and Deno Deploy before ding hits a usage limit or its error rate spikes. These cover
       the conditions `/status` cannot see: error rate across isolates, CPU, memory, bandwidth, and spend.
