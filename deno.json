@@ -1,4 +1,5 @@
 {
+  "lock": { "frozen": true },
   "unstable": [
     "raw-imports",
     "cron"
