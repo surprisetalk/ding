@@ -1,5 +1,7 @@
 #!/usr/bin/env bash
 set -e
+# REVIEW: deno audit needs the network, and a new advisory blocks unrelated commits. Alternative: a status condition. It allows offline commits but lets a vulnerable dependency ship.
+echo "→ deno audit";       timeout 30 deno audit
 echo "→ deno fmt --check"; deno fmt --check
 echo "→ deno lint";        deno lint
 echo "→ deno check";       deno check server.tsx bots.ts bot.ts bots/*.ts dht.ts ding.ts backfill.ts node.tsx keygen.ts *.test.ts

@@ -24,11 +24,11 @@
     "@surprisetalk/pgtemp": "jsr:@surprisetalk/pgtemp@^0.2.3",
     "ipaddr.js": "npm:ipaddr.js@^2.5.0",
     "linkedom": "npm:linkedom@^0.18.12",
-    "sharp": "npm:sharp@^0.34.5",
+    "sharp": "npm:sharp@^0.35.5",
     "@hono/hono": "jsr:@hono/hono@4.12.15",
     "postgres": "npm:postgres@^3.4.5",
     "stripe": "npm:stripe@^22.1.0",
-    "resend": "npm:resend@^6.12.2"
+    "resend": "npm:resend@^6.37.0"
   },
   "tasks": {
     "deploy": "deno run -A jsr:@deno/deployctl deploy --prod --project=dong server.tsx",
