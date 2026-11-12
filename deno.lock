@@ -23,7 +23,7 @@
     "jsr:@std/streams@0.217": "0.217.0",
     "jsr:@std/streams@^1.0.9": "1.1.0",
     "jsr:@std/yaml@*": "1.0.12",
-    "jsr:@surprisetalk/pgtemp@0.3": "0.3.0",
+    "jsr:@surprisetalk/pgtemp@~0.3.1": "0.3.1",
     "npm:@electric-sql/pglite@0.5.16": "0.5.16",
     "npm:@mozilla/readability@*": "0.6.0",
     "npm:@mozilla/readability@0.6": "0.6.0",
@@ -134,8 +134,8 @@
     "@std/yaml@1.0.12": {
       "integrity": "7deabca4545bcedd07c5f69ea53acea71b8b4c67562f224e17b90d75944cb20c"
     },
-    "@surprisetalk/pgtemp@0.3.0": {
-      "integrity": "8744baf56d6fe4973351a7facac8f09cdf1b171c800a77c921616a1d398a1166",
+    "@surprisetalk/pgtemp@0.3.1": {
+      "integrity": "7130cb3c406dfaf14a9b67565ee6b8cb1d4d485878a56eb9e2d9bdf36e54a2f3",
       "dependencies": [
         "npm:@electric-sql/pglite",
         "npm:pg-gateway",
@@ -1078,7 +1078,7 @@
       "jsr:@hono/hono@*",
       "jsr:@hono/hono@4.12.15",
       "jsr:@std/assert@^1.0.19",
-      "jsr:@surprisetalk/pgtemp@0.3",
+      "jsr:@surprisetalk/pgtemp@~0.3.1",
       "npm:@electric-sql/pglite@0.5.16",
       "npm:@mozilla/readability@0.6",
       "npm:ipaddr.js@^2.5.0",
