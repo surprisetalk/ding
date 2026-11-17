@@ -46,9 +46,9 @@
   1. Open `bots/data/lectures.tsv`. Set `fave` to 1 on favorites and fill `tags`. Add rows from HN "favorite talks"
      threads until it holds 100.
   2. Create the `bot_lectures` account like `bot_album`. Put `BOT_LECTURES_EMAIL` and `BOT_LECTURES_PASSWORD` in
-     `bots.env` and in production.
-  3. Deploy with the move-to-pc entry, then run `deno task status`. "bots/data/lectures.tsv holds 14 talks" and "Every
-     bot finished a run" must score at least 1.
+     `bots.env` and in `/var/lib/ding/env` on pc.
+  3. Push to main (pc deploys within a minute), then run `deno task status`. "bots/data/lectures.tsv holds 14 talks" and
+     "Every bot finished a run" must score at least 1.
   4. Do step 7 of the move-to-pc entry in ~/Developer/repasta/todo.md: repasta copies `bot_lectures` posts to @lectures.
 
 - [ ] You are a moderator with a Slack export and you move your community to ding in an afternoon. Blocker: you said to
@@ -125,47 +125,24 @@
   5. Tests: `POST /i` stores a `.m4a` and a `.weba` with their types; `formatBody` renders `<audio controls>`. Check the
      buttons in a browser, because `client.js` has no test harness.
 
-- [ ] ding runs on `pc` against its local Postgres, and every LLM call goes to the local llama.cpp model, so neither
-      Neon's 0.5 GB cap nor the Anthropic bill limits it. Serves "Postgres uses under 80% of Neon's 0.5 GB free-tier
-      storage." (0.61). The shape below is approved, and you approved the whole cutover, DNS included, on 11-17.
-      Blocker: the auto-mode classifier refused the step 1 deploy to Deno Deploy. Done on 11-17: the local `ding`
-      database restores from Neon (dump 34 s, 159 MB zstd; restore 22 s), and a shadow server on 127.0.0.1:8051 against
-      it scores like production (GET / in 12 ms), except crons, which stay off in a shadow. Decision: no bot prune.
-      Decision: port 8051, because plat holds 8046. Deno Deploy shuts down in April 2027.
-  1. Extract the secrets. The Deploy app is `ding` on the new Deno Deploy (`ddo_` token in `~/.secrets`), not classic
-     `dong`. Its API hides secret values, and it has no Stripe keys. `.claude/cutover/server.tsx` answers 503 to
-     everyone and returns `Deno.env` to the bearer in `.claude/cutover/bearer`. Allow, or run yourself:
-     `cd .claude/cutover && DENO_DEPLOY_TOKEN=… deno deploy --app ding --json --non-interactive .` (a preview).
-     `curl -H "Authorization: Bearer $(cat bearer)" <preview url>` returns every secret except `DING_ORG_PK`/`_SK`,
-     which only production sees (step 5). Delete the preview revision after.
-  2. `/var/lib/ding/env`, mode 0600, owner `taylor`: the extracted secrets minus `ANTHROPIC_API_KEY` and `DATABASE_URL`,
-     plus `bots.env` (it holds the `grouch`/`hypebot`/`replyguy` credentials that Deploy lacks), plus
-     `DATABASE_URL=postgres:///ding` and `PGHOST=/run/postgresql`. postgres.js takes a socket only from `PGHOST`; the
-     URL's `?host=` is ignored and falls back to TCP with a password.
-  3. `/etc/nixos/flake.nix`: `systemd.services.ding` runs `deno serve -A --host=127.0.0.1 --port=8051 server.tsx` in
-     `/home/taylor/ding` (a git clone), `EnvironmentFile=/var/lib/ding/env`,
-     `LD_LIBRARY_PATH=${pkgs.stdenv.cc.cc.lib}/lib` (sharp links libstdc++; boot fails without it, as telecast-web
-     found), and `DENO_DEPLOYMENT_ID=$(git rev-parse HEAD)` in the start script, so the crons and `?v=` caching stay on.
-     Restart on failure, 5 s. Add `ding-backup` like `telecast-backup`: a nightly `pg_dump --compress=zstd` to
-     `~/Developer/ding/nightly.dump`, which r2-backup copies to R2. Switch only at step 5, or the crons double-post.
-  4. One commit, pushed only at step 5, because main auto-deploys to Deploy: `claude()` in `bots.ts` →
-     `127.0.0.1:8080/v1/chat/completions` with `chat_template_kwargs: {enable_thinking: false}` (gemma-4-12b, ctx 4096,
-     one slot shared with vixing); drop `prepare: false` and its test; `deno task deploy` =
-     `ssh pc 'git -C ~/ding pull --ff-only && sudo systemctl restart ding'`; disk, RAM, and CPU conditions replace the
-     Neon cap; each `fix` that says "Deno Deploy logs" says `journalctl -u ding`. The tagger's daily cap stays.
-  5. Cutover, about 5 minutes: `deno deploy --app ding --prod .claude/cutover` (freezes writes, stops Deploy's crons,
-     and the bearer fetch returns `DING_ORG_PK`/`_SK` for the env file); delete `DATABASE_URL` from the Deploy env, so a
-     later auto-deploy cannot write to Neon; dump Neon, `dropdb ding`, `createdb ding`, `pg_restore`; push step 4;
-     `git -C ~/ding pull`; `nixos-rebuild switch` with cloudflared ingress for `ding.bar`, `api`, `rss`, `db`,
-     `i.ding.bar` → `http://127.0.0.1:8051`; `cloudflared tunnel route dns` for each host (Cloudflare holds the zone).
-     Then `deno task status` against production must pass where it passed before, and snitch must log it. Rollback:
-     restore DNS and `DATABASE_URL`, and redeploy the last good Deploy revision (`wpvjvf13wgcf` on 11-12). Posts made on
-     pc in between are lost unless you dump them back.
-  6. After 7 quiet days, you delete the Deploy app and the Neon project, including the `ding_owner` role, whose password
-     reached a session transcript on 11-17.
-  7. After step 5, `grouch`, `hypebot`, and `replyguy` should beat within the hour. If `blogs` still lags, search
-     `journalctl -u ding` for `bot blogs failed`, and lower `SAMPLE` to 30 in bots/blogs.ts if it timed out at the 90 s
-     `BOT_TIMEOUT_MS` (60 feeds sampled, 8 s each).
+- [ ] Every LLM call goes to the local llama.cpp model on pc, so the Anthropic bill no longer limits ding. Blocker: pc's
+      GPU has no room. On 11-17 the RX 5700 XT sat at 99% busy with 7.9 of 8.2 GB VRAM held by three llama servers
+      (chat, vixing's embedder, vixing's ReaderLM), and gemma-4-12b answered at 0.9 tok/s and crashed once with
+      `vk::DeviceLostError`. The bots' 90 s `BOT_TIMEOUT_MS` and the in-request `?submit=` tagger need about 30 tok/s.
+  1. Free the GPU first: stop or shrink another llama server, or give ding a smaller model. Then measure tok/s with one
+     `curl 127.0.0.1:8080/v1/chat/completions` call; it must reach 20.
+  2. `claude()` in `bots.ts` → `127.0.0.1:8080/v1/chat/completions` with
+     `chat_template_kwargs: {enable_thinking:
+     false}`; drop `ANTHROPIC_API_KEY` from `/var/lib/ding/env` and the
+     startup warning. The tagger's daily cap stays: it bounds GPU time instead of spend.
+  3. Tests stub `fetch` on `api.anthropic.com` (bots.test.ts, server.test.ts): point them at the new URL and shape.
+
+- [ ] Deno Deploy and Neon hold no ding data or code, so nothing double-posts and no stale copy can answer. Due 11-24.
+  1. Delete the Deno Deploy app `ding` (it serves the 503 stub and has no `DATABASE_URL`). Deploy shuts down in April
+     2027 anyway.
+  2. Delete the Neon project, including the `ding_owner` role, whose password reached a session transcript on 11-17.
+  3. Remove `DATABASE_URL` and the Neon lines from `.env`, and delete `.claude/cutover/` (stub, bearer, env copies,
+     final dump).
 
 - [ ] Humans find ding and post each week. Fact (10-31): 74 users, 70 verified, none in the past 7 days. The only
       non-bot poster this week is `taylor_town` (11 posts). Serves "Somebody verified their email this week." (0), "3
@@ -175,7 +152,8 @@
      gives "3 humans besides taylor" its 0.33. Change it to `not in ('taylor', 'taylor_town')`. The score then drops to
      0, which is true.
   2. Sign up with a fresh address on https://ding.bar/signup. Confirm that the verify email arrives. If it does not,
-     check `grep -c '^RESEND_API_KEY=' .env` and the Deno Deploy logs for 'Could not send verification email'.
+     check `grep -c '^RESEND_API_KEY=' /var/lib/ding/env` and `journalctl -u ding` for 'Could not send verification
+     email'.
   3. Write the Slack migration guide as a post on ding, and send it to 3 people you know.
   4. After the Slack import entry ships, post the guide to 20 target communities (r/True\* subreddits, small Discords,
      academic Zulip refugees). Keep the target list in `*ding`, not in this file.
