@@ -57,7 +57,7 @@
   1. Open `bots/data/lectures.tsv`. Set `fave` to 1 on favorites and fill `tags`. Add rows from HN "favorite talks"
      threads until it holds 100.
   2. Create the `bot_lectures` account like `bot_album`. Put `BOT_LECTURES_EMAIL` and `BOT_LECTURES_PASSWORD` in
-     `bots.env` and in `/var/lib/ding/env` on pc.
+     `bots.env` and in `/var/lib/ding/env` on pc (mode 0600).
   3. Push to main (pc deploys within a minute), then run `deno task status`. "bots/data/lectures.tsv holds 14 talks" and
      "Every bot finished a run" must score at least 1.
   4. Do step 7 of the move-to-pc entry in ~/Developer/repasta/todo.md: repasta copies `bot_lectures` posts to @lectures.
