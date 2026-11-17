@@ -1,12 +1,8 @@
-- [ ] You scroll a masonry feed of cards with image, title and excerpt on ding.bar. Decision: bucket "grow after the
-      main quest" in the projects strategy (~/Documents/tasks/todo.md, projects entry, 27 Oct).
-  1. Do step 1 of the masonry entry: add `.feed { columns: 260px }` and `break-inside: avoid` in public/style.css.
-  2. Add the mshots fallback to `resolveThumbnail` after og:image misses.
-  3. Run `deno task status` and read which conditions fail on production.
 - [ ] You scroll a feed of cards in masonry columns: each post fills its card with an image (og:image, a screenshot of
       the link, or an uploaded image), the title, and an article excerpt. Decision: the grid wins over the "craigslist
       density" direction, so text-only posts get a quiet default card instead of a dense row. Decision: masonry columns,
-      not a square grid; you liked the look of the mockup (https://claude.ai/artifact/8XJP56od9ihKA51B8sWorj).
+      not a square grid; you liked the look of the mockup (https://claude.ai/artifact/8XJP56od9ihKA51B8sWorj). Decision:
+      bucket "grow after the main quest" (~/Documents/tasks/todo.md, projects entry, 27 Oct).
   1. `public/style.css`: `.feed { columns: 260px; column-gap: 16px }` and `break-inside: avoid` on each card, one column
      under 480px. A card takes its natural height: the image at its own aspect ratio, the title clamped to 2 lines and
      the excerpt to 3 with `-webkit-line-clamp`. Tradeoff: CSS columns fill top to bottom, so rank 2 sits under rank 1,
@@ -36,6 +32,11 @@
   4. Test, in "share via ?submit=": a tag only `bot_` posts use is absent from `tagger.prompt`; a tag a human put on a
      same-domain post is present.
 
+- [ ] `deno test -A` finishes in under 10 s, so the pre-commit hook stays cheap. It took 16 s on pc on 11-17.
+  1. Time each test with `deno test -A --reporter=junit` and list the five slowest here.
+  2. Cut the cost where it lives (PGlite boot, child-process boots, real timers), then record the floor and its
+     bottleneck in claude.md.
+
 ## Blocked on you
 
 - [ ] @lectures.bsky.social posts one talk a day from a catalog Taylor curates. Built and committed: `bots/lectures.ts`,
@@ -46,17 +47,9 @@
      threads until it holds 100.
   2. Create the `bot_lectures` account like `bot_album`. Put `BOT_LECTURES_EMAIL` and `BOT_LECTURES_PASSWORD` in
      `bots.env` and in production.
-  3. Deploy with the entry below, then run `deno task status`. "bots/data/lectures.tsv holds 14 talks" and "Every bot
-     finished a run" must score at least 1.
+  3. Deploy with the move-to-pc entry, then run `deno task status`. "bots/data/lectures.tsv holds 14 talks" and "Every
+     bot finished a run" must score at least 1.
   4. Do step 7 of the move-to-pc entry in ~/Developer/repasta/todo.md: repasta copies `bot_lectures` posts to @lectures.
-
-- [ ] Today's changes reach ding.bar: the bot SSRF guard, the tagger cap, `album`/`welcome` fixes, `bestof` removed, the
-      labelless-post compose, the JSON write API, DM-reply visibility, body-mention notifications, and once-only
-      reactions. Blocker: you commit and deploy.
-  1. Review and commit the working tree.
-  2. `deno task deploy`, then `deno task status`. Production already runs today's `migrate.sql`. The tagger condition
-     must score at least 1. The bot condition loses `bestof` from its count, and `album` and `welcome` should beat
-     within the hour.
 
 - [ ] You are a moderator with a Slack export and you move your community to ding in an afternoon. Blocker: you said to
       hold off. Decision: one-shot import only. A live two-way bridge means tokens, rate limits, and dedup loops
@@ -134,36 +127,45 @@
 
 - [ ] ding runs on `pc` against its local Postgres, and every LLM call goes to the local llama.cpp model, so neither
       Neon's 0.5 GB cap nor the Anthropic bill limits it. Serves "Postgres uses under 80% of Neon's 0.5 GB free-tier
-      storage." (0.64: the database is 639 MB on 10-31). The shape below is approved. Blockers, all yours: (a) the Deno
-      Deploy env holds secrets this laptop lacks (only `DATABASE_URL` and `KEY_WRAP_SECRET` are in `.env`): put the full
-      set in `/var/lib/ding/env` on pc, mode 0600, owner `taylor`; (b) `llama-cpp.service` on pc is failed since
-      2026-10-16 15:54 UTC: `--device Vulkan0` finds no Vulkan device, so llama-server exits 1 (start-limit-hit after 10
-      restarts). The RX 5700 XT is not visible to Mesa RADV; vixing's cluster names stop too; (c) the cutover window,
-      because DNS moves. Decision: no bot prune. Bots own 148k of the 149k `com` rows and 144,682 of the 145,314 `dht`
-      msg rows (581 MB in all, growing about 30k rows a month). Local disk holds them.
-  1. `/etc/nixos/flake.nix`: `systemd.services.ding` runs `deno serve -A --host=127.0.0.1 --port=8046 server.tsx` in
-     `/home/taylor/ding` (a git clone), `EnvironmentFile=/var/lib/ding/env`, and `DENO_DEPLOYMENT_ID=<git rev>`, so the
-     crons and `?v=` asset caching stay on with no code change. Restart on failure, 5 s.
-  2. Postgres on its socket: `createdb ding`, then `pg_dump` Neon → `pg_restore`. Nightly `pg_dump` to R2, because
-     Neon's point-in-time restore goes away. Drop `prepare: false` only after the cutover: it is the Neon pooler
-     workaround.
-  3. Run it beside Deno Deploy on 127.0.0.1:8046 against the restored copy, with no public ingress, and run
-     `deno task status` against it.
-  4. At the cutover, in one change: `claude()` in `bots.ts` → `127.0.0.1:8080/v1/chat/completions` with
-     `chat_template_kwargs: {enable_thinking: false}` (gemma-4-12b, ctx 4096, ~31 tok/s, one slot shared with vixing);
-     `deno task deploy` = `ssh pc 'cd ~/ding && git pull && sudo systemctl restart ding'`; disk, RAM, and CPU status
-     conditions replace the Neon cap. The tagger's daily cap stays: it bounds CPU instead of spend.
-  5. Cutover: freeze writes, final dump/restore, cloudflared ingress for `ding.bar` and `api`/`rss`/`db`/`i.ding.bar` →
-     `http://127.0.0.1:8046`, flip DNS, then `deno task status` against production must pass and snitch must log it.
-
-- [ ] `grouch`, `hypebot`, and `replyguy` finish a run every hour. Blocker: only the Deno Deploy logs and env show why.
-  1. They have 0 posts ever, and `critic` runs the same `verdictBot` harness and beats. So the likely cause is that
-     their `BOT_<NAME>_EMAIL`/`_PASSWORD` never reached the Deploy env.
-  2. `blogs` joins them: its beat was 10:10 UTC on 10-31 while the other bots beat at 14:20, so its run fails or hits
-     the 90 s `BOT_TIMEOUT_MS` (60 feeds sampled, 8 s each). Search the logs for `bot blogs failed`. Fix: lower `SAMPLE`
-     to 30 in bots/blogs.ts if it timed out.
-  3. In the Deno Deploy logs, search the last tick for `bot grouch`. `no BOT_GROUCH_EMAIL/_PASSWORD` means the env is
-     missing: upload `bots.env` to the Deploy project env. `bot grouch failed:` means a code error: paste the line here.
+      storage." (0.61). The shape below is approved, and you approved the whole cutover, DNS included, on 11-17.
+      Blocker: the auto-mode classifier refused the step 1 deploy to Deno Deploy. Done on 11-17: the local `ding`
+      database restores from Neon (dump 34 s, 159 MB zstd; restore 22 s), and a shadow server on 127.0.0.1:8051 against
+      it scores like production (GET / in 12 ms), except crons, which stay off in a shadow. Decision: no bot prune.
+      Decision: port 8051, because plat holds 8046. Deno Deploy shuts down in April 2027.
+  1. Extract the secrets. The Deploy app is `ding` on the new Deno Deploy (`ddo_` token in `~/.secrets`), not classic
+     `dong`. Its API hides secret values, and it has no Stripe keys. `.claude/cutover/server.tsx` answers 503 to
+     everyone and returns `Deno.env` to the bearer in `.claude/cutover/bearer`. Allow, or run yourself:
+     `cd .claude/cutover && DENO_DEPLOY_TOKEN=… deno deploy --app ding --json --non-interactive .` (a preview).
+     `curl -H "Authorization: Bearer $(cat bearer)" <preview url>` returns every secret except `DING_ORG_PK`/`_SK`,
+     which only production sees (step 5). Delete the preview revision after.
+  2. `/var/lib/ding/env`, mode 0600, owner `taylor`: the extracted secrets minus `ANTHROPIC_API_KEY` and `DATABASE_URL`,
+     plus `bots.env` (it holds the `grouch`/`hypebot`/`replyguy` credentials that Deploy lacks), plus
+     `DATABASE_URL=postgres:///ding` and `PGHOST=/run/postgresql`. postgres.js takes a socket only from `PGHOST`; the
+     URL's `?host=` is ignored and falls back to TCP with a password.
+  3. `/etc/nixos/flake.nix`: `systemd.services.ding` runs `deno serve -A --host=127.0.0.1 --port=8051 server.tsx` in
+     `/home/taylor/ding` (a git clone), `EnvironmentFile=/var/lib/ding/env`,
+     `LD_LIBRARY_PATH=${pkgs.stdenv.cc.cc.lib}/lib` (sharp links libstdc++; boot fails without it, as telecast-web
+     found), and `DENO_DEPLOYMENT_ID=$(git rev-parse HEAD)` in the start script, so the crons and `?v=` caching stay on.
+     Restart on failure, 5 s. Add `ding-backup` like `telecast-backup`: a nightly `pg_dump --compress=zstd` to
+     `~/Developer/ding/nightly.dump`, which r2-backup copies to R2. Switch only at step 5, or the crons double-post.
+  4. One commit, pushed only at step 5, because main auto-deploys to Deploy: `claude()` in `bots.ts` →
+     `127.0.0.1:8080/v1/chat/completions` with `chat_template_kwargs: {enable_thinking: false}` (gemma-4-12b, ctx 4096,
+     one slot shared with vixing); drop `prepare: false` and its test; `deno task deploy` =
+     `ssh pc 'git -C ~/ding pull --ff-only && sudo systemctl restart ding'`; disk, RAM, and CPU conditions replace the
+     Neon cap; each `fix` that says "Deno Deploy logs" says `journalctl -u ding`. The tagger's daily cap stays.
+  5. Cutover, about 5 minutes: `deno deploy --app ding --prod .claude/cutover` (freezes writes, stops Deploy's crons,
+     and the bearer fetch returns `DING_ORG_PK`/`_SK` for the env file); delete `DATABASE_URL` from the Deploy env, so a
+     later auto-deploy cannot write to Neon; dump Neon, `dropdb ding`, `createdb ding`, `pg_restore`; push step 4;
+     `git -C ~/ding pull`; `nixos-rebuild switch` with cloudflared ingress for `ding.bar`, `api`, `rss`, `db`,
+     `i.ding.bar` → `http://127.0.0.1:8051`; `cloudflared tunnel route dns` for each host (Cloudflare holds the zone).
+     Then `deno task status` against production must pass where it passed before, and snitch must log it. Rollback:
+     restore DNS and `DATABASE_URL`, and redeploy the last good Deploy revision (`wpvjvf13wgcf` on 11-12). Posts made on
+     pc in between are lost unless you dump them back.
+  6. After 7 quiet days, you delete the Deploy app and the Neon project, including the `ding_owner` role, whose password
+     reached a session transcript on 11-17.
+  7. After step 5, `grouch`, `hypebot`, and `replyguy` should beat within the hour. If `blogs` still lags, search
+     `journalctl -u ding` for `bot blogs failed`, and lower `SAMPLE` to 30 in bots/blogs.ts if it timed out at the 90 s
+     `BOT_TIMEOUT_MS` (60 feeds sampled, 8 s each).
 
 - [ ] Humans find ding and post each week. Fact (10-31): 74 users, 70 verified, none in the past 7 days. The only
       non-bot poster this week is `taylor_town` (11 posts). Serves "Somebody verified their email this week." (0), "3
@@ -179,12 +181,6 @@
      academic Zulip refugees). Keep the target list in `*ding`, not in this file.
   5. Run `deno task status` after each signup. The first three conditions must rise above 0.
   6. The 100-posters and paid-org goals wait on the Slack import entry. Do not build marketing code for them.
-
-- [ ] You get an email from Neon and Deno Deploy before ding hits a usage limit or its error rate spikes. These cover
-      the conditions `/status` cannot see: error rate across isolates, CPU, memory, bandwidth, and spend.
-  1. Neon console: storage, compute-hours, and spend alerts to surprisetalk@gmail.com.
-  2. Deno Deploy console: request, CPU, bandwidth, and error-rate alerts to the same address.
-  3. Then note in `claude.md` that these alerts live outside this repo.
 
 - [ ] You use ding from an iPhone app with real push notifications. Decision: native, not a PWA — push is the entire
       reason, and iOS web push needs the app installed anyway. Needs an Apple developer account, an APNs key, a device,

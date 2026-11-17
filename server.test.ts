@@ -1,6 +1,13 @@
 //// IMPORTS ///////////////////////////////////////////////////////////////////
 
-import { assertEquals, assertExists, assertRejects, assertStringIncludes, assertThrows } from "@std/assert";
+import {
+  assertEquals,
+  assertExists,
+  assertNotEquals,
+  assertRejects,
+  assertStringIncludes,
+  assertThrows,
+} from "@std/assert";
 import {
   buildMark,
   buildMsg,
@@ -304,6 +311,29 @@ Deno.test("postgres client disables prepared statements (Neon pooler is transact
   const src = Deno.readTextFileSync(new URL("./server.tsx", import.meta.url));
   const opts = src.slice(src.indexOf("export let sql: Sql = pg("), src.indexOf("export const setSql"));
   assertStringIncludes(opts, "prepare: false");
+});
+
+Deno.test("server.tsx boot: warns without RESEND_API_KEY, refuses an empty secret", async () => {
+  const boot = async (patch: Record<string, string | null>) => {
+    const env = Deno.env.toObject();
+    for (const [k, v] of Object.entries(patch)) v === null ? delete env[k] : (env[k] = v);
+    const { code, stderr } = await new Deno.Command(Deno.execPath(), {
+      args: ["eval", `await import(${JSON.stringify(new URL("./server.tsx", import.meta.url).href)})`],
+      clearEnv: true,
+      env,
+      stdout: "null",
+      stderr: "piped",
+    }).output();
+    return { code, stderr: new TextDecoder().decode(stderr) };
+  };
+  const noResend = await boot({ RESEND_API_KEY: null });
+  assertEquals(noResend.code, 0, noResend.stderr);
+  // An env file line `COOKIE_SECRET=` sets "", and an empty HMAC key lets anyone forge a session.
+  for (const k of ["COOKIE_SECRET", "EMAIL_TOKEN_SECRET", "KEY_WRAP_SECRET"]) {
+    const empty = await boot({ [k]: "" });
+    assertNotEquals(empty.code, 0, `${k}="" booted`);
+    assertStringIncludes(empty.stderr, `${k} required`);
+  }
 });
 
 Deno.test(

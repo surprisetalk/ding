@@ -6,3 +6,5 @@ bots.env
 .impeccable/
 .env.*
 !.env.example
+.claude/cutover/
+nightly*.dump

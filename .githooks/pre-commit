@@ -1,5 +1,7 @@
 #!/usr/bin/env bash
 set -e
+# NixOS keeps libstdc++ off the loader path, and sharp's addon links it. The ding unit on pc sets the same variable.
+if [ -e /etc/NIXOS ]; then LD_LIBRARY_PATH="$(dirname "$(gcc -print-file-name=libstdc++.so.6)")"; export LD_LIBRARY_PATH; fi
 for tool in gitleaks shellcheck; do command -v "$tool" >/dev/null || { echo "pre-commit: expected $tool on PATH, received none. Fix: brew install $tool" >&2; exit 1; }; done
 # gitleaks scans each commit that main@origin lacks, @ included. Alternative: gitleaks dir. It ignores .gitignore, so it scans .env and node_modules.
 ids=$(jj log --no-graph -r 'trunk()..@' -T 'commit_id ++ " "')

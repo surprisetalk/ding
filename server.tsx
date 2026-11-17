@@ -13,7 +13,9 @@ import { serveStatic, upgradeWebSocket } from "@hono/hono/deno";
 import type { HtmlEscapedString } from "@hono/hono/utils/html";
 import pg from "postgres";
 import { Resend } from "resend";
-export const resend = new Resend(Deno.env.get("RESEND_API_KEY") ?? "");
+// The Resend constructor throws on an empty key, which would crash boot. sendVerify throws on a missing key before it
+// sends, so the placeholder never reaches Resend.
+export const resend = new Resend(Deno.env.get("RESEND_API_KEY") || "re_missing");
 import Stripe from "stripe";
 import { parseHTML } from "linkedom";
 import { Readability } from "@mozilla/readability";
@@ -326,7 +328,7 @@ const buildAdditiveLink = (
 
 //// EMAIL TOKEN ///////////////////////////////////////////////////////////////
 
-const SECRET = Deno.env.get("EMAIL_TOKEN_SECRET") ??
+const SECRET = Deno.env.get("EMAIL_TOKEN_SECRET") ||
   (() => {
     throw new Error("EMAIL_TOKEN_SECRET required");
   })();
@@ -392,7 +394,7 @@ export const setSql = (s: Sql) => (sql = s);
 
 //// DHT ////////////////////////////////////////////////////////////////////////
 
-const KEY_WRAP_SECRET = Deno.env.get("KEY_WRAP_SECRET") ?? (() => {
+const KEY_WRAP_SECRET = Deno.env.get("KEY_WRAP_SECRET") || (() => {
   throw new Error("KEY_WRAP_SECRET required (stable; custodial private keys are encrypted under it)");
 })();
 
@@ -1333,7 +1335,7 @@ const Post = (c: Com, user?: string, p?: URLSearchParams) => {
 
 //// HONO //////////////////////////////////////////////////////////////////////
 
-const cookieSecret = Deno.env.get("COOKIE_SECRET") ?? (() => {
+const cookieSecret = Deno.env.get("COOKIE_SECRET") || (() => {
   throw new Error("COOKIE_SECRET required (a stable value, or sessions die on every restart)");
 })();
 const cookieOpts = { maxAge: 60 * 60 * 24 * 365, path: "/", httpOnly: true, sameSite: "Lax" as const };
