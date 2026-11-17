@@ -37,6 +37,17 @@
   2. Cut the cost where it lives (PGlite boot, child-process boots, real timers), then record the floor and its
      bottleneck in claude.md.
 
+- [ ] `blogs` finishes a run every hour. On pc its run fails with
+      `paginate: hit maxPages=50 for /c?usr=bot_blogs&sort=new&limit=100&p=0` (`journalctl -u ding`, 11-17): its dedupe
+      reads its whole post history, more than 5,000 rows.
+  1. Bound the dedupe read in bots/blogs.ts to the URLs it could repost (recent posts, or a lookup by URL), so it never
+     pages past 50.
+  2. Test in bots.test.ts: a bot with 6,000 prior posts finishes a run.
+
+- [ ] `reddit` posts every hour again. Since the move on 11-17, Reddit answers 429 to pc's IP for most subreddits.
+  1. Count a day of `journalctl -u ding | grep -c "Reddit 429"`. If it stays high, send a descriptive User-Agent first,
+     then try Reddit's app-only OAuth.
+
 ## Blocked on you
 
 - [ ] @lectures.bsky.social posts one talk a day from a catalog Taylor curates. Built and committed: `bots/lectures.ts`,

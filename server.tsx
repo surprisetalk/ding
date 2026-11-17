@@ -13,6 +13,7 @@ import { serveStatic, upgradeWebSocket } from "@hono/hono/deno";
 import type { HtmlEscapedString } from "@hono/hono/utils/html";
 import pg from "postgres";
 import { Resend } from "resend";
+import process from "node:process";
 // The Resend constructor throws on an empty key, which would crash boot. sendVerify throws on a missing key before it
 // sends, so the placeholder never reaches Resend.
 export const resend = new Resend(Deno.env.get("RESEND_API_KEY") || "re_missing");
@@ -4346,9 +4347,15 @@ export const checks: { cond: string; fix: string; grade: () => Promise<number> }
     },
   },
   {
-    cond: "The host's 5-minute load average is under its CPU count.",
-    fix: "pc's CPU is saturated: run `top` on pc and find the process",
-    grade: () => Promise.resolve(navigator.hardwareConcurrency / Math.max(Deno.loadavg()[1], 0.01)),
+    cond: "ding used under one CPU core on average since it started.",
+    fix:
+      "ding burns CPU: run `top -p $(systemctl show -p MainPID --value ding)` on pc, then look for a hot loop in `journalctl -u ding`",
+    // ding's own CPU, not the host's load: pc also runs vixing and three llama servers, and their load says nothing
+    // about ding. cpuUsage counts every thread in microseconds.
+    grade: () => {
+      const { user, system } = process.cpuUsage();
+      return Promise.resolve(performance.now() * 1000 / Math.max(user + system, 1));
+    },
   },
   {
     cond: "The nightly pg_dump is under 26 hours old.",

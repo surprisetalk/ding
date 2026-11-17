@@ -40,6 +40,7 @@ import { LECTURES_PATH, parseLectures } from "./bots/lectures.ts";
 import { jsx } from "@hono/hono/jsx";
 import { pgtemp } from "@surprisetalk/pgtemp";
 import pg from "postgres";
+import process from "node:process";
 import { citext } from "@electric-sql/pglite/contrib/citext";
 import { hstore } from "@electric-sql/pglite/contrib/hstore";
 import "./test_env.ts"; // sets env BEFORE server.tsx module evaluation (ES import order)
@@ -4873,8 +4874,10 @@ Deno.test(
 Deno.test(
   "status",
   pgtest((sql) => async (t) => {
-    // nightly.dump exists only on pc, so every step sees a fresh one; the stale-dump grade is plain arithmetic.
-    const stat = Deno.stat;
+    // nightly.dump exists only on pc, so every step sees a fresh one. The test runner burns CPU that ding would not,
+    // so ding's CPU reads idle. Both grades are plain arithmetic.
+    const stat = Deno.stat, cpuUsage = process.cpuUsage;
+    process.cpuUsage = () => ({ user: 0, system: 0 });
     Deno.stat =
       ((p: string | URL) =>
         String(p).endsWith("/nightly.dump")
@@ -4893,7 +4896,7 @@ Deno.test(
         "The dht ingested a row in the past 24h.",
         "The disk that holds Postgres is under 90% full.",
         "The host has 10% of its RAM available.",
-        "The host's 5-minute load average is under its CPU count.",
+        "ding used under one CPU core on average since it started.",
         "The nightly pg_dump is under 26 hours old.",
         "The ?submit= tagger used under 80% of its daily cap of 200 Haiku calls.",
         "DNS lookups answer, so ding can fetch link previews and /img.",
@@ -5072,6 +5075,7 @@ Deno.test(
       });
     } finally {
       Deno.stat = stat;
+      process.cpuUsage = cpuUsage;
     }
   }),
 );
