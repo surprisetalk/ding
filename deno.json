@@ -32,7 +32,6 @@
     "resend": "npm:resend@^6.37.0"
   },
   "tasks": {
-    "deploy": "deno run -A jsr:@deno/deployctl deploy --prod --project=dong server.tsx",
     "ding": "deno run -A ding.ts",
     "bot": "deno run -A bot.ts",
     "node": "deno serve -A node.tsx",
@@ -40,13 +39,5 @@
     "backfill": "deno run -A backfill.ts",
     "status": "deno run -A ding.ts status https://ding.bar/status",
     "test": "deno test -A"
-  },
-  "deploy": {
-    "project": "95835fd2-7685-4cb3-851e-ea50c53f0128",
-    "exclude": [
-      "**/node_modules"
-    ],
-    "include": [],
-    "entrypoint": "server.tsx"
   }
 }

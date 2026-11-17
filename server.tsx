@@ -374,13 +374,11 @@ const validateEmailToken = async (
 type Sql = ReturnType<typeof pg>;
 export let sql: Sql = pg(
   Deno.env.get(`DATABASE_URL`)?.replace(/flycast/, "internal")!,
-  // Every Deno Deploy isolate opens its own pool, so keep it small and let idle
-  // connections go. statement_timeout stops one pathological query pinning a slot.
-  // prepare:false is REQUIRED — DATABASE_URL points at Neon's `-pooler` endpoint, which is
-  // transaction-mode. There, named prepared statements outlive the client that made them and
-  // are handed to the next one, so any DDL that changes a result type ("alter table com drop
-  // column ...") makes every reused plan fail with `cached plan must not change result type`
-  // until the pooled backends recycle. That took the whole site down once; do not re-enable.
+  // Keep the pool small and let idle connections go. statement_timeout stops one pathological query pinning a slot.
+  // REVIEW: Keep prepare:false on pc's direct socket. A migration that changes a result type ("alter table com drop
+  // column ...") makes every cached plan fail with `cached plan must not change result type` until its connection
+  // closes, and migrate.sql runs while the server is live. Alternative: prepare on, and restart ding after each
+  // migration. It saves a parse per query but makes every migration a two-step deploy.
   {
     database: "ding",
     max: 3,
@@ -4207,7 +4205,7 @@ export async function runBotFleet(names: string[] = Object.keys(BOTS)) {
   console.log(`bot fleet: ${ok} ok, ${failed} failed, ${skipped} skipped`);
   if (failed > 0 && ok === 0) {
     throw new Error(
-      `every bot that ran failed.\n\n    expected: at least one bot to finish\n    received: ${failed} failed, ${ok} ok\n    source: runBotFleet in server.tsx\n\nLikely fix: see the 'bot <name> failed' lines above in the Deno Deploy logs.`,
+      `every bot that ran failed.\n\n    expected: at least one bot to finish\n    received: ${failed} failed, ${ok} ok\n    source: runBotFleet in server.tsx\n\nLikely fix: see the 'bot <name> failed' lines above in 'journalctl -u ding' on pc.`,
     );
   }
 }
@@ -4224,7 +4222,7 @@ const count = async (q: PromiseLike<{ n: number }[]>) => (await q)[0].n;
 export const checks: { cond: string; fix: string; grade: () => Promise<number> }[] = [
   {
     cond: "100 humans posted in the past 24h.",
-    fix: "too few daily posters, or the web app is down: open https://ding.bar and check the Deno Deploy logs",
+    fix: "too few daily posters, or the web app is down: open https://ding.bar and check `journalctl -u ding` on pc",
     // Bot accounts are named bot_<x>. Regex, not LIKE: in LIKE "_" is a wildcard and would also drop "botany".
     grade: async () =>
       await count(sql<{ n: number }[]>`
@@ -4244,14 +4242,14 @@ export const checks: { cond: string; fix: string; grade: () => Promise<number> }
   {
     cond: "Somebody verified their email this week.",
     fix:
-      "signup or the verify email is broken: check RESEND_API_KEY and 'Could not send verification email' in the Deno Deploy logs",
+      "signup or the verify email is broken: check RESEND_API_KEY and 'Could not send verification email' in `journalctl -u ding` on pc",
     grade: async () =>
       await count(sql<{ n: number }[]>`
         select count(*)::int as n from usr where email_verified_at > now() - interval '7 days'`),
   },
   {
     cond: "Somebody paid for an org this month.",
-    fix: "no org subscription started: check the Stripe webhook deliveries and POST /org in the Deno Deploy logs",
+    fix: "no org subscription started: check the Stripe webhook deliveries and POST /org in `journalctl -u ding` on pc",
     grade: async () =>
       await count(sql<{ n: number }[]>`
         select count(*)::int as n from org
@@ -4260,7 +4258,7 @@ export const checks: { cond: string; fix: string; grade: () => Promise<number> }
   {
     cond: "Every bot in bots/mod.ts finished a run in the past hour.",
     fix:
-      "a bot threw or lost its BOT_<NAME>_EMAIL/_PASSWORD: see the Deno Deploy logs for 'bot <name> failed' or 'skipping'",
+      "a bot threw or lost its BOT_<NAME>_EMAIL/_PASSWORD: see `journalctl -u ding` on pc for 'bot <name> failed' or 'skipping'",
     grade: async () => {
       const names = Object.keys(BOTS);
       const fresh = (await sql<{ name: string }[]>`
@@ -4272,7 +4270,7 @@ export const checks: { cond: string; fix: string; grade: () => Promise<number> }
         console.error(
           `status: expected every bot in bots/mod.ts to finish a run in the past hour, but ${stale.length} did not: ` +
             `${stale.join(", ")}. Source: the beat table, rows named bot:<name>. ` +
-            `Fix: search the Deno Deploy logs for "bot <name> failed" or "skipping".`,
+            `Fix: search 'journalctl -u ding' on pc for "bot <name> failed" or "skipping".`,
         );
       }
       return fresh.length / names.length;
@@ -4294,7 +4292,7 @@ export const checks: { cond: string; fix: string; grade: () => Promise<number> }
   {
     cond: "Every cron ran inside twice its period.",
     fix:
-      "a Deno.cron stopped or threw: run `select * from beat order by at` and see the Deno Deploy logs for 'cron failed'",
+      "a Deno.cron stopped or threw: run `select * from beat order by at` and see `journalctl -u ding` on pc for 'cron failed'",
     grade: async () =>
       await count(sql<{ n: number }[]>`
         select count(*)::int as n from beat b
@@ -4304,7 +4302,7 @@ export const checks: { cond: string; fix: string; grade: () => Promise<number> }
   },
   {
     cond: "The anonymous frontpage renders in 300ms.",
-    fix: "GET / is slow or failing: run explain analyze on the feed query in feedPosts and check Neon CPU",
+    fix: "GET / is slow or failing: run explain analyze on the feed query in feedPosts and check the load on pc",
     grade: async () => {
       const t0 = performance.now();
       const res = await app.request("/");
@@ -4316,7 +4314,7 @@ export const checks: { cond: string; fix: string; grade: () => Promise<number> }
   },
   {
     cond: "The dht ingested a row in the past 24h.",
-    fix: "no signed row arrived: check the Deno Deploy logs for POST /db errors and bots/checkmark.ts",
+    fix: "no signed row arrived: check `journalctl -u ding` on pc for POST /db errors and bots/checkmark.ts",
     // Newest row by the seq index. count(*) would scan the whole log.
     grade: async () => {
       const [row] = await sql<{ age: number }[]>`
@@ -4325,12 +4323,41 @@ export const checks: { cond: string; fix: string; grade: () => Promise<number> }
     },
   },
   {
-    cond: "Postgres uses under 80% of Neon's 0.5 GB free-tier storage.",
-    fix: "the database is near its cap: find big tables with pg_total_relation_size, prune, or upgrade the Neon plan",
-    // 0.5 GB is Neon's free-plan cap. A plan change moves it.
+    cond: "The disk that holds Postgres is under 90% full.",
+    fix:
+      "pc's disk is nearly full: run `sudo du -xh --max-depth=2 / | sort -h | tail` on pc, and find big tables with pg_total_relation_size",
+    // Deno has no statfs, so ask df. pc keeps Postgres and ding on one root filesystem.
     grade: async () => {
-      const [row] = await sql<{ n: number }[]>`select pg_database_size(current_database())::float8 as n`;
-      return (0.8 * 0.5 * 1024 ** 3) / row.n;
+      const out = await new Deno.Command("df", { args: ["--output=pcent", "/"], signal: AbortSignal.timeout(5_000) })
+        .output();
+      const text = new TextDecoder().decode(out.stdout);
+      const pct = Number(text.match(/(\d+)%/)?.[1]);
+      if (!out.success || !Number.isFinite(pct))
+        throw new Error(`df --output=pcent /: expected a percentage, received ${JSON.stringify(text)}`);
+      return 90 / Math.max(pct, 1);
+    },
+  },
+  {
+    cond: "The host has 10% of its RAM available.",
+    fix: "pc is short of memory: run `systemctl status` and `ps aux --sort=-rss | head` on pc",
+    grade: () => {
+      const m = Deno.systemMemoryInfo();
+      return Promise.resolve(m.available / m.total / 0.1);
+    },
+  },
+  {
+    cond: "The host's 5-minute load average is under its CPU count.",
+    fix: "pc's CPU is saturated: run `top` on pc and find the process",
+    grade: () => Promise.resolve(navigator.hardwareConcurrency / Math.max(Deno.loadavg()[1], 0.01)),
+  },
+  {
+    cond: "The nightly pg_dump is under 26 hours old.",
+    fix:
+      "ding-backup stopped: run `systemctl status ding-backup` and `journalctl -u ding-backup` on pc, then `sudo systemctl start ding-backup`",
+    // ding-backup on pc (/etc/nixos/flake.nix) writes here, and r2-backup copies ~/Developer to R2.
+    grade: async () => {
+      const { mtime } = await Deno.stat("/home/taylor/Developer/ding/nightly.dump");
+      return (26 * 3600_000) / Math.max(Date.now() - mtime!.getTime(), 1);
     },
   },
   {
@@ -4346,7 +4373,7 @@ export const checks: { cond: string; fix: string; grade: () => Promise<number> }
   {
     cond: "DNS lookups answer, so ding can fetch link previews and /img.",
     fix:
-      "Deno.resolveDns fails on this host, so fetchPublic refuses every page and image: see the Deno Deploy logs for resolver errors",
+      "Deno.resolveDns fails on this host, so fetchPublic refuses every page and image: see `journalctl -u ding` on pc for resolver errors",
     // fetchPublic resolves every host before it fetches, and refuses when the lookup throws.
     grade: async () => (await Deno.resolveDns("ding.bar", "A")).length,
   },
@@ -4396,7 +4423,7 @@ app.get("/status", async (c) => {
   return c.json(body, Object.values(body).every((v) => v["0"] >= 1) ? 200 : 503);
 });
 
-// Each cron registers ONLY on Deno Deploy (DENO_DEPLOYMENT_ID is unset locally and in tests,
+// Each cron registers ONLY in production (the ding unit on pc sets DENO_DEPLOYMENT_ID; it is unset locally and in tests,
 // so none fires there or trips the test sanitizer). periodS must match the schedule.
 // A cron that returns writes its beat; a cron that throws logs and writes none.
 export const CRONS: { name: string; schedule: string; periodS: number; run: () => Promise<unknown> }[] = [

@@ -160,7 +160,7 @@ switch (cmd) {
       die(
         `status cannot reach ${url}.\n\n    expected: an answer within 10 s\n    received: ${
           e instanceof Error ? e.message : e
-        }\n    source: ${url}\n\nLikely fix: check the Deno Deploy dashboard for the ding project. For a local server, run it and pass its URL.`,
+        }\n    source: ${url}\n\nLikely fix: run 'systemctl status ding' and 'journalctl -u ding' on pc. For a local server, run it and pass its URL.`,
       );
     }
     let report: unknown;

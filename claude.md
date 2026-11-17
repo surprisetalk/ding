@@ -80,13 +80,17 @@ robots rules at all (this is why bot traffic was heavy). Any edit must keep real
 `curl -s .../robots.txt | od
 -c` is the check, and a test asserts the file never contains `\n` as text again.
 
-**Postgres connection**: `DATABASE_URL` is Neon's **`-pooler`** endpoint (transaction mode), so `server.tsx` sets
-`prepare: false`. Named prepared statements there outlive the client that created them and are reused by the next one,
-so any DDL that changes a result type (`alter table ... drop column`) makes every cached plan fail with
-`cached plan
-must not change result type` — site-wide, including freshly-started isolates. Recover by terminating the
-pooled backends (`pg_terminate_backend`), never with `deallocate all`. Also set: `max: 3` (each isolate gets its own
-pool), `idle_timeout: 20`, `statement_timeout: 15s`.
+**Hosting**: production is the `ding` systemd unit on `pc` (`/etc/nixos/flake.nix`), serving 127.0.0.1:8052 from the
+clone at `~/ding` behind the cloudflared tunnel. A push to `main` deploys: `ding-pull` fetches each minute, and
+`ding-restart` restarts the unit when HEAD moves. Secrets live in `/var/lib/ding/env` (0600). Postgres is local
+(`DATABASE_URL=postgres:///ding`, `PGHOST=/run/postgresql`: postgres.js takes a socket only from `PGHOST`). Logs:
+`journalctl -u ding`. `ding-backup` dumps nightly to `~/Developer/ding/nightly.dump`, and r2-backup copies it to R2.
+sharp needs `LD_LIBRARY_PATH` to gcc's lib on NixOS; the unit and `.githooks/pre-commit` set it.
+
+**Postgres connection**: `server.tsx` sets `prepare: false`. With prepare on, DDL that changes a result type
+(`alter table ... drop column`) makes every cached plan fail with `cached plan must not change result type` until its
+connection closes. Recover by terminating the backends (`pg_terminate_backend`), never with `deallocate all`. Also set:
+`max: 3`, `idle_timeout: 20`, `statement_timeout: 15s`.
 
 **Database** (`db.sql`):
 
@@ -139,7 +143,7 @@ signed.
   `bots/checkmark.ts` exports `runCheckmark()` (the **only** signer with `DING_ORG_SK`): `email` marks for verified
   users (100yr), plus `dns:`/`github:` marks (1-day leases) proved from a user's **`usr` register** links —
   `_ding.<domain>` TXT `ding_id=<id>` or the id in a GitHub bio (handle sanitized). It runs hourly via **`Deno.cron`**
-  in `server.tsx`, gated on `DENO_DEPLOYMENT_ID` so it registers only on Deno Deploy (never in tests/local). The
+  in `server.tsx`, gated on `DENO_DEPLOYMENT_ID` so it registers only in production (never in tests/local). The
   in-server cron passes a **`sink`** so `runCheckmark` ingests marks via `ingestMsg` **directly** — NOT an HTTP POST to
   `db.ding.bar` (a Deno Deploy isolate fetching its own custom domain redirect-loops, which silently dropped every
   mark). `deno task checkmark` (standalone) still POSTs over HTTP. `Deno.cron` needs `unstable: ["cron"]` +
@@ -180,8 +184,8 @@ signed.
 - **Prod migration**: `migrate.sql` (idempotent additive schema delta, validated), `migration.md` (runbook — ordering,
   irreversibility warnings, smoke checklist, rollback), and `backfill.ts` (`deno task backfill`) signs legacy public
   posts into the dht (resumable/idempotent; reactions + private posts excluded).
-- **Deploy note:** all DHT secrets live in Deno Deploy env (`KEY_WRAP_SECRET`, `DING_ORG_PK`, `DING_ORG_SK`, `DING_DB`);
-  the checkmark cron is in-server `Deno.cron`. Run `keygen.ts` to generate them.
+- **Deploy note:** all DHT secrets live in `/var/lib/ding/env` on pc (`KEY_WRAP_SECRET`, `DING_ORG_PK`, `DING_ORG_SK`,
+  `DING_DB`); the checkmark cron is in-server `Deno.cron`. Run `keygen.ts` to generate them.
 - **Explicit 70% cuts (deferred):** lease-wrapping register links + mark revocation tombstones (link marks already
   expire via DAY leases; long email marks are a known recycled-address weakness); verified-link chips in the UI;
   weighted-flag trust engine; in-browser WebCrypto signing for self-custody web posts; retention/compaction; wiring
@@ -266,8 +270,8 @@ signed.
   single-grapheme votes — that blindness made critic re-judge the same posts every 5-min tick and toggle its own votes
   off.
 - `bots/checkmark.ts` is NOT part of the fleet (not in `bots/mod.ts`; consumed by `server.tsx` as `runCheckmark`)
-- Credentials live in Deno Deploy env, not GitHub secrets. `bots.env` (gitignored) is the upload file; `bot_linkedin`
-  still has a `usr` row but no bot file, so nothing runs it.
+- Credentials live in `/var/lib/ding/env` on pc. `bots.env` (gitignored) is their source; `bot_linkedin` still has a
+  `usr` row but no bot file, so nothing runs it.
 
 ## Label System
 

@@ -303,11 +303,10 @@ const pgtest = (f: (sql: pg.Sql) => (t: Deno.TestContext) => Promise<void>) => a
 
 const basic = (email: string, pass: string) => ({ Authorization: "Basic " + btoa(`${email}:${pass}`) });
 
-// DATABASE_URL is Neon's transaction-mode `-pooler`, where a named prepared statement outlives
-// the client that made it. With prepare on, `alter table ... drop column` invalidates the cached
-// plans and every isolate 500s with "cached plan must not change result type". That took ding.bar
-// down on 2026-08-09; this pins the setting so it can't be dropped by accident.
-Deno.test("postgres client disables prepared statements (Neon pooler is transaction-mode)", () => {
+// With prepare on, a migration that changes a result type ("alter table ... drop column") makes every
+// cached plan fail with "cached plan must not change result type" until its connection closes. That
+// took ding.bar down on 2026-08-09; this pins the setting so it can't be dropped by accident.
+Deno.test("postgres client disables prepared statements", () => {
   const src = Deno.readTextFileSync(new URL("./server.tsx", import.meta.url));
   const opts = src.slice(src.indexOf("export let sql: Sql = pg("), src.indexOf("export const setSql"));
   assertStringIncludes(opts, "prepare: false");
@@ -4874,192 +4873,206 @@ Deno.test(
 Deno.test(
   "status",
   pgtest((sql) => async (t) => {
-    const SENTENCES = [
-      "100 humans posted in the past 24h.",
-      "3 humans besides taylor posted this week.",
-      "Somebody verified their email this week.",
-      "Somebody paid for an org this month.",
-      "Every bot in bots/mod.ts finished a run in the past hour.",
-      "bots/data/lectures.tsv holds 14 talks that @lectures has not posted.",
-      "Every cron ran inside twice its period.",
-      "The anonymous frontpage renders in 300ms.",
-      "The dht ingested a row in the past 24h.",
-      "Postgres uses under 80% of Neon's 0.5 GB free-tier storage.",
-      "The ?submit= tagger used under 80% of its daily cap of 200 Haiku calls.",
-      "DNS lookups answer, so ding can fetch link previews and /img.",
-    ];
-    const get = async () => {
-      gradeMemo.run = null;
-      const res = await app.request("/status");
-      return { res, body: await res.json() as Record<string, Record<string, number>> };
-    };
-    const grades = async () => Object.fromEntries((await gradeAll()).map((g) => [g.cond, g.grade]));
-    const humans = (names: string[]) =>
-      sql`insert into com (created_by, body, tags, orgs, usrs) select n, 'status test post', '{status}', '{}', '{}' from unnest(${names}::text[]) n`;
+    // nightly.dump exists only on pc, so every step sees a fresh one; the stale-dump grade is plain arithmetic.
+    const stat = Deno.stat;
+    Deno.stat =
+      ((p: string | URL) =>
+        String(p).endsWith("/nightly.dump")
+          ? Promise.resolve({ mtime: new Date() } as Deno.FileInfo)
+          : stat(p)) as typeof Deno.stat;
+    try {
+      const SENTENCES = [
+        "100 humans posted in the past 24h.",
+        "3 humans besides taylor posted this week.",
+        "Somebody verified their email this week.",
+        "Somebody paid for an org this month.",
+        "Every bot in bots/mod.ts finished a run in the past hour.",
+        "bots/data/lectures.tsv holds 14 talks that @lectures has not posted.",
+        "Every cron ran inside twice its period.",
+        "The anonymous frontpage renders in 300ms.",
+        "The dht ingested a row in the past 24h.",
+        "The disk that holds Postgres is under 90% full.",
+        "The host has 10% of its RAM available.",
+        "The host's 5-minute load average is under its CPU count.",
+        "The nightly pg_dump is under 26 hours old.",
+        "The ?submit= tagger used under 80% of its daily cap of 200 Haiku calls.",
+        "DNS lookups answer, so ding can fetch link previews and /img.",
+      ];
+      const get = async () => {
+        gradeMemo.run = null;
+        const res = await app.request("/status");
+        return { res, body: await res.json() as Record<string, Record<string, number>> };
+      };
+      const grades = async () => Object.fromEntries((await gradeAll()).map((g) => [g.cond, g.grade]));
+      const humans = (names: string[]) =>
+        sql`insert into com (created_by, body, tags, orgs, usrs) select n, 'status test post', '{status}', '{}', '{}' from unnest(${names}::text[]) n`;
 
-    await t.step("seeded db answers 503 with every sentence", async () => {
-      const { res, body } = await get();
-      assertEquals(res.status, 503);
-      assertEquals(res.headers.get("cache-control"), "no-store");
-      assertEquals(Object.keys(body), SENTENCES);
-      for (const v of Object.values(body)) assertEquals(Object.keys(v), ["0"]);
-    });
+      await t.step("seeded db answers 503 with every sentence", async () => {
+        const { res, body } = await get();
+        assertEquals(res.status, 503);
+        assertEquals(res.headers.get("cache-control"), "no-store");
+        assertEquals(Object.keys(body), SENTENCES);
+        for (const v of Object.values(body)) assertEquals(Object.keys(v), ["0"]);
+      });
 
-    await t.step("the tagger cap grades today's spend row", async () => {
-      await sql`delete from spend`;
-      assertEquals((await grades())[SENTENCES[SENTENCES.length - 2]], 160);
-      await sql`insert into spend (day, name, n) values ((now() at time zone 'utc')::date, 'tagger', 320)`;
-      assertEquals((await grades())[SENTENCES[SENTENCES.length - 2]], 0.5);
-      await sql`delete from spend`;
-    });
+      await t.step("the tagger cap grades today's spend row", async () => {
+        await sql`delete from spend`;
+        assertEquals((await grades())[SENTENCES[SENTENCES.length - 2]], 160);
+        await sql`insert into spend (day, name, n) values ((now() at time zone 'utc')::date, 'tagger', 320)`;
+        assertEquals((await grades())[SENTENCES[SENTENCES.length - 2]], 0.5);
+        await sql`delete from spend`;
+      });
 
-    await t.step("bot_* posters do not count as humans; botany does", async () => {
-      await sql`update com set parent_cid = null`;
-      await sql`delete from com`;
-      const bots = ["bot_hn", "bot_a", "bot_b", "bot_c", "bot_d", "bot_e"];
-      await sql`insert into usr (name, email, password, bio, email_verified_at, invited_by)
+      await t.step("bot_* posters do not count as humans; botany does", async () => {
+        await sql`update com set parent_cid = null`;
+        await sql`delete from com`;
+        const bots = ["bot_hn", "bot_a", "bot_b", "bot_c", "bot_d", "bot_e"];
+        await sql`insert into usr (name, email, password, bio, email_verified_at, invited_by)
         select n, n || '@ding.bar', 'x', 'beep', now(), 'john_doe' from unnest(${[
-        ...bots,
-        "botany",
-        "taylor",
-      ]}::text[]) n`;
-      await humans(bots);
-      assertEquals((await grades())[SENTENCES[0]], 0);
-      await humans(["botany"]);
-      assertEquals((await grades())[SENTENCES[0]], 0.01);
-      await humans(["taylor"]);
-      assertEquals((await grades())[SENTENCES[1]], 0.33); // botany only: taylor is excluded
-    });
+          ...bots,
+          "botany",
+          "taylor",
+        ]}::text[]) n`;
+        await humans(bots);
+        assertEquals((await grades())[SENTENCES[0]], 0);
+        await humans(["botany"]);
+        assertEquals((await grades())[SENTENCES[0]], 0.01);
+        await humans(["taylor"]);
+        assertEquals((await grades())[SENTENCES[1]], 0.33); // botany only: taylor is excluded
+      });
 
-    await t.step("the lectures runway counts rows whose URL no bot_lectures post carries", async () => {
-      const rows = parseLectures(await Deno.readTextFile(LECTURES_PATH));
-      assertEquals((await grades())[SENTENCES[5]], Math.floor(rows.length / 14 * 100) / 100);
-      await sql`insert into usr (name, email, password, bio, email_verified_at, invited_by)
+      await t.step("the lectures runway counts rows whose URL no bot_lectures post carries", async () => {
+        const rows = parseLectures(await Deno.readTextFile(LECTURES_PATH));
+        assertEquals((await grades())[SENTENCES[5]], Math.floor(rows.length / 14 * 100) / 100);
+        await sql`insert into usr (name, email, password, bio, email_verified_at, invited_by)
         values ('bot_lectures', 'bot-lectures@ding.bar', 'x', 'hi', now(), 'john_doe')`;
-      await sql`insert into com (created_by, body, tags, orgs, usrs)
+        await sql`insert into com (created_by, body, tags, orgs, usrs)
         values ('bot_lectures', ${"Ann: Talk " + rows[0].url}, '{lecture}', '{}', '{}')`;
-      assertEquals((await grades())[SENTENCES[5]], Math.floor((rows.length - 1) / 14 * 100) / 100);
-    });
+        assertEquals((await grades())[SENTENCES[5]], Math.floor((rows.length - 1) / 14 * 100) / 100);
+      });
 
-    await t.step("a healthy db answers 200", async () => {
-      const crowd = Array.from({ length: 100 }, (_, i) => `human_${i}`);
-      await sql`insert into usr (name, email, password, bio, email_verified_at, invited_by)
+      await t.step("a healthy db answers 200", async () => {
+        const crowd = Array.from({ length: 100 }, (_, i) => `human_${i}`);
+        await sql`insert into usr (name, email, password, bio, email_verified_at, invited_by)
         select n, n || '@ding.bar', 'x', 'hi', now(), 'john_doe' from unnest(${crowd}::text[]) n`;
-      await humans(crowd);
-      await sql`insert into org (name, created_by, stripe_sub_id) values ('paidorg', 'john_doe', 'sub_status')`;
-      const names = [...Object.keys(BOTS).map((k) => `bot:${k}`), ...CRONS.map((c) => c.name)];
-      for (const n of names) await beat(n);
-      await sql`insert into dht (k, kind, pubkey, ts, sig, val)
+        await humans(crowd);
+        await sql`insert into org (name, created_by, stripe_sub_id) values ('paidorg', 'john_doe', 'sub_status')`;
+        const names = [...Object.keys(BOTS).map((k) => `bot:${k}`), ...CRONS.map((c) => c.name)];
+        for (const n of names) await beat(n);
+        await sql`insert into dht (k, kind, pubkey, ts, sig, val)
         values ('k1', 'msg', ${"a".repeat(64)}, 1, ${"b".repeat(128)}, '{}')`;
-      await app.request("/"); // warm the first render
-      const { res, body } = await get();
-      assertEquals(
-        Object.entries(body).filter(([, v]) => v["0"] < 1),
-        [],
-      );
-      assertEquals(res.status, 200);
-    });
+        await app.request("/"); // warm the first render
+        const { res, body } = await get();
+        assertEquals(
+          Object.entries(body).filter(([, v]) => v["0"] < 1),
+          [],
+        );
+        assertEquals(res.status, 200);
+      });
 
-    await t.step("a stale bot is named in the log when the grade drops", async () => {
-      await sql`delete from beat where name = 'bot:welcome'`;
-      const logged: string[] = [];
-      const orig = console.error;
-      console.error = (...a: unknown[]) => void logged.push(a.join(" "));
-      try {
-        const g = (await grades())[SENTENCES[4]];
-        assertEquals(g < 1, true);
-      } finally {
-        console.error = orig;
-      }
-      const line = logged.find((l) => l.includes("finish a run"));
-      assertEquals(line?.includes("welcome"), true, `no stale-bot log line naming welcome: ${logged.join("|")}`);
-      await beat("bot:welcome");
-    });
-
-    await t.step("runBotFleet beats only bots that finished", async () => {
-      await sql`delete from beat where name like 'bot:%'`;
-      await sql`insert into usr (name, email, password, bio, email_verified_at, invited_by) values
-        ('bot_cowsay', 'bot-cowsay@ding.bar', 'hashed:cowpw!', 'moo', now(), 'john_doe')`;
-      Deno.env.set("BOT_COWSAY_EMAIL", "bot-cowsay@ding.bar");
-      Deno.env.set("BOT_COWSAY_PASSWORD", "cowpw!");
-      Deno.env.set("BOT_DICE_EMAIL", "bot-cowsay@ding.bar");
-      Deno.env.set("BOT_DICE_PASSWORD", "wrong!");
-      Deno.env.delete("BOT_EIGHTBALL_EMAIL");
-      try {
-        await runBotFleet(["cowsay", "dice"]);
-      } finally {
-        for (const k of ["COWSAY", "DICE"]) {
-          Deno.env.delete(`BOT_${k}_EMAIL`);
-          Deno.env.delete(`BOT_${k}_PASSWORD`);
+      await t.step("a stale bot is named in the log when the grade drops", async () => {
+        await sql`delete from beat where name = 'bot:welcome'`;
+        const logged: string[] = [];
+        const orig = console.error;
+        console.error = (...a: unknown[]) => void logged.push(a.join(" "));
+        try {
+          const g = (await grades())[SENTENCES[4]];
+          assertEquals(g < 1, true);
+        } finally {
+          console.error = orig;
         }
-      }
-      const rows = await sql`select name from beat where name like 'bot:%' order by name`;
-      assertEquals(rows.map((r) => r.name), ["bot:cowsay"]);
-    });
+        const line = logged.find((l) => l.includes("finish a run"));
+        assertEquals(line?.includes("welcome"), true, `no stale-bot log line naming welcome: ${logged.join("|")}`);
+        await beat("bot:welcome");
+      });
 
-    await t.step("runBotFleet throws when every bot that ran failed", async () => {
-      Deno.env.set("BOT_DICE_EMAIL", "bot-cowsay@ding.bar");
-      Deno.env.set("BOT_DICE_PASSWORD", "wrong!");
-      try {
-        await assertRejects(() => runBotFleet(["dice"]), Error, "every bot that ran failed");
-      } finally {
-        Deno.env.delete("BOT_DICE_EMAIL");
-        Deno.env.delete("BOT_DICE_PASSWORD");
-      }
-    });
+      await t.step("runBotFleet beats only bots that finished", async () => {
+        await sql`delete from beat where name like 'bot:%'`;
+        await sql`insert into usr (name, email, password, bio, email_verified_at, invited_by) values
+        ('bot_cowsay', 'bot-cowsay@ding.bar', 'hashed:cowpw!', 'moo', now(), 'john_doe')`;
+        Deno.env.set("BOT_COWSAY_EMAIL", "bot-cowsay@ding.bar");
+        Deno.env.set("BOT_COWSAY_PASSWORD", "cowpw!");
+        Deno.env.set("BOT_DICE_EMAIL", "bot-cowsay@ding.bar");
+        Deno.env.set("BOT_DICE_PASSWORD", "wrong!");
+        Deno.env.delete("BOT_EIGHTBALL_EMAIL");
+        try {
+          await runBotFleet(["cowsay", "dice"]);
+        } finally {
+          for (const k of ["COWSAY", "DICE"]) {
+            Deno.env.delete(`BOT_${k}_EMAIL`);
+            Deno.env.delete(`BOT_${k}_PASSWORD`);
+          }
+        }
+        const rows = await sql`select name from beat where name like 'bot:%' order by name`;
+        assertEquals(rows.map((r) => r.name), ["bot:cowsay"]);
+      });
 
-    await t.step("runCron beats under its own name only when the job returns", async () => {
-      await sql`delete from beat where name like 'ding-%'`;
-      for (const cron of CRONS.filter((c) => ["ding-prune-unverified", "ding-refresh-stats"].includes(c.name)))
-        await runCron(cron);
-      assertEquals(
-        (await sql`select name from beat where name like 'ding-%' order by name`).map((r) => r.name),
-        ["ding-prune-unverified", "ding-refresh-stats"],
-      );
-      const cron = CRONS.map((c) => c.name).sort();
-      assertEquals(cron, ["ding-bots", "ding-checkmark", "ding-prune-unverified", "ding-refresh-stats"]);
-    });
+      await t.step("runBotFleet throws when every bot that ran failed", async () => {
+        Deno.env.set("BOT_DICE_EMAIL", "bot-cowsay@ding.bar");
+        Deno.env.set("BOT_DICE_PASSWORD", "wrong!");
+        try {
+          await assertRejects(() => runBotFleet(["dice"]), Error, "every bot that ran failed");
+        } finally {
+          Deno.env.delete("BOT_DICE_EMAIL");
+          Deno.env.delete("BOT_DICE_PASSWORD");
+        }
+      });
 
-    await t.step("ding status exits 1 when unhealthy and 0 when healthy", async () => {
-      const server = Deno.serve({ port: 0, onListen() {} }, app.fetch);
-      try {
-        const url = `http://127.0.0.1:${server.addr.port}/status`;
-        const run = async () => {
-          gradeMemo.run = null;
-          const out = await new Deno.Command(Deno.execPath(), {
-            args: ["run", "-A", "ding.ts", "status", url],
-            env: { HOME: "/nonexistent" },
-            stdout: "piped",
-            stderr: "piped",
-          }).output();
-          assertEquals(Object.keys(JSON.parse(new TextDecoder().decode(out.stdout))), SENTENCES);
-          return out.code;
-        };
-        assertEquals(await run(), 1);
-        for (const n of [...Object.keys(BOTS).map((k) => `bot:${k}`), ...CRONS.map((c) => c.name)]) await beat(n);
-        assertEquals(await run(), 0);
-      } finally {
-        await server.shutdown();
-      }
-    });
+      await t.step("runCron beats under its own name only when the job returns", async () => {
+        await sql`delete from beat where name like 'ding-%'`;
+        for (const cron of CRONS.filter((c) => ["ding-prune-unverified", "ding-refresh-stats"].includes(c.name)))
+          await runCron(cron);
+        assertEquals(
+          (await sql`select name from beat where name like 'ding-%' order by name`).map((r) => r.name),
+          ["ding-prune-unverified", "ding-refresh-stats"],
+        );
+        const cron = CRONS.map((c) => c.name).sort();
+        assertEquals(cron, ["ding-bots", "ding-checkmark", "ding-prune-unverified", "ding-refresh-stats"]);
+      });
 
-    await t.step("a check that throws grades 0 and answers 503, not healthy", async () => {
-      await sql`drop table dht`;
-      const { res, body } = await get();
-      assertEquals(res.status, 503);
-      assertEquals(Object.keys(body), SENTENCES);
-      assertEquals(body[SENTENCES[8]]["0"], 0);
-    });
+      await t.step("ding status exits 1 when unhealthy and 0 when healthy", async () => {
+        const server = Deno.serve({ port: 0, onListen() {} }, app.fetch);
+        try {
+          const url = `http://127.0.0.1:${server.addr.port}/status`;
+          const run = async () => {
+            gradeMemo.run = null;
+            const out = await new Deno.Command(Deno.execPath(), {
+              args: ["run", "-A", "ding.ts", "status", url],
+              env: { HOME: "/nonexistent" },
+              stdout: "piped",
+              stderr: "piped",
+            }).output();
+            assertEquals(Object.keys(JSON.parse(new TextDecoder().decode(out.stdout))), SENTENCES);
+            return out.code;
+          };
+          assertEquals(await run(), 1);
+          for (const n of [...Object.keys(BOTS).map((k) => `bot:${k}`), ...CRONS.map((c) => c.name)]) await beat(n);
+          assertEquals(await run(), 0);
+        } finally {
+          await server.shutdown();
+        }
+      });
 
-    await t.step("a resolver that fails grades the DNS condition 0", async () => {
-      const dns = Deno.resolveDns;
-      Deno.resolveDns = (() => Promise.reject(new Error("resolver unreachable"))) as typeof Deno.resolveDns;
-      try {
-        assertEquals((await get()).body[SENTENCES[11]]["0"], 0);
-      } finally {
-        Deno.resolveDns = dns;
-      }
-    });
+      await t.step("a check that throws grades 0 and answers 503, not healthy", async () => {
+        await sql`drop table dht`;
+        const { res, body } = await get();
+        assertEquals(res.status, 503);
+        assertEquals(Object.keys(body), SENTENCES);
+        assertEquals(body[SENTENCES[8]]["0"], 0);
+      });
+
+      await t.step("a resolver that fails grades the DNS condition 0", async () => {
+        const dns = Deno.resolveDns;
+        Deno.resolveDns = (() => Promise.reject(new Error("resolver unreachable"))) as typeof Deno.resolveDns;
+        try {
+          assertEquals((await get()).body[SENTENCES.at(-1)!]["0"], 0);
+        } finally {
+          Deno.resolveDns = dns;
+        }
+      });
+    } finally {
+      Deno.stat = stat;
+    }
   }),
 );
 
