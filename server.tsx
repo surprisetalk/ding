@@ -245,7 +245,9 @@ const fetchPage = async (url: string) => {
   };
 };
 
-const resolveThumbnail = async (url: string) => {
+const resolveThumbnail = async (url: string): Promise<string | null> => {
+  // extractFirstUrl matches text like `https://?x` that URL cannot parse. The post stands; it just gets no thumbnail.
+  if (!URL.canParse(url)) return null;
   if (/\.(?:jpe?g|png|gif|webp|svg)(?:\?|$)/i.test(url)) return url;
   // never fetch video files as text — fall straight to the favicon
   if (!/\.(?:mp4|webm)(?:\?|$)/i.test(url)) {
@@ -1380,6 +1382,14 @@ const form = async <K extends string = never>(
   const f: Record<string, string> = Object.fromEntries(
     [...(await c.req.formData()).entries()].map(([k, v]) => [k, v.toString()]),
   );
+  // Postgres text cannot hold a NUL; the driver would raise and the caller would get an opaque 500.
+  const nul = Object.keys(f).find((k) => f[k].includes("\0"));
+  if (nul) {
+    throw new HTTPException(400, {
+      message:
+        `expected form fields without a NUL byte, received a NUL byte in "${nul}". fix: remove the \\0 character.`,
+    });
+  }
   const missing = required.find((k) => f[k] === undefined);
   if (missing) {
     throw new HTTPException(400, {
@@ -3587,7 +3597,7 @@ app.post("/c/:p?", async (c) => {
   // its 400 for bots, api callers, and any script that sends Basic Auth, so a script never gets an HTML page instead.
   if (
     !pid && host(c) !== "api" && !c.req.header("authorization") && text.trim() && [...text].length <= 4096 &&
-    !text.includes("\0") && !labels.includes("\0") && !labelled(parseLabels(labels))
+    !labelled(parseLabels(labels))
   ) {
     // A draft can fetch a page and spend a tagger call, so it counts as a post attempt.
     if (!rateHit(postRate, n, POST_RATE_MAX, POST_RATE_MS))
@@ -3653,11 +3663,6 @@ app.post("/p", async (c) => {
       message: `vote must be "1" (▲) or "-1" (▼), got "${f.vote ?? ""}".`,
     });
   }
-  // Postgres text cannot hold a NUL; without this the driver raises and the user gets an
-  // opaque 500 instead of the one thing they could act on.
-  if (raw.includes("\0"))
-    throw new HTTPException(400, { message: "label contains a NUL byte." });
-
   const l = parseLabels(raw),
     picked = (["tag", "usr", "www"] as const).filter((k) => l[k].length);
   if (l.text || l.org.length || picked.length !== 1 || l[picked[0]].length !== 1) {

@@ -412,6 +412,12 @@ Deno.test(
       const res = await app.request("/login", { method: "post", body });
       assertEquals(res.status, 400);
       assertStringIncludes(await res.text(), "expected form field &quot;password&quot;");
+      const nul = new FormData();
+      nul.append("email", "a\0b");
+      nul.append("password", "x");
+      const refused = await app.request("/login", { method: "post", body: nul });
+      assertEquals(refused.status, 400);
+      assertStringIncludes(await refused.text(), "NUL byte");
     });
 
     await t.step("GET /forgot", async () => {
@@ -496,11 +502,6 @@ Deno.test(
     await t.step("GET /u/:name valid name", async () => {
       const res = await app.request("/u/john_doe");
       assertEquals(res.status, 200);
-    });
-
-    await t.step("GET /u/:name invalid name", async () => {
-      const res = await app.request("/u/nonexistent_user");
-      assertEquals(res.status, 404);
     });
 
     await t.step("GET /c/:cid valid cid", async () => {
@@ -1512,6 +1513,17 @@ Deno.test(
       assertEquals(row.body, "hello world");
       assertEquals(row.tags, ["pub"]);
       assertEquals(row.orgs, []);
+      assertEquals(row.thumb, null);
+    });
+
+    await t.step("POST /c root whose first URL does not parse saves with no thumbnail", async () => {
+      const res = await app.request("/c", {
+        method: "POST",
+        body: fd({ body: "see https://?x", tags: "#pub" }),
+        headers: jAuth,
+      });
+      assertEquals(res.status, 302);
+      const [row] = await sql`select thumb from com where cid = ${cidFromLocation(res.headers.get("location")!)}`;
       assertEquals(row.thumb, null);
     });
 

@@ -613,8 +613,17 @@ export async function uploadToR2(
   const publicUrl = Deno.env.get("R2_PUBLIC_URL");
 
   if (!endpoint || !accessKey || !secretKey || !bucket || !publicUrl) {
+    const unset = Object.entries({
+      R2_ENDPOINT: endpoint,
+      R2_ACCESS_KEY_ID: accessKey,
+      R2_SECRET_ACCESS_KEY: secretKey,
+      R2_BUCKET: bucket,
+      R2_PUBLIC_URL: publicUrl,
+    }).filter(([, v]) => !v).map(([k]) => k);
     throw new Error(
-      "Missing R2 environment variables (R2_ENDPOINT, R2_ACCESS_KEY_ID, R2_SECRET_ACCESS_KEY, R2_BUCKET, R2_PUBLIC_URL)",
+      `uploadToR2: expected all five R2_* variables, received unset: ${
+        unset.join(", ")
+      }. fix: set them in /var/lib/ding/env on pc and rerun.`,
     );
   }
 
@@ -1166,7 +1175,11 @@ export async function claude(
   opts: { system?: string; maxTokens?: number; temperature?: number; timeoutMs?: number } = {},
 ): Promise<string> {
   const key = Deno.env.get("ANTHROPIC_API_KEY");
-  if (!key) throw new Error("Missing ANTHROPIC_API_KEY");
+  if (!key) {
+    throw new Error(
+      "claude: expected ANTHROPIC_API_KEY in the environment, received none. fix: set it in /var/lib/ding/env on pc and rerun.",
+    );
+  }
   const ms = opts.timeoutMs ?? 30_000;
   // The signal also bounds the body read, so the timeout can fire after the headers arrive.
   let res: Response, data;
