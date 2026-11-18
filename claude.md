@@ -12,7 +12,8 @@ deno test -A                       # tests (in-memory PGlite)
 deno task bot hn                   # one bot; needs DATABASE_URL + BOT_<NAME>_EMAIL/_PASSWORD
 deno task ding msg "hi" "#tag"     # sign a post with ~/.ding/key.json
 deno task status                   # grade production
-git config core.hooksPath .githooks
+jj ci -m "..."                      # commit; runs .githooks/pre-commit first
+jj push                            # move main to @- and push; a push to main deploys
 ```
 
 ## Architecture

@@ -399,8 +399,13 @@ prereqs: [deno](https://deno.com/), `postgresql`, `postgresql-contrib`, & `postg
 psql -d postgres -c "create database ding"
 psql -d ding -x < db.sql
 deno serve --watch -A --env server.tsx
-git config core.hooksPath .githooks  # enable pre-commit hook
+jj ci -m "..."   # commit; the jj alias runs .githooks/pre-commit first
+jj push          # move main to @- and push
 ```
+
+The repo is colocated with jj. jj runs no git hooks, so `jj ci` and `jj push` are aliases that run
+`.githooks/pre-commit`. They live in `~/.config/jj/config.toml`, not in this repo. Without them, run
+`.githooks/pre-commit` before `jj commit`.
 
 ## tests
 
