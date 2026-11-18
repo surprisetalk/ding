@@ -21,7 +21,7 @@ import Stripe from "stripe";
 import { parseHTML } from "linkedom";
 import { Readability } from "@mozilla/readability";
 import { timingSafeEqual } from "@std/crypto/timing-safe-equal";
-import { type Api, claude, fetchPublic, R2Conflict, readCapped, uploadToR2 } from "./bots.ts";
+import { type Api, claude, extractImageUrl, fetchPublic, R2Conflict, readCapped, uploadToR2 } from "./bots.ts";
 import { BOTS } from "./bots/mod.ts";
 import { LECTURES_PATH, parseLectures, unpostedCount } from "./bots/lectures.ts";
 export const r2 = { uploadToR2 };
@@ -143,9 +143,6 @@ const extractMentions = (b: string) => [
     [...b.matchAll(/@([0-9a-zA-Z_]{4,32})/g)].map((m) => m[1].toLowerCase()),
   ),
 ];
-export const extractImageUrl = (b: string) =>
-  b.match(/https?:\/\/[^\s]+\.(?:jpe?g|png|gif|webp|svg)(?:\?[^\s]*)?/i)?.[0] ||
-  null;
 
 // `com.domains` holds bare lowercase hostnames with `www.` stripped, so every path that
 // compares against it — the ?www= filter, a ~domain pref — must speak the same form or it
@@ -1499,7 +1496,12 @@ app.use("*", async (c, next) => {
   const seg = c.req.path.replace(/^\//, "");
   if (!IMG_EXT_RE.test(seg)) throw new HTTPException(404);
   const r2Url = Deno.env.get("R2_PUBLIC_URL");
-  if (!r2Url) throw new HTTPException(500, { message: "R2_PUBLIC_URL unset" });
+  if (!r2Url) {
+    throw new HTTPException(500, {
+      message:
+        "expected env R2_PUBLIC_URL (the public base URL of the R2 bucket), received none. fix: set it in /var/lib/ding/env on pc.",
+    });
+  }
   // The timeout covers the headers only. The body streams to the client, and a 25 MB video to a slow client
   // must not abort mid-stream.
   const ctl = new AbortController();
@@ -1509,6 +1511,7 @@ app.use("*", async (c, next) => {
   );
   const res = await fetch(`${r2Url}/i/${seg}`, { signal: ctl.signal }).finally(() => clearTimeout(timer));
   if (!res.ok) {
+    await res.body?.cancel();
     throw new HTTPException((res.status === 404 ? 404 : 502) as 404 | 502, {
       message: res.status === 404 ? "Image not found." : `Image upstream failed (status ${res.status}).`,
     });
@@ -1586,7 +1589,12 @@ app.use("*", async (c, next) => {
       });
     }
     const lines = new TextDecoder().decode(bytes).split("\n").map((l) => l.trim()).filter(Boolean);
-    if (lines.length > 10_000) throw new HTTPException(413, { message: "too many rows (max 10000 per request)." });
+    if (lines.length > 10_000) {
+      throw new HTTPException(413, {
+        message:
+          `expected at most 10000 rows per request, received ${lines.length}. fix: split the rows across requests.`,
+      });
+    }
     const gate = (pubkey: string) => {
       if (!rateBump(dbIngestRate.key, pubkey, dbIngestRate.rowsPerKeyPerMin)) {
         throw new DhtReject(
@@ -2554,20 +2562,18 @@ app.post("/password", async (c) => {
 
 app.post("/invite", authed, async (c) => {
   const e = (await form(c, "email")).email,
-    n = Math.random().toString(36).slice(2);
-  if (
-    (
-      // exclude the self-row (root users have invited_by = name) — it isn't an invite
-      await sql`select count(*) from usr where invited_by = ${c.get("name")!} and name != ${c.get("name")!}`
-    )[0].count >= 4
-  ) {
-    throw new HTTPException(429, {
-      message: "You've used all 4 invites. Email support@ding.bar for more.",
-    });
-  }
-  const [u] = await sql`insert into usr (name, email, bio, invited_by) values (${n}, ${e}, '...', ${c.get(
-    "name",
-  )!}) on conflict do nothing returning email`;
+    n = Math.random().toString(36).slice(2),
+    me = c.get("name")!;
+  // The lock serializes one inviter's requests, so concurrent POSTs cannot all pass the count and exceed the cap.
+  const [u] = await sql.begin(async (sql) => {
+    await sql`select pg_advisory_xact_lock(hashtext(${`invite:${me}`}))`;
+    // exclude the self-row (root users have invited_by = name) — it isn't an invite
+    const [{ count }] = await sql`select count(*)::int as count from usr where invited_by = ${me} and name != ${me}`;
+    if (count >= 4)
+      throw new HTTPException(429, { message: "You've used all 4 invites. Email support@ding.bar for more." });
+    return await sql`insert into usr (name, email, bio, invited_by) values (${n}, ${e}, '...', ${me})
+      on conflict do nothing returning email`;
+  });
   if (!u) return c.redirect("/u?error=already_invited");
   try {
     await sendVerify(u.email);
@@ -3618,8 +3624,6 @@ app.post("/c/:p?", async (c) => {
     return c.json({ kind: r.kind, parent_cid: r.parentCid });
   }
 
-  // Redirect shapes are unchanged from when this logic lived inline; only their inputs
-  // now come from the outcome instead of local state.
   const thread = () => (r.grandparent ? `/c/${r.grandparent}#${r.parentCid}` : `/c/${r.parentCid}`);
   if (r.kind === "self") return c.redirect(`${thread()}?err=self-${r.what}`);
   if (r.kind === "flagged") return c.redirect(thread());
@@ -3772,8 +3776,7 @@ app.get("/c/:cid?", async (c) => {
     const cur = new URL(c.req.url).searchParams,
       meta = buildFilterTitle(cur);
     // An InfoBlock describes ONE subject, so it only renders when exactly one label filter
-    // is active and nothing else narrows the feed. www joins tag/org/usr here — it used to
-    // be part of the "nothing else" set, so ?www= had no header at all.
+    // is active and nothing else narrows the feed. www counts as a label filter, like tag/org/usr.
     const onlyFilter = !mens.length && !q.q && !q.reactions && !q.replies_to && !q.comments &&
       tags.length + orgs.length + usrs.length + www.length === 1;
     const singleTag = onlyFilter && tags.length === 1 ? tags[0] : null;
@@ -4243,7 +4246,7 @@ export const botApi = async (envPrefix: string): Promise<Api | null> => {
         await createPost(usr.name, body, o);
         return true;
       } catch (e) {
-        // Same contract as the old postForm: log and report failure, never throw, so one
+        // Log and report failure, never throw, so one
         // rejected post cannot abort the rest of a bot's run.
         console.error(`bot ${usr.name}: post failed — ${e instanceof Error ? e.message : e}`);
         return false;

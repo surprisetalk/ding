@@ -26,6 +26,7 @@ import { backfill } from "./backfill.ts";
 import {
   directImageUrl,
   extractArticle,
+  extractImageUrl,
   fetchGuard,
   getPostedUrls,
   imageMentionBot,
@@ -57,7 +58,6 @@ import app, {
   discoverPeers,
   emailToken,
   extractDomains,
-  extractImageUrl,
   extractLinks,
   formatBody,
   formatLabels,
@@ -346,6 +346,7 @@ Deno.test("server.tsx boot: warns without RESEND_API_KEY, refuses an empty secre
   };
   const noResend = await boot({ RESEND_API_KEY: null });
   assertEquals(noResend.code, 0, noResend.stderr);
+  assertStringIncludes(noResend.stderr, "RESEND_API_KEY is missing");
   // An env file line `COOKIE_SECRET=` sets "", and an empty HMAC key lets anyone forge a session.
   for (const k of ["COOKIE_SECRET", "EMAIL_TOKEN_SECRET", "KEY_WRAP_SECRET"]) {
     const empty = await boot({ [k]: "" });

@@ -164,19 +164,6 @@ export async function paginate<T>(
   throw new Error(`paginate: hit maxPages=${maxPages} for ${pathFor(0)}`);
 }
 
-export async function postForm(
-  api: Api,
-  path: string,
-  fields: Record<string, string>,
-): Promise<boolean> {
-  const m = path.match(/^\/c(?:\/(\d+))?$/);
-  if (!m) throw new Error(`bot api: unsupported post path ${path}`);
-  return await api.post(fields.body ?? "", {
-    parentCid: m[1] ? +m[1] : null,
-    labels: fields.tags,
-  });
-}
-
 export const firstMatch = (re: RegExp, s: string) => s.match(re)?.[1] || "";
 
 export const slugTag = (s: string) => s.toLowerCase().replace(/[^a-z0-9]+/g, "_").replace(/^_+|_+$/g, "").slice(0, 40);
@@ -502,9 +489,9 @@ export async function rssBot(api: Api, opts: {
   }
 }
 
-export const post = (api: Api, body: string, tags: string) => postForm(api, `/c`, { body, tags });
+export const post = (api: Api, body: string, tags: string) => api.post(body, { labels: tags });
 
-export const reply = (api: Api, parentCid: number, body: string) => postForm(api, `/c/${parentCid}`, { body });
+export const reply = (api: Api, parentCid: number, body: string) => api.post(body, { parentCid });
 
 export type Post = { cid: number; parent_cid: number | null; body: string; created_by: string; created_at: string };
 
@@ -847,7 +834,7 @@ export async function personaBot(api: Api, opts: { system: string }) {
 // One claude() call judges a batch of fresh posts; each verdict name maps to an action.
 // Used by critic and the janky crew. Dedup spans replies AND single-grapheme votes.
 // Action contract: null/undefined = declined by design, no POST attempted;
-// false = POST attempted and failed (postForm logged the status); else = landed.
+// false = POST attempted and failed (api.post logged the status); else = landed.
 export async function verdictBot(api: Api, opts: {
   system: string; // must demand ONLY a JSON array: [{"cid":123,"verdict":"...","note":"..."}]
   verdicts: Record<string, (api: Api, p: Post, note?: string) => unknown>;
