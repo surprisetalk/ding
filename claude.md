@@ -1,569 +1,96 @@
-# CLAUDE.md
+# claude.md
 
-This file provides guidance to Claude Code (claude.ai/code) when working with code in this repository.
+## What is ding
 
-## What is ding?
-
-A minimalist Slack alternative. Simple social commenting with threaded replies and tags.
+A minimalist Slack alternative. Threaded replies and tags. Details: readme.md.
 
 ## Commands
 
 ```bash
-# Development server (watches for changes)
-deno serve --watch -A server.tsx
-
-# Run tests (uses in-memory PGlite)
-deno test -A
-
-# Run a single bot manually (goes straight at the DB like the cron: needs DATABASE_URL + BOT_<NAME>_EMAIL/_PASSWORD)
-deno task bot hn
-
-# Post to the DHT with your own key (self-managed identity)
-deno task ding msg "hello world" "#tag *org @user"   # default node: $DING_DB or https://db.ding.bar
-deno task ding id                                     # show your pubkey + id (~/.ding/key.json)
-
-# Database setup
-psql -d postgres -c "create database ding"
-psql -d ding -x < db.sql
-
-# Enable pre-commit hook (one-time per clone)
+deno serve --watch -A server.tsx   # dev server
+deno test -A                       # tests (in-memory PGlite)
+deno task bot hn                   # one bot; needs DATABASE_URL + BOT_<NAME>_EMAIL/_PASSWORD
+deno task ding msg "hi" "#tag"     # sign a post with ~/.ding/key.json
+deno task status                   # grade production
 git config core.hooksPath .githooks
 ```
 
 ## Architecture
 
-**Single-file server** (`server.tsx`, ~3,300 lines) using:
+- `server.tsx`: Hono, postgres.js, server-rendered JSX, Resend. Sections: IMPORTS, TYPES, CONSTANTS & HELPERS, LABEL
+  PARSING, EMAIL TOKEN, POSTGRES, DHT, RESEND, STRIPE, COMPONENTS, HONO.
+- `dht.ts`: signing and canonical serialization. Server, CLI, node, and tests import it.
+- `ding.ts`: CLI. `node.tsx`: replica node. `bots.ts`, `bots/`: bots. `db.sql`: schema. `public/client.js`: client JS,
+  served statically.
+- Production is the `ding` systemd unit on `pc` (127.0.0.1:8052, behind cloudflared). A push to `main` deploys.
+- Secrets live in `/var/lib/ding/env` (0600). Logs: `journalctl -u ding`.
+- sharp needs `LD_LIBRARY_PATH` set to gcc's lib on NixOS. The unit and `.githooks/pre-commit` set it.
+- Postgres is local: `DATABASE_URL=postgres:///ding`, `PGHOST=/run/postgresql` (postgres.js reads a socket only from
+  `PGHOST`).
+- postgres.js uses `prepare: false`. DDL that changes a result type breaks cached plans. Fix with
+  `pg_terminate_backend`, never `deallocate all`. Also `max: 3`, `idle_timeout: 20`, `statement_timeout: 15s`.
+- Remixes run in the browser (ffmpeg.wasm). The server transcodes no video.
+- Crons run in-server (`Deno.cron`). Cron name, schedule, and period live in `CRONS`.
+- The in-server checkmark cron and bot fleet call `ingestMsg` and `botApi` directly. They never fetch their own origin.
 
-- **Hono** - HTTP framework with middleware chain
-- **postgres.js** - SQL via template literals (`sql\`SELECT ...\``)
-- **JSX** - Server-side rendered components (no frontend framework)
-- **Resend** - Email delivery
+## Load-bearing rules
 
-Server is organized with `//// SECTION ////` headers: IMPORTS, TYPES, CONSTANTS & HELPERS, LABEL PARSING, EMAIL TOKEN,
-POSTGRES, DHT, RESEND, STRIPE, COMPONENTS, HONO. The `GET /` and `GET /c` feed queries share fragment builders
-(`visibleTo` ACL, `aggCols`/`aggPairs` per-row aggregates, `orderBy`) so the two feeds can't drift; `visibleTo` is
-applied per nesting level (children and grandchildren too — a DM or `*org` reply under a public root must not leak to
-strangers). `wireRow` is the single definition of the NDJSON wire format (WS live-tail + HTTP drain must stay
-byte-identical). `notifWhere` is the single definition of the notification predicate (nav badge + `/n` + `/n/unread`):
-an `@user` label that names me, a reply to my post, or a body `@mention` of me on a post with no `@user` label (a DM to
-others that mentions me is not mine to read); the badge is skipped on `/n/unread` so the 60s poller doesn't run the
-count twice. `visibleTo` emits `orgs = '{}'` rather than `orgs <@ '{}'` for the common no-readable-orgs case — gin's
-`<@` cannot seek, so it scans the whole index. `?sort=top` orders on the denormalized `c_reactions` hstore, NOT the
-`reaction_count` select alias: an alias in ORDER BY makes postgres run that correlated subquery for every candidate row,
-not just the 25 returned. `GET /` renders roots only (`Post` never touches `child_comments`), so it must NOT select a
-`child_comments` array — only `GET /c` does, and only `GET /c` needs `visibleTo` at the child + grandchild levels.
+- `visibleTo` is the ACL. Apply it at every nesting level (children and grandchildren). Emit `orgs = '{}'`, not
+  `orgs <@ '{}'`: gin cannot seek `<@`.
+- `GET /` and `GET /c` share `visibleTo`, `aggCols`/`aggPairs`, `orderBy`. `GET /` must not select `child_comments`.
+- `?sort=top` orders on the `c_reactions` hstore, not the `reaction_count` alias.
+- `wireRow` is the single NDJSON wire format (WS and HTTP drain).
+- `notifWhere` is the single notification predicate (badge, `/n`, `/n/unread`).
+- `pageParam` is the single `?p=` parser. An offset past `paging.maxOffset` is a 400.
+- `assetRe` early-return stays above `botRe`. Assets link as `?v=${DENO_DEPLOYMENT_ID}` (`assetUrl`) and cache immutable
+  only on a matching `?v=`. Tests use `setAssetV`, not the env var.
+- `botRe` (search engines): 403 only with a query string. `AI_CRAWLERS`: 403 on every path. No `AI_CRAWLERS` entry may
+  overlap a search engine. `Google-Extended` and `Applebot-Extended` belong in `ROBOTS` only.
+- `ROBOTS` joins an array with real newlines. A test rejects a literal `\n`.
+- `stat_tag` and `stat_domain` are materialized and public-only. They never use `visibleTo`. Tests call `refreshStats()`
+  after seeding content they expect to be scored.
+- `PREF_WINDOW` stays a multiple of 25 and never depends on the page. Normalize `s` once (`new`/`top`/else `hot`).
+- Normalize `~domain` through `normHost` on write and on read.
+- Fetch a user-chosen URL only through `fetchPublic` (in `bots.ts`). `fetchPage` is the single page fetch.
+- `dht.ts`: golden vectors in `server.test.ts` pin `canon`, hash, and signature. `buildMsg` sorts tags.
+- Private posts (`*org`, `@user`) stay out of the public log unless id-scoped and served auth-gated.
+- Deferred: lease-wrapping of register links, mark revocation tombstones.
+- `DING_ORG_SK` lives on the main server. It signs checkmarks.
 
-**Client JS lives in `public/client.js`**, served statically and cached — it is NOT inlined into every page.
+## Bots
 
-**Asset caching**: `style.css`/`client.js` have no content hash in their path, so the HTML links them as
-`?v=${DENO_DEPLOYMENT_ID}` (`assetUrl`) and the middleware sets `cache-control: public, max-age=31536000, immutable`
-**only** when `?v=` matches the current deploy. A bare or stale-version path stays revalidated, so a client that guesses
-the path can't pin one deploy's copy for a year, and a deploy invalidates everything by changing the URL.
-`DENO_DEPLOYMENT_ID` is unset locally → no versioning and no caching, so edits show up. Tests override it with
-`setAssetV` rather than the env var, because setting `DENO_DEPLOYMENT_ID` would make `Deno.cron` register the bot fleet.
-The `assetRe` early-return must stay ABOVE the `botRe` check — assets now carry a query string, and that check 403s any
-crawler request with one. Anything it needs from the server arrives as a `data-` attribute on `<body>` (currently
-`data-unread`, present only when logged in). The `app.use("*")` middleware early-returns on asset paths (`assetRe`), so
-a `/client.js` or `/style.css` hit costs no cookie read, no `refreshVerified`, and no unread query.
-
-**Crawlers** are handled in two tiers, and the distinction is load-bearing:
-
-- `botRe` (search engines) gets a 403 **only when the request carries a query string** — filtered feeds are an infinite
-  crawl space (every tag × sort × page is a distinct URL over the same posts), but content URLs must stay indexable.
-- `aiBotRe` / `AI_CRAWLERS` (training scrapers) gets a **403 on every path**, because `robots.txt` is advisory and the
-  heaviest of these ignore it. **Nothing in `AI_CRAWLERS` may overlap a search engine** — a 403 to Googlebot delists
-  ding. `Google-Extended`/`Applebot-Extended` are robots.txt tokens, not real UAs, so they belong in `ROBOTS` only.
-
-`ROBOTS` is built from an array and `join("\n")`. It was previously a single string literal containing `"\\n"`, which
-emits a **literal backslash-n** — so for a long time every crawler saw one unparseable line and ding effectively had no
-robots rules at all (this is why bot traffic was heavy). Any edit must keep real newlines;
-`curl -s .../robots.txt | od
--c` is the check, and a test asserts the file never contains `\n` as text again.
-
-**Hosting**: production is the `ding` systemd unit on `pc` (`/etc/nixos/flake.nix`), serving 127.0.0.1:8052 from the
-clone at `~/ding` behind the cloudflared tunnel. A push to `main` deploys: `ding-pull` fetches each minute, and
-`ding-restart` restarts the unit when HEAD moves. Secrets live in `/var/lib/ding/env` (0600). Postgres is local
-(`DATABASE_URL=postgres:///ding`, `PGHOST=/run/postgresql`: postgres.js takes a socket only from `PGHOST`). Logs:
-`journalctl -u ding`. `ding-backup` dumps nightly to `~/Developer/ding/nightly.dump`, and r2-backup copies it to R2.
-sharp needs `LD_LIBRARY_PATH` to gcc's lib on NixOS; the unit and `.githooks/pre-commit` set it.
-
-**Postgres connection**: `server.tsx` sets `prepare: false`. With prepare on, DDL that changes a result type
-(`alter table ... drop column`) makes every cached plan fail with `cached plan must not change result type` until its
-connection closes. Recover by terminating the backends (`pg_terminate_backend`), never with `deallocate all`. Also set:
-`max: 3`, `idle_timeout: 20`, `statement_timeout: 15s`.
-
-**Database** (`db.sql`):
-
-- `usr` - Users with bcrypt passwords, email verification, org memberships (`orgs_r`/`orgs_w` arrays). `pubkey` +
-  `seckey_enc` hold the user's Ed25519 identity (custodial key = AES-256-GCM(JWK, `KEY_WRAP_SECRET`); null =
-  self-custody)
-- `pref` - Per-user ▲/▼ on a label: `(uid, kind in ('tag','usr','www'), val, vote)`, PK `(uid, kind, val)`. See **Label
-  Prefs** below
-- `com` - Comments with threading (parent_cid), tags/orgs/usrs arrays, full-text search. Index rules: `com_feed_idx` is
-  the partial index the ANONYMOUS default feed rides
-  (`score desc where parent_cid is null and orgs = '{}' and usrs =
-  '{}'`); `com_root_score_idx`
-  (`score desc where parent_cid is null`) is the logged-in one, whose `usrs` predicate is a disjunct and so can never
-  satisfy a partial index built on the equality — without it those requests fall back to `com_score_idx` and walk every
-  comment row to find roots (measured 1738 buffers vs 301). `com_by_created_idx` serves the bots' `?usr=X&sort=new` hot
-  path. `= any(array_col)` cannot use a gin index — write `links @> array[$1]` (that was a full table scan on every
-  write and every thread view). `refresh_score` maintains only `score`; the eight `author_ups`/`tag_ups`/… columns it
-  used to write were never read and are dropped. `hash`/`author_id`/`sig`/ `parent_hash`/`t` carry the signed DHT
-  identity; `created_by` is null for foreign authors (rendered by short hash)
-- `dht` - The signed, content-addressed, append-only log (source of truth; `com`/`usr`/`org` are a rebuildable
-  projection). `seen_at` (local arrival) is the replication cursor, never the attacker-controlled signed `ts`
-
-## Decentralization (DHT) — Phase 1
-
-ding is being decentralized into a signed, content-addressed, gossip-replicated event log (Nostr/SSB family, **not**
-Kademlia). Identity is an Ed25519 keypair; content is content-addressed (`k = sha256(canonical signed bytes)`) and
-signed.
-
-- **`dht.ts`** - the load-bearing shared module (server + CLI + node + tests import it): `canon` (deterministic
-  serialization — sorted keys, floats/unsafe-ints rejected), `signRow`/`verifyRow` (Ed25519 via `crypto.subtle`, zero
-  deps), `idOf` (= sha256 of pubkey), `buildMsg` (normalizes tag arrays: lowercased, deduped, **sorted**),
-  `parseLabels`, AES-GCM `wrapSecret`/`unwrapSecret`. Golden vectors are frozen in `server.test.ts` (a fixed ALICE key →
-  fixed canon/hash/sig) so server, CLI, and node can never silently diverge.
-- **Phase 1 carries PUBLIC posts only.** `POST /c` signs public root posts and public replies-to-signed-parents into
-  `dht` (one transaction: dht insert + `com` projection commit/rollback together; `ingestMsg`). Reactions,
-  `*org`/`@user` (private) posts, and replies-to-legacy posts stay on the unsigned `com` path, so private bodies never
-  enter the public log. `ingestMsg` also rejects any incoming `msg` row scoped to `*org`/`@user`. Validation drops use
-  `DhtReject` (per-row, returns `{ok,bad,errors}`); infrastructure errors propagate as 5xx so peers retry.
-- **`db.ding.bar` node endpoint** (subdomain-routed via `host()`): `POST` ingests NDJSON rows (per-row `verifyRow` +
-  content-hash + ts-skew checks, bad rows dropped with Elm-style messages, returns `{ok,bad,errors}`); `GET ?t=&q=`
-  drains the log oldest→newest by `seen_at`, filtered by `q` (e.g. `$msg #lol`).
-- **`/key`** downloads the custodial JWK; **`POST /key/delete`** nulls `seckey_enc` (switch to self-custody).
-- **Signed `flag` rows** (Phase 2a): `ingestMsg` counts **distinct flagger pubkeys** per target hash and mirrors that
-  onto the projected `com.c_flags` (so the existing `[flagged]` suppression works) + sets `dht.flagged` at the
-  threshold. `ding flag <hash>` and the web flag button (on signed posts) emit them; legacy unsigned posts keep the
-  name-based `flaggers` array.
-- **Checkmarks / `mark` rows** (Phase 2b): issuer-signed `mark` rows endorse a subject id with a TTL'd claim
-  (`buildMark`, claim never carries PII). The ✓ renders when a non-expired identity mark (`email`/`payment`/`human`)
-  from the trust root (`DING_ORG_PK` env) targets the author's `author_id` (`GET /c` `checked` subquery → `Meta`).
-  `bots/checkmark.ts` exports `runCheckmark()` (the **only** signer with `DING_ORG_SK`): `email` marks for verified
-  users (100yr), plus `dns:`/`github:` marks (1-day leases) proved from a user's **`usr` register** links —
-  `_ding.<domain>` TXT `ding_id=<id>` or the id in a GitHub bio (handle sanitized). It runs hourly via **`Deno.cron`**
-  in `server.tsx`, gated on `DENO_DEPLOYMENT_ID` so it registers only in production (never in tests/local). The
-  in-server cron passes a **`sink`** so `runCheckmark` ingests marks via `ingestMsg` **directly** — NOT an HTTP POST to
-  `db.ding.bar` (a Deno Deploy isolate fetching its own custom domain redirect-loops, which silently dropped every
-  mark). `deno task checkmark` (standalone) still POSTs over HTTP. `Deno.cron` needs `unstable: ["cron"]` +
-  `deno.unstable` lib (in `deno.json`). `deno task checkmark` triggers a manual run. Proof helpers + `runCheckmark` are
-  testable (`bots/checkmark.test.ts` mocks DNS/fetch). `ding mark <id>` is a personal vouch. ⚠️ SIMPLE path:
-  `DING_ORG_SK` is on the main server — harden later (separate cron project) so a server breach can't forge checkmarks.
-- **`usr` register**: a signed `usr` row `{name, bio, links[]}` (`ding usr --name --bio --links`), ingested into the
-  dht; the checkmark cron reads it to verify domain/social links. (Leases + resolution come with Phase 4.)
-- **Replication** (Phase 3, Stage 1 — pull/short-poll): the dht has a `seq bigserial` (strictly-increasing local arrival
-  order). `GET /db?after=<seq>` is keyset pagination on `seq` (immune to clock skew / same-second collisions / the
-  > limit wedge); it returns the next `seq` as the `X-Ding-Cursor` header. (`?t=YYYYMMDDhhmmss` remains a coarse "since
-  > UTC time" filter for manual drains.) `replicate(bootstrap, queries, cursor)` drains from the cursor, verifies +
-  > ingests each row (bad-JSON and `DhtReject` rows dropped per-line; infra errors retried next tick), and returns the
-  > advanced cursor. `node.tsx` is a replica that serves the same endpoints **and** mirrors a bootstrap via a
-  > self-scheduling 30s `replicate` loop (no overlapping ticks). Works on Deno Deploy.
-- **Gossip mesh** (Phase 4): `peer` rows advertise a node's dialable origins + served queries; `discoverPeers` reads
-  them, `publishPeer` announces. `node.tsx` mirrors the bootstrap (always, as a trust anchor) + N discovered peers,
-  re-broadcasting hourly.
-- **Private content — auth-gated delivery, no e2e encryption** (Phase 3 Stage 2): `@user` DMs and `*org` posts enter the
-  log with **id-scoped** `usrs`/`orgs` (names aren't key-bound). The `GET /db` drain is **default-deny**: it serves
-  public rows, plus — for a subscriber that proves a key via a single-use challenge (`GET /db/challenge` →
-  `Authorization: Ding <pubkey> <nonce> <sig>`) — that id's DMs and the `*org` rows of orgs whose signed `members`
-  register lists it. `dht.usrs`/`orgs` stay id-scoped (gating); a DM projects to `com.usrs` resolved to local names (or,
-  for a non-local recipient, the raw id — never `'{}'`, so it can't render publicly). `*org` content is dht-only.
-- **`usr`/`org` registers** carry `{name, bio, links[]}` (+ org `members[]`); `resolveName` ranks contested `@name`
-  claims by trust-root marks then first-seen. `ding usr`/`ding org` publish them.
-- **WebSocket live-tail** (optional, low-latency): `ws://…/db?after=<seq>&q=…` drains history → catch-up sweep →
-  `{hb:<seq>}` → live-tails via `LISTEN/NOTIFY` (`pg_notify` on ingest). **Runs on Deno Deploy** — WS is supported and
-  Postgres `LISTEN/NOTIFY` coordinates cross-isolate, so a `POST /db` in one isolate wakes the listener in another. Uses
-  **ONE shared per-isolate `sql.listen('dht')`** (`startDhtListener`/`wsSubs`): each NOTIFY'd row is fetched once and
-  fanned out in memory to matching subscribers (`matchesQ` mirrors `dhtWhere` containment) — no DB connection per
-  subscriber. **Public rows only**; auth-gated private delivery stays on the HTTP drain. Short-poll (`replicate`)
-  remains the connection-light default. The WS socket plumbing isn't covered by the PGlite harness (no LISTEN/NOTIFY
-  there); `matchesQ` is unit-tested.
-- **`ding.ts`** CLI signs with `~/.ding/key.json`. Commands: `msg`, `usr`, `org`, `flag`, `mark`, `id`.
-- **`POST /db` rate limit** (`dbIngestRate`): per-IP request cap + per-pubkey accepted-row cap (in-memory per-isolate,
-  like `postRate`; limits tunable on the object). `ingestMsg` takes a post-verify `gate(pubkey)` hook for it.
-- **Prod migration**: `migrate.sql` (idempotent additive schema delta, validated), `migration.md` (runbook — ordering,
-  irreversibility warnings, smoke checklist, rollback), and `backfill.ts` (`deno task backfill`) signs legacy public
-  posts into the dht (resumable/idempotent; reactions + private posts excluded).
-- **Deploy note:** all DHT secrets live in `/var/lib/ding/env` on pc (`KEY_WRAP_SECRET`, `DING_ORG_PK`, `DING_ORG_SK`,
-  `DING_DB`); the checkmark cron is in-server `Deno.cron`. Run `keygen.ts` to generate them.
-- **Explicit 70% cuts (deferred):** lease-wrapping register links + mark revocation tombstones (link marks already
-  expire via DAY leases; long email marks are a known recycled-address weakness); verified-link chips in the UI;
-  weighted-flag trust engine; in-browser WebCrypto signing for self-custody web posts; retention/compaction; wiring
-  `resolveName` into the web DM compose. See `~/.claude/plans/i-d-like-to-decentralize-radiant-aho.md`.
-
-**Bots** (`bots/`):
-
-- Content aggregators (HN, Lobsters, arXiv, bubbles, etc.) that post via Basic Auth
-- LLM persona bots (kenm, bigfoot, caveman, wizard — all defined by the `PERSONAS` table in `bots/personas.ts`, not by
-  per-bot files — plus critic) use the `claude()` helper in `bots.ts` with Haiku 4.5 (`claude-haiku-4-5`; Haiku 3
-  retired 2026-04-19 and 404s); require `ANTHROPIC_API_KEY`
-- **Every bot is `export default (api: Api) => …`** — a function, never a top-level side effect, so it can be called
-  repeatedly in one isolate. `bots/mod.ts` is the registry (static imports, so Deno Deploy bundles them); its keys are
-  the bot names and uppercase to the `BOT_<NAME>_EMAIL`/`_PASSWORD` env prefix.
-- **Runs every 5 minutes from `Deno.cron("ding-bots")` in `server.tsx`** (was GitHub Actions until 2026-07-27).
-  `runBotFleet` builds one `Api` per bot and runs them `BOT_CONCURRENCY` at a time, each with a `BOT_TIMEOUT_MS`
-  deadline (Deno skips a tick while the previous run is live, so an untimed hang would wedge the whole fleet) and its
-  own try/catch (one bot's failure can't abort the sweep). Missing creds → warn + skip, never throw.
-- **Dedup is windowed, not full-history.** `getPostedUrls`/`getAnsweredCids` default to `DEDUP_WINDOW_MS` (30 days).
-  Unbounded history walks past `paginate`'s `maxPages=50` cap and throws — that silently killed bot_hn and bot_smallweb
-  for months under Actions' `continue-on-error`. `com.links` is internal cids, not external URLs, so no index can answer
-  exact-URL dedup; the window is the fix.
-- **Bots talk to the DATABASE, not the API.** `Api` carries `feed`/`post`/`users` — that's the seam, injected by
-  `botApi()` in `server.tsx` and backed by `feedPosts`/`createPost`/`verifiedUsers` (the same query as `GET /us`). There
-  is no HTTP hop at all any more (`botFetch` is gone), for both the cron and `deno task bot <name>`, so **standalone
-  runs now need `DATABASE_URL`, not `DING_API_URL`**. The reason: the in-process hop re-ran routing, the whole
-  middleware chain, and Basic Auth on every action — and Basic Auth is a **bcrypt comparison inside Postgres, ~49ms of
-  DB CPU per request**. It is now one bcrypt per bot per run (in `botApi`, which is also what resolves the real
-  `usr.name` instead of guessing it from the email local part) and **zero per action**.
-- **`createPost` validates its own input** for every caller: a blank body, a NUL byte, or a parent id that is not an int
-  is a 4xx, never a postgres 500. A reply in a DM thread adds the parent's author to `usrs`, or `visibleTo` would hide
-  it from the person it answers. A legacy (unsigned) flag is one `update ... where not (author = any(flaggers))`, so
-  concurrent flags by one user count once.
-- **This is only safe because the ACL never lived in the HTTP layer.** `visibleTo` is inside `feedPosts` and every
-  parent/org-write/self-react/rate-limit check is inside `createPost`, so a direct caller is gated by exactly the code
-  the route is. Do **not** add a check to a route handler that belongs in these two functions — that is precisely how
-  the bots would drift out of the ACL. `postRate` still applies to bots; several of them are written against it
-  (`verdictBot` keeps POSTs-per-run under the 10/min cap).
-- Bots build paths (`/c?usr=x&sort=new&limit=100&p=2`, `/c/123`) as their vocabulary; `pathToQuery` turns one into a
-  `FeedQuery`. It **throws** on an unrecognised path rather than returning an empty feed, so a typo is loud.
-  `botApi().feed` round-trips rows through `JSON.parse(JSON.stringify(...))` on purpose: bots were written against wire
-  JSON, and postgres.js hands back `Date` objects where the API returned ISO strings. Bots must never `Deno.exit` (it
-  would kill the server isolate); throw instead.
-- **The self-origin rule applies to image fetches too.** `i.ding.bar` is a custom domain on the same Deploy project (the
-  `host(c) === "i"` middleware just proxies `${R2_PUBLIC_URL}/i/<seg>`), so any in-isolate fetch of a user-uploaded
-  image must be rewritten with `directImageUrl` first — `https://i.ding.bar/<id>.<ext>` →
-  `${R2_PUBLIC_URL}/i/<id>.<ext>`. That killed `dither`/`pixelsort`/`lowpoly` on every image posted through `POST /i`
-  while they kept working on external hosts (`i.redd.it` etc.), which is why it looked like the bots were fine.
-  `imageMentionBot` catches per-post so one bad image can't abort the mentions behind it, and throws when it attempted
-  work and nothing landed (a "no image found" mention is a legitimate silent decline, not an attempt).
-- Shared harnesses (each bot should be a config, not a copy): `personaBot` (LLM replies) is driven entirely by the
-  `PERSONAS` table in `bots/personas.ts` — there is no per-persona file. `redditBot` powers both `reddit` and `hmmm`;
-  `categoryRssBot` powers `lobsters` and `tildes`; `scanBot` (feed scan → recogniser → reply) powers `haiku` and
-  `pentameter`; `pickCandidates` is the single "worth replying to" filter (`personaBot`, `verdictBot`, `tldr`,
-  `reader`); `myRecent` backs `getAnsweredCids`/`getReactedCids`/`getPostedUrls`; `fetchFeedText` backs the RSS sweeps;
-  `fitSharp` (in `bots/images.ts`, so `bots.ts` never imports sharp) backs `pixelsort`/`lowpoly`;
-  `dupeLayers`/`noiseRects` back `clipart`/`emojiglitch`. **`noiseRects`' rng draw order is load-bearing** — clipart
-  seeds its rng, so reordering the draws changes the artwork.
-- Most bots are thin configs over shared harnesses in `bots.ts`: `rssBot` (single RSS feed), `personaBot` (LLM replies),
-  `mentionResponderBot` (reply to fresh `@bot` mentions), `imageMentionBot` (transform an image from a @mention),
-  `dailyPostBot` (one gated post per run; `lectures` drips the curated `bots/data/lectures.tsv`, and a bad row fails the
-  bot and the status condition). The mention harnesses share `unansweredMentions` — the **single** definition of the
-  mention trigger, plus the own-post/answered/stale filter and its `Found N unanswered @<bot> posts` log. It fires
-  **two** `/c?mention=<bot>` fetches on purpose: `comments=1` selects `parent_cid is not null`, i.e. comments **instead
-  of** roots, so one query can never see both (this silently made every mention bot comment-only).
-  `cowsay`/`dice`/`8ball`/`sortinghat` are mention-triggered, **not** `#tag`-triggered (they used to be; `#cowsay` posts
-  no longer get answered). `mentionResponderBot`'s `max` bounds _successful_ replies, so it throws when it attempted
-  replies and none landed — otherwise a run that burns 20 LLM calls into a rate limit reports green. A `respond` that
-  returns null must decide cheaply: the mention isn't marked answered, so it returns every tick for the whole
-  `MAX_AGE_MS` window. Shared helpers: `sweepFeeds` (bounded-concurrency newest-per-feed),
-  `redditFetch`/`parseRedditEntries`, `glitchSvg`/`glitchTwemojiToR2`, `fetchFreshPosts`, `atomTitleLink`,
-  `parseTitleLinkComments`, `decodeEntities` (fixpoint HTML-entity decode, for feeds that double-encode)
-- **`verdictBot`** (bots.ts): one Haiku call judges a batch of fresh posts → a `verdict → action` map, capped at
-  `maxActions` (keep POSTs-per-verdict × maxActions under the 10/min post rate). Callers: `critic` (earnest ▲/▼) and the
-  deliberately-janky crew — `hypebot` (▲ plus a gushing note that misses the point), `replyguy` (confident off-topic
-  one-liners, no votes), `grouch` (grumbles; the only downvoter, hard-capped at 2 ▼/run since ▼ weighs 3x ▲ in ranking).
-  Action contract: `null` = declined by design, `false` = POST failed, else landed; the run throws when POSTs were
-  attempted and none landed (a rate-limited/credential-rotted run must not report green). Each cid acts at most once per
-  batch (a duplicate verdict would toggle the vote back off) and `bot_%` authors are excluded (verdict bots reacting to
-  each other's replies would chain forever). Voting bots must dedup with `getReactedCids` (`reactions=1`, i.e.
-  `char_length(body) = 1`): `getAnsweredCids` uses `comments=1` (`char_length(body) > 1`) and is blind to
-  single-grapheme votes — that blindness made critic re-judge the same posts every 5-min tick and toggle its own votes
-  off.
-- `bots/checkmark.ts` is NOT part of the fleet (not in `bots/mod.ts`; consumed by `server.tsx` as `runCheckmark`)
-- Credentials live in `/var/lib/ding/env` on pc. `bots.env` (gitignored) is their source; `bot_linkedin` still has a
-  `usr` row but no bot file, so nothing runs it.
-
-## Label System
-
-Search and tagging use a unified label syntax:
-
-- `#tag` - public labels (stored in `tags` array, GIN indexed)
-- `*org` - org/private labels (access controlled via user's `orgs_r`/`orgs_w`)
-- `@user` - user mentions (stored in `usrs` array)
-- `~domain` - synthetic label auto-extracted from every URL host in the body (stored in `domains` array, GIN indexed)
-
-Exported functions: `parseLabels()`, `encodeLabels()`, `decodeLabels()`, `formatLabels()`
-
-## Label Prefs (per-viewer ▲/▼)
-
-**A pref is a label plus a vote.** The `pref` table is `(uid, kind, val, vote)` where `kind` is one of `tag`/`usr`/`www`
-— the same `PFX` vocabulary the feed speaks — so `POST /p` takes a sigil string (`#humor`, `@jane_doe`, `~arxiv.org`)
-and `parseLabels` does the parsing. `*org` is rejected: org access is `orgs_r`/`orgs_w` membership, not a preference.
-
-`normHost`/`HOST_RE` are the single definition of the `~domain` vocabulary — `com.domains` only ever holds bare
-lowercase hosts (`extractDomains`), so `POST /p`, the `?www=` filter parse, and the `~domain` `InfoBlock` all normalize
-through `normHost`. Normalizing on write but not read is a trap: the ▲ renders un-voted on `?www=www.arxiv.org` and
-clicking it **deletes** the pref. `~` values that aren't hostnames (a URL, a path, `~.`) are rejected rather than stored
-as a pref that could never match.
-
-- **▲ is public, ▼ is private.** `prefStat` selects the ▲ count and the viewer's own vote, never the ▼ count. ▲ on a
-  user is a follow; mutual = both sides ▲. A mute has no read path off the voter's own `/u`.
-- **The primary key is the toggle.** Re-sending the same vote deletes the row, the opposite vote replaces it. Done in
-  one statement with a data-modifying `del` CTE (postgres always runs it to completion), so a double-click can't stack
-  rows. Post reactions differ: ▲ and ▼ are independent toggles a user can hold both of, and `com_reaction_once` (a
-  partial unique index on `(parent_cid, created_by, body)` where `char_length(body) = 1`) makes each one count once, so
-  `createPost` inserts with `on conflict do nothing` and a concurrent twin is a no-op.
-- **`pref` is invisible to `refresh_score`** and to `stat_tag`/`stat_usr`/`stat_domain`. Those stay global reputation;
-  `pref` is per-viewer. That split is why personalization is a separate ranking stage, not a new term in the polynomial.
-- **Only a `usr` pref that will INSERT is validated.** `pref.val` has no FK (a partial one isn't expressible), so a
-  followed account that is later deleted — `ding-prune-unverified` does exactly that — leaves the row behind. Rejecting
-  the removal too would strand a dead chip on `/u` and permanently inflate "N following".
-- **`GET /` only** — and only on the default `hot` sort. A logged-in `hot` feed runs a `mine`/`cand`/`pick` CTE chain:
-  `cand` takes `PREF_WINDOW` (300) rows on `score desc, cid desc` (an Incremental Sort on `com_score_idx`, so the index
-  still drives it), `pick` re-sorts that window by score + pref boost, and `aggCols` is applied **above** the window —
-  selecting it inside `pick` would run its three correlated subqueries for every candidate instead of the 25 returned.
-  `&&`/`= any` against a null array is null, so a viewer with no prefs scores exactly as the global ranking does.
-  `feedWhere` is the single definition of what the feed selects, shared by both branches.
-- **The window must NOT depend on the page**, and `PREF_WINDOW` must stay a multiple of 25. Paging is a slice of one
-  ordered list; with a `p * 25 + 300` window (the first cut of this) a row entering at page `p` sorted to the top of
-  that page's window — into a slot page `p-1` already emitted — so it appeared on **no** page and the row it displaced
-  appeared on two. Past the window the feed falls back to the plain global branch, which is exactly where the
-  personalized list's tail lives; the two meet on a page boundary. `cid desc` breaks score ties for the same reason.
-- **`s` is normalized once** (`new`/`top`/else `hot`) because `orderBy` treats any unknown sort as hot — reading
-  `q.sort` raw in the branch condition let `?sort=HOT` order one way and take the other branch.
-- Prefs also feed the **compose chips** — an explicit ▲ on a tag outranks the implicit `own`/`affinity` signals and a ▼
-  suppresses the tag everywhere. See **Tag Discovery**.
-- Explicit 70% cuts: `/c` search is **not** personalized (you already expressed intent there — re-ranking fights you),
-  and `sort=new`/`sort=top` are not either (chronological and most-voted mean what they say). Weights are constants,
-  scaled by `usr.pref_weight` (0–2, the `/u` slider; 0 = the global order).
-- Surfaces: `LabelVote` (same markup/classes as `Reactions`) on the `/c?tag=`, `/c?usr=` and `/c?www=` `InfoBlock`s and
-  on `/u/:name`; `/u` gains **people** (mutuals) and **interests** (your prefs, with toggle-off chips). `/c?www=` had no
-  header before — adding one required `onlyFilter` to move `www` from "nothing else is set" into the single-label count.
-
-## Tag Discovery
-
-Two surfaces, both rendered as `.tag-preset` chips (`public/style.css`):
-
-- **Frontpage presets** (`GET /`, logged-in only, inside the compose form): `top_mine`, capped at **12** so the `disco`
-  slice always keeps its **8** reserved slots. Four sources, in priority order: your writable `*orgs` (1), tags you
-  explicitly ▲'d (`picked`, 2), then your own posted labels (`own`) and tags you upvoted a post in (`affinity`) (both
-  3). The tiers matter because the cap is what makes the slots scarce — an explicit ▲ is the user naming the tag, so it
-  must not have to win a recency race against everything they ever posted. A ▼'d tag is filtered out of `mine` **and**
-  `disco`: "less of this" has to hold on every path into the row, or a muted tag walks straight back in via `own`.
-  `disco` is a _weighted random sample_ of `stat_tag` (`posts_count >= 3`) via the exponential-race trick
-  `order by -ln(greatest(random(), 1e-9)) / greatest(ups_received / ln(posts_count + 2), 0.05)`, so the row is fresh on
-  every load and better tags surface more often. Do **not** reintroduce
-  `select distinct on (tag) … order by tag …
-  limit N` — DISTINCT ON forces `tag` leftmost, which silently keeps the
-  alphabetically-first N and throws the ranking away (that was the bug).
-- **Profile top tags** (`User` component, both `GET /u/:name` and `GET /u`): `topTags(name)`, ranked by upvotes received
-  with post count as tiebreak, chips link to the global `/c?tag=<tag>` feed.
-
-**Pagination is offset-based and therefore bounded.** `pageParam` is the single definition of `?p=` for both feeds:
-malformed and negative values coerce to page 0 (matching `?limit=`, pinned by the routes test), but `p * limit` past
-`paging.maxOffset` (5000) is a **400**, not a clamp — postgres cannot skip an OFFSET, so `?p=99999999` is a request to
-walk the whole table, and serving page 200 under a URL claiming page 99999999 would be a lie. The cap is on the
-_offset_, not the page number, so it means the same depth at any `?limit=`. `Pagination` hides "next" at the cap, so a
-browser can never click into that 400. `paging` is an object so tests can shrink it — proving the link disappears
-otherwise needs 5000 seeded rows, and at the default the page is empty anyway and the assertion proves nothing.
-
-**`stat_tag` and `stat_domain` are MATERIALIZED views**; only `stat_usr` is still a plain one. As plain views they
-re-aggregated the whole of `com` on **every read** — `stat_tag` ~350ms, `stat_domain` ~330ms measured on prod — and
-`stat_tag` is read once per logged-in frontpage load while **`stat_domain` is read by every single `refresh_score`
-call**, i.e. on every post and every reaction. `refreshStats()` refreshes both `CONCURRENTLY` (which is what their
-unique indexes, `stat_tag_tag_idx` and `stat_domain_domain_idx`, exist for — without one the refresh cannot be
-concurrent and would lock readers out) on the `ding-refresh-stats` `Deno.cron`, every 10 min.
-
-**The trade is staleness, and it is bigger than it looks for `stat_domain`:** `refresh_score` now ranks against a
-snapshot up to 10 minutes old, so a brand-new tag or domain earns no reputation term until the next tick. That is fine
-for slow-moving reputation and is why `stat_usr` was left alone (78ms, not worth the staleness). Tests must call
-`refreshStats()` after inserting content they then expect to be scored or discovered — and note that a test asserting
-something is _absent_ passes vacuously against a stale snapshot, so those must refresh too.
-
-**Both are world- or org-stranger-readable, so neither may use `visibleTo`** — they hard-filter to public root posts
-(`orgs = '{}' and usrs = '{}'`). `stat_tag` (`db.sql`) carries that same filter for the same reason: before, a tag used
-only inside a `*org` post could surface as a public frontpage chip. Side effect: `refresh_score`'s `tag_ups`/`tag_downs`
-signal no longer counts private posts.
-
-## Body Formatting
-
-Post/comment bodies are rendered by `formatBody()` as lightweight markdown that **keeps the original symbols visible**
-(e.g. `_foo_` renders as `<em>_foo_</em>`). Supported: `_italic_`, `**bold**`, `` `code` ``, `[text](https://...)`,
-`# heading`, `> blockquote`, `- item` / `1. item` lists, fenced `` ``` `` and 4-space-indented code blocks. Only code
-blocks render in monospace; prose uses the page font. `<div class="body">` wraps output; styles live in
-`public/style.css` (`.body`, `.body pre`, `.body blockquote`, `.body-list`).
-
-`POST /i` checks the **declared** `content-length` before touching the body: every other check needs the whole upload
-buffered, so without it a caller that skips `client.js`'s guard makes the isolate read the lot just to refuse it. The
-`c.req.formData()` call is wrapped, because a client that goes away mid-upload (closed tab, dropped mobile connection,
-proxy timeout) throws `error reading a body from connection` — which surfaced as a bare 500 and a stack trace that told
-neither the user nor us anything. It is a truncated request, so it returns 400 and says so.
-
-The upload **id comes from the client** (`client.js` draws a random 8-char one and writes the URL into the textarea
-before the bytes land), so the key is nameable by anyone who has seen the image. `POST /i` therefore uploads with
-`noOverwrite` — R2's conditional write (`If-None-Match: *`, signed, one round trip) — and turns the 412 into a **409**
-instead of PUTting over the existing object: otherwise any logged-in user could replace someone else's image and every
-post embedding it would show the new bytes. `uploadToR2` still overwrites by default, because bots reuse keys on purpose
-(`clipart-<date>.svg`).
-
-Bare or markdown-linked `.mp4`/`.webm` URLs render as muted looping autoplay `<video class="pre-img">` above the visible
-link (no transcoding — Deno Deploy has no ffmpeg). The same extensions are accepted by `POST /i`
-(`IMG_EXT_RE`/`MIME_BY_EXT`) and served from `i.ding.bar`; `resolveThumbnail` short-circuits video URLs to the favicon
-fallback so it never streams video bytes as text.
-
-Post-detail view (`/c/:cid`) fetches two levels of comments so replies-to-replies render without click-through. Feed
-view (`/`) stays one level deep.
-
-## Account hub (/u)
-
-`GET /u` is the owner's hub: identity (`User` component), bio edit, **people** (mutual follows), **interests** (your
-label prefs, each chip a toggle-off `POST /p`), orgs (from `orgs_r`, "(read-only)" when not in `orgs_w`), invites
-(`POST /invite`, "N of 4 used", pending list), and account actions — logout, custodial `/key` download, and a
-`<details class="danger">` confirm around the irreversible `POST /key/delete`. All three POST targets already redirect
-back to `/u`, so the hub needed no handler changes. `/u/:name` stays lean and shares the `User` component (owners get a
-pointer line back to `/u`). `/n` stays a separate page on purpose — no notif preview on `/u`.
-
-It runs **three** queries, not six: the postgres.js pool is `max: 3` per isolate, so a wider `Promise.all` doesn't fan
-out — it queues into a second round trip. The invite list rides along with the `usr` row as a `json_agg` subquery (same
-table), and prefs + mutuals + both follow counts collapse into one pass. That last one is
-`counts left join mine on true` on purpose: with no prefs of your own the join is the only thing keeping a row, and so
-the only thing keeping a follower count that isn't yours from reading as zero. The all-null sentinel row is dropped in
-JS.
-
-## Share (?submit=)
-
-`GET /?submit=<url>` prefills compose from a foreign page: `<title>\n<url>` in the textarea, up to 8 images as
-`GET /img` thumbnails that a click adds to the post, and up to 3 `#tags` in the labels input. A logged-out request
-redirects to `/u?next=` BEFORE any fetch, so anonymous traffic can never make ding fetch a page. A page that cannot be
-read still prefills the bare link and shows the reason.
-
-**A labelless post comes back as compose.** When a browser root post has no `#tag` or `@user`, `POST /c` answers the
-frontpage itself (`home(c, draft)`, status 200) instead of redirecting, so the text never enters a URL, browser history,
-or the request log. The textarea keeps the text, the labels keep what was typed, the first http(s) URL runs through the
-same `sharing` pipeline as `?submit=` (tags fill the labels, images fill the strip), and a note names the rule. It never
-fires for api callers, a request with `Authorization` (a script must get the 400, not an HTML page), a reply, or a body
-over 4096 code points; those reach `createPost`'s 400. `labelled` is the one rule both ask: a `#tag` or an `@user`. An
-`*org` alone is not enough, because `com_tags_pub_check` wants one of those on every root. The labels input has no
-`required`/`pattern`.
-
-- **`fetchPage`** is the single foreign-page fetch (3s, `ding/1.0`, first 1 MB, linkedom): reuse it, do not add another.
-  Its `images` are the `og:image`/`twitter:image` only, which is all `resolveThumbnail` needs. Readability runs in the
-  `?submit=` path alone, so a link post (bots included, every 5 min) never pays for article extraction.
-- **The strip offers only images a post renders.** `formatBody` shows a URL as an image only when `isImageUrl` matches
-  its extension, so an extensionless `og:image` would post as a bare link. The strip filters on `isImageUrl` too.
-- **Compose previews** (`public/client.js`): under every `textarea[name=body]`, a row shows each image the post will
-  render, with an × that removes its URL. `imagesIn` copies `INLINE_RE`'s URL pattern and `isImageUrl`: change them
-  together. Code that sets a textarea's value goes through `setValue`, which fires `input`, or the row goes stale. An
-  upload previews its local file (`localSrc`), because its `i.ding.bar` URL has no bytes yet.
-- `GET /img` answers with `Content-Security-Policy: sandbox` and `nosniff`, so a relayed SVG cannot run script on the
-  ding origin.
-- **A thumbnail click copies the image; a post never hotlinks it.** `client.js` POSTs `url` (not `file`) to `POST /i`.
-  The server fetches it through `fetchPublic`, takes the extension from the response `content-type` (a `.png` link can
-  serve webp), draws the id itself, uploads with `noOverwrite`, and answers the `i.ding.bar` URL. On any refusal (SVG,
-  over 25 MB, a dead or private host) the client adds the original link instead. Refusals answer one generic line, and
-  the detail goes to the log, as in `GET /img`. A copy makes the server fetch up to 25 MB for a ~100-byte request, so it
-  counts against `postRate`. The button keeps the copy in `data-mirror`, so a click after × reuses it.
-- **The tagger** is one Haiku call (`claude()`, 3s, temperature 0) after Readability. It may pick only candidates: the
-  top 150 `stat_tag` tags plus the viewer's ▲'d tags, minus the ▼'d ones. Any other word in the answer is dropped and
-  logged, so prompt injection in the page can at worst pick a wrong candidate. It never picks `*org` or `@user`, because
-  those change who can read the post. A failure (no key, timeout, 529) leaves the labels to the viewer and logs
-  `tags not suggested`. `taggerCap.perDay` (200) caps Haiku calls per UTC day: each call first upserts the `spend` row
-  `(day, 'tagger', n)`, and `n` over the cap throws `daily cap of N Haiku calls reached` into that same catch, so the
-  labels stay empty. The `/status` condition "The ?submit= tagger used under 80% of its daily cap" grades today's row.
-  `stat_tag` is materialized, so a brand-new tag is not a candidate until `refreshStats` runs.
-
-**User-chosen URLs go through `fetchPublic`** (defined in `bots.ts`, with `fetchGuard`, because the server imports bots
-and not the reverse). `fetchPage`, `GET /img`, the `POST /i` copy, `imageMentionBot` (15s), and `extractArticle` (10s)
-all use it; a bot never fetches a URL from a post body with bare `fetch`. Before each hop, the first and every redirect
-(followed by hand, at most 5), it resolves the host and refuses unless every address is public unicast by `ipaddr.js`
-(`range() === "unicast"`): no loopback, private, link-local (cloud metadata), CGNAT, or IPv4-mapped tricks. Known gap:
-`fetch` resolves the name again, so DNS rebinding between the check and the connect gets through. Tests serve fixtures
-on 127.0.0.1 and add it to `fetchGuard.allow`; production never does. Failure text never reaches the user (the
-`?submit=` line and `/img`'s 502 are generic) because it would tell a caller which hosts and ports answer; the detail
-goes to the log.
-
-## Embeddable comments (/embed)
-
-`GET /embed?url=<page>` is a read-only iframe widget for static sites
-(`<iframe src="https://ding.bar/embed?url=PAGE_URL">`). It returns `c.html` directly (no `c.render`, so no site layout),
-never reads the viewer's cookie, and hard-filters to public root posts (`orgs = '{}' and usrs = '{}'`) matched by a
-`domains` GIN prefilter plus `strpos` exact-URL match (not `ilike` — URLs contain `%`/`_`). Headers:
-`Content-Security-Policy: frame-ancestors *` and `X-Robots-Tag: noindex`. `EmbedComment` is the slim renderer (absolute
-ding.bar links, no forms). Empty state links `/?www=<domain>` (prefills the compose labels); a bad `?url=` returns 400
-with the copyable snippet.
-
-## Content Negotiation
-
-Routes return different formats based on subdomain or Accept header:
-
-- `api.ding.bar` or `Accept: application/json` → JSON
-- `rss.ding.bar` or `Accept: application/xml` → RSS/XML
-- Default → HTML
-
-Write API (api host, Basic Auth, form in, JSON out; `POST /c` reads its body with `form()`, so a JSON body is a 400 that
-says so): `POST /c` → 201 + the `GET /c/:cid` row array on create, 200 `{kind,parent_cid}` for unreact/flag; `POST /p` →
-200 `{label,vote,ups}` (`vote: null` = cleared). No viewer → 401 `{error}`. `app.onError` turns every `HTTPException` on
-api into `{error: message}` with its status. Browser redirects are unchanged.
-
-## Authentication
-
-- Signed cookies for browser sessions
-- Basic Auth for API access (used by bots)
-- `authed` middleware protects private routes
-- `some()` combinator allows either auth method
-
-## Signup anti-spam
-
-The signup door layers cheap, dependency-free defenses (no CAPTCHA) in `POST /signup`, checked in order (cheapest/silent
-first):
-
-- **Honeypot** — a hidden `url` input (`.hp` in `style.css`, off-screen); if a POST fills it, the handler pretends
-  success (`redirect /signup?ok`) but creates/sends nothing, so bots can't learn it.
-- **Per-IP throttle** — `signupRate` (in-memory sliding window, `perHour`/`windowMs` tunable on the object like
-  `dbIngestRate`), keyed by `clientIp(c)` (`cf-connecting-ip` → first `x-forwarded-for` hop → `"unknown"`).
-  `signupThrottle(c)` → 429. Also guards `/signup/resend` and `/forgot` (mailbomb vectors sharing `sendVerify`).
-- **`badSignupEmail(email)`** — rejects known throwaway domains (`disposableDomains`, loaded from the vendored
-  `disposable-domains.txt`) and domains with no MX/A record (`hasMailExchange` via `Deno.resolveDns`; **fails open** on
-  non-`NotFound` resolver errors so a flaky DNS never blocks real signups). Rejection →
-  `redirect /signup?error=bad_email`.
-
-Note: posting already effectively requires a verified email (you can't authenticate until the emailed token sets a
-password), so these gates are the primary account-abuse defense. `GET /us` lists **verified** accounts only, and a daily
-`Deno.cron` (`ding-prune-unverified`, Deploy-only) deletes stale unverified self-signups (`invited_by = name`, >7 days).
-Tests stub `Deno.resolveDns` (`fakeResolveDns`) and raise `signupRate.perHour` so the suite stays hermetic.
+- Each bot is `export default (api: Api) => ...`. No top-level side effects. `bots/mod.ts` is the registry. Keys
+  uppercase to the `BOT_<NAME>_EMAIL`/`_PASSWORD` prefix.
+- Bots call the database through `botApi()` (`feedPosts`, `createPost`, `verifiedUsers`). Put ACL and validation checks
+  in those functions, never in route handlers.
+- A bot never calls `Deno.exit`. It throws.
+- Dedup uses a window (`DEDUP_WINDOW_MS`). Voting bots dedup with `getReactedCids`.
+- Mention bots fetch `/c?mention=<bot>` twice (comments and roots).
+- A bot that attempts work and lands nothing throws.
+- `fitSharp` lives in `bots/images.ts`. `noiseRects` rng draw order is load-bearing.
+- `bots/checkmark.ts` is not in the fleet.
+- Image fetches of `i.ding.bar` go through `directImageUrl`.
+- Verdict bots exclude `bot_%` authors and keep POSTs per run under the 10/min post rate.
 
 ## Key Patterns
 
-SQL queries use postgres.js tagged templates:
-
 ```tsx
 const users = await sql`SELECT * FROM usr WHERE uid = ${id}`;
-```
-
-JSX components are pure functions:
-
-```tsx
 const Post = ({ post }: { post: Com }) => <article>...</article>;
 ```
 
 ## Status
 
-`GET /status` grades every condition in `checks` (`server.tsx`). Each grade is actual / threshold, unclamped, floored to
-2 decimals; 1.0 is the minimum pass. The body maps each condition to `{"0": grade}`, and the route answers 503 when any
-grade is below 1.0. A check that throws or exceeds 5s grades 0 and logs expected/received/source/fix. The route is
-public, so every request inside 30s shares one grading (`gradeMemo`).
-
-- **Alerting is snitch, not ding.** snitch runs `deno task status` (`ding.ts status <url>`) hourly from pc, logs the
-  result, and mails the 4:30 report. That run is also the external uptime ping. ding sends no status email and keeps no
-  status history of its own.
-- **`beat(name)`** upserts "the last time X happened" into the `beat` table. Every `Deno.cron` beats its own name after
-  a good tick, and `runBotFleet` beats `bot:<name>` for each bot that finishes. Cron name, schedule, and period are
-  defined once in `CRONS`; keep each period equal to its schedule.
-- **The bot condition keeps one key.** When it grades below 1 it also `console.error`s the stale bot names (BOTS keys
-  with no `bot:<name>` beat in the past hour), so the Deploy logs say which bot to look at.
-- **Deploy order:** run `migrate.sql` BEFORE the deploy, because the crons and `runBotFleet` write `beat`.
+- `GET /status` grades every condition in `checks`. Grade = actual / threshold, floored to 2 decimals. Below 1.0 returns
+  503. A check that throws or runs over 5s grades 0.
+- snitch runs `deno task status` hourly. ding keeps no status history.
+- `beat(name)` records the last time X happened. Every cron and every finished bot beats.
+- Run `migrate.sql` before a deploy. Crons write `beat`.
 
 ## Testing
 
-Tests use **`jsr:@surprisetalk/pgtemp`** — ephemeral in-memory Postgres (PGlite + pg-gateway behind a real wire
-listener), so no external PostgreSQL is needed. `pgtest(f)` in `server.test.ts` wraps each `Deno.test`: it boots one
-instance, swaps it into the server with `setSql`, resets the rate limiters, and stubs `Deno.resolveDns`. `await using`
-means a throwing test still tears the backend down (the old hand-rolled harness leaked one per failure).
-
-Schema + seed run **once** at module load into a `snapshot` blob; every test boots from that tarball instead of
-replaying the DDL (~3x faster). Add new fixtures to `setup`/`seedSql`, not to individual tests, so they land in the
-snapshot. `pgcrypto` doesn't exist in PGlite: `gen_salt`/`crypt` are mocked in `setup` and the schema's
-`create extension pgcrypto` is stripped, so seeded passwords are the literal string `hashed:<password>`.
-
-`pgtemp`'s bundled client comes from `npm:postgres` while the server imports `deno.land/x/postgresjs` — same library,
-different module identity, hence the one `as unknown as pg.Sql` cast in `pgtest`.
+- `pgtest(f)` in `server.test.ts` boots an ephemeral PGlite (`jsr:@surprisetalk/pgtemp`), calls `setSql`, resets rate
+  limiters, and stubs `Deno.resolveDns`.
+- Schema and seed run once into a snapshot. Add fixtures to `setup`/`seedSql`.
+- PGlite has no `pgcrypto`. `setup` mocks `gen_salt`/`crypt`. Seeded passwords are `hashed:<password>`.
+- Tests serve fixtures on 127.0.0.1 and add it to `fetchGuard.allow`.

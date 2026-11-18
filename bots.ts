@@ -74,12 +74,8 @@ export const readCapped = async (body: ReadableStream<Uint8Array>, max: number) 
 
 // ---- Bot init ----
 
-// Every request a bot makes goes through `fetch` here. Standalone runs get the real
-// global fetch; the in-server Deno.cron passes `app.request`, which dispatches in-process
-// (Deno Deploy forbids a deployment fetching its own origin — see server.tsx's cron).
 export type Api = {
-  // The bot's real `usr.name`, resolved from BOT_<N>_EMAIL against the database — not
-  // guessed from the email local part, which is what the old botUsername did.
+  // The bot's real `usr.name`, resolved from BOT_<N>_EMAIL against the database.
   botUsername: string;
   orgsR: string[];
   // The seam. Both are injected: runBotFleet and botInit hand over implementations backed
@@ -212,8 +208,6 @@ export const fetchTimeout = async (
   }
 };
 
-// Worker-pool sweep over many feeds: fetch each concurrently (bounded), keep each
-// feed's newest item inside the freshness window.
 // Fetch a syndication feed as text. A body that stalls mid-read skips this feed, not the sweep.
 export const fetchFeedText = async (url: string, ua: string, accept: string, timeoutMs: number) => {
   const res = await fetchTimeout(url, timeoutMs, { "user-agent": ua, accept });
@@ -222,7 +216,7 @@ export const fetchFeedText = async (url: string, ua: string, accept: string, tim
 };
 
 // One bad feed skips itself, never the sweep: these bots read dozens of uncurated public
-// feeds, and a single oversized body (parser RangeError) used to take the whole run with it.
+// feeds, and a single oversized body (parser RangeError) must not take the whole run with it.
 export const sweepOne = async <F, T>(f: F, fetchOne: (f: F) => Promise<T[]>): Promise<T[]> => {
   try {
     return await fetchOne(f);
@@ -232,6 +226,8 @@ export const sweepOne = async <F, T>(f: F, fetchOne: (f: F) => Promise<T[]>): Pr
   }
 };
 
+// Worker-pool sweep over many feeds: fetch each concurrently (bounded), keep each
+// feed's newest item inside the freshness window.
 export async function sweepFeeds<F, T>(
   sample: F[],
   concurrency: number,
@@ -355,7 +351,9 @@ export const noiseRects = (
 };
 
 export async function glitchTwemojiToR2(cp: string, rng: () => number, prefix: string, o: GlitchSvgOpts) {
-  const res = await fetch(`https://raw.githubusercontent.com/twitter/twemoji/master/assets/svg/${cp}.svg`);
+  const res = await fetch(`https://raw.githubusercontent.com/twitter/twemoji/master/assets/svg/${cp}.svg`, {
+    signal: AbortSignal.timeout(15_000),
+  });
   if (!res.ok) throw new Error(`Failed to fetch twemoji ${cp}: HTTP ${res.status}`);
   const glitched = glitchSvg(await res.text(), rng, o);
   const date = new Date().toISOString().slice(0, 10);
@@ -368,22 +366,24 @@ export async function glitchTwemojiToR2(cp: string, rng: () => number, prefix: s
 export const unescXml = (s: string) =>
   s.replace(/&lt;/g, "<").replace(/&gt;/g, ">").replace(/&amp;/g, "&").replace(/&quot;/g, '"');
 
+const REDDIT_UA = "ding-bot/1.0 (+https://ding.bar; contact: taylor@ding.bar)";
+
 // Reddit throttles aggressively; descriptive UA + single retry on 429 is polite enough.
-export async function redditFetch(url: string, timeoutMs = 15_000): Promise<Response> {
-  for (let attempt = 0; attempt < 2; attempt++) {
-    const res = await fetch(url, {
-      signal: AbortSignal.timeout(timeoutMs),
-      headers: {
-        "User-Agent": "ding-bot/1.0 (+https://ding.bar; contact: taylor@ding.bar)",
-        "Accept": "application/rss+xml, application/xml, text/xml, */*",
-      },
+export async function redditFetch(url: string): Promise<Response> {
+  const get = () =>
+    fetch(url, {
+      signal: AbortSignal.timeout(15_000),
+      headers: { "User-Agent": REDDIT_UA, "Accept": "application/rss+xml, application/xml, text/xml, */*" },
     });
-    if (res.status !== 429 || attempt === 1) return res;
+  let res = await get();
+  if (res.status === 429) {
+    await res.body?.cancel();
     const retryAfter = parseInt(res.headers.get("retry-after") || "5", 10);
     console.warn(`Reddit 429, sleeping ${retryAfter}s then retrying`);
     await new Promise((r) => setTimeout(r, Math.min(retryAfter, 30) * 1000));
+    res = await get();
   }
-  throw new Error("unreachable");
+  return res;
 }
 
 export const extractRedditImage = (html: string): string | null => {
@@ -478,8 +478,8 @@ export async function rssBot(api: Api, opts: {
   // (HN front-page churn, etc.) so dedup must be wider than the cutoff.
   const posted = await getPostedUrls(api);
   console.log(`Found ${posted.size} previously posted URLs`);
-  const res = await fetch(opts.feedUrl);
-  if (!res.ok) throw new Error(`Feed fetch failed: HTTP ${res.status}`);
+  const res = await fetch(opts.feedUrl, { signal: AbortSignal.timeout(15_000) });
+  if (!res.ok) throw new Error(`rssBot: expected HTTP 200 from ${opts.feedUrl}, received ${res.status}`);
   const xml = await res.text();
   const rawItems = xml.match(opts.itemRe ?? /<item>[\s\S]*?<\/item>/g) || [];
   let stale = 0, undated = 0;
@@ -675,7 +675,17 @@ export async function uploadToR2(
   headers["Authorization"] =
     `AWS4-HMAC-SHA256 Credential=${accessKey}/${credentialScope}, SignedHeaders=${signedHeaders}, Signature=${signature}`;
 
-  const res = await fetch(url, { method: "PUT", headers, body: data as unknown as BodyInit });
+  const res = await fetch(url, {
+    method: "PUT",
+    headers,
+    body: data as unknown as BodyInit,
+    signal: AbortSignal.timeout(30_000),
+  }).catch((err) => {
+    throw new Error(
+      `R2 upload of key ${key} to ${endpoint} failed within the 30000 ms bound: ${(err as Error).message}. ` +
+        `Expected a response from R2_ENDPOINT; check network and R2_ENDPOINT, then retry.`,
+    );
+  });
   if (noOverwrite && res.status === 412) {
     await res.body?.cancel();
     throw new R2Conflict(`R2 key ${key} already exists — nothing was overwritten.`);
@@ -781,10 +791,9 @@ type Candidate = {
   c_comments: number;
 };
 
-// Fetches top-level posts + comments, filters bot's own posts + already-answered + stale,
-// ranks: prefer posts with fewer replies (spreads bots across threads), random tiebreak.
 // The shared "worth replying to" filter: not mine, not already handled, fresh, and with
-// enough prose left once URLs are stripped. Four bots each had their own copy of this.
+// enough prose left once URLs are stripped. Ranks posts with fewer replies first (spreads
+// bots across threads), random tiebreak.
 export async function pickCandidates(
   api: Api,
   answered: Set<number>,
@@ -815,22 +824,17 @@ export async function pickCandidates(
     .map(({ p }) => p);
 }
 
-export async function personaBot(api: Api, opts: {
-  system: string;
-  maxTokens?: number;
-  minGapMin?: number;
-  maxReplies?: number;
-}) {
+export async function personaBot(api: Api, opts: { system: string }) {
   const ageMin = (await getLastPostAge(api, { replies: true })) / 60_000;
-  if (ageMin < (opts.minGapMin ?? 240)) {
+  if (ageMin < 240) {
     console.log(`Last reply ${Math.round(ageMin)}min ago, skipping`);
     return;
   }
   const answered = await getAnsweredCids(api);
   const candidates = await pickCandidates(api, answered);
   console.log(`Found ${candidates.length} candidates`);
-  for (const p of candidates.slice(0, opts.maxReplies ?? 1)) {
-    const text = await claude(p.body, { system: opts.system, maxTokens: opts.maxTokens ?? 50 });
+  for (const p of candidates.slice(0, 1)) {
+    const text = await claude(p.body, { system: opts.system, maxTokens: 50 });
     await reply(api, p.cid, text);
     console.log(`Replied to cid=${p.cid}: ${text.slice(0, 60)}...`);
   }
@@ -940,7 +944,6 @@ export async function redditBot(api: Api, opts: {
   selftext?: boolean;
   tags?: (sub: string) => string;
 }) {
-  const UA = "ding-bot/1.0 (+https://ding.bar; contact: taylor@ding.bar)";
   const TIMEOUT = 15_000;
   const sample = shuffle([...opts.subs]).slice(0, opts.sample ?? opts.subs.length);
   console.log(`Sampling ${sample.length} of ${opts.subs.length} subreddits: ${sample.join(", ")}`);
@@ -948,7 +951,7 @@ export async function redditBot(api: Api, opts: {
   const cutoff = Date.now() - (opts.freshnessMs ?? 24 * 60 * 60 * 1000);
   const fetchSub = async (sub: string) => {
     try {
-      const res = await redditFetch(`https://www.reddit.com/r/${sub}/.rss`, TIMEOUT);
+      const res = await redditFetch(`https://www.reddit.com/r/${sub}/.rss`);
       if (!res.ok) return console.warn(`r/${sub} fetch failed: ${res.status}`), [];
       return parseRedditEntries(await res.text()).map((i) => ({ sub, ...i }));
     } catch (err) {
@@ -972,7 +975,7 @@ export async function redditBot(api: Api, opts: {
       // A body that stalls mid-read costs this post its selftext, not the whole sweep.
       const selftext = await fetch(it.link.replace(/\/?$/, "/") + ".json", {
         signal: AbortSignal.timeout(TIMEOUT),
-        headers: { "User-Agent": UA, "Accept": "application/json" },
+        headers: { "User-Agent": REDDIT_UA, "Accept": "application/json" },
       })
         .then(async (r) =>
           r.ok

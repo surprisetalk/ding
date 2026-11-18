@@ -32,7 +32,7 @@
   4. Test, in "share via ?submit=": a tag only `bot_` posts use is absent from `tagger.prompt`; a tag a human put on a
      same-domain post is present.
 
-- [ ] `deno test -A` finishes in under 10 s, so the pre-commit hook stays cheap. It took 16 s on pc on 11-17.
+- [ ] `deno test -A` finishes in under 10 s, so the pre-commit hook stays cheap.
   1. Time each test with `deno test -A --reporter=junit` and list the five slowest here.
   2. Cut the cost where it lives (PGlite boot, child-process boots, real timers), then record the floor and its
      bottleneck in claude.md.

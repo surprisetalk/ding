@@ -56,7 +56,6 @@ import app, {
   decodeLabels,
   discoverPeers,
   emailToken,
-  encodeLabels,
   extractDomains,
   extractImageUrl,
   extractLinks,
@@ -304,6 +303,26 @@ const pgtest = (f: (sql: pg.Sql) => (t: Deno.TestContext) => Promise<void>) => a
 
 const basic = (email: string, pass: string) => ({ Authorization: "Basic " + btoa(`${email}:${pass}`) });
 
+const fd = (o: Record<string, string>) => {
+  const f = new FormData();
+  for (const [k, v] of Object.entries(o)) f.append(k, v);
+  return f;
+};
+
+const cidFromLocation = (loc: string) => {
+  const m = loc.match(/^\/c\/(\d+)/);
+  if (!m) throw new Error(`bad location: ${loc}`);
+  return +m[1];
+};
+
+const loginCookie = async (email: string, password = "password1!") => {
+  const res = await app.request("/login", { method: "POST", body: fd({ email, password }) });
+  const setCookie = res.headers.get("set-cookie");
+  if (!setCookie)
+    throw new Error(`login as ${email}: expected a set-cookie header, received none (status ${res.status})`);
+  return setCookie.split(";")[0];
+};
+
 // With prepare on, a migration that changes a result type ("alter table ... drop column") makes every
 // cached plan fail with "cached plan must not change result type" until its connection closes. That
 // took ding.bar down on 2026-08-09; this pins the setting so it can't be dropped by accident.
@@ -374,12 +393,17 @@ Deno.test(
       assertStringIncludes(html, `value="nobody@example.com"`);
     });
 
-    await t.step("POST /login correct credentials", async () => {
-      const body = new FormData();
-      body.append("email", "john@example.com");
-      body.append("password", "password1!");
-      const res = await app.request("/login", { method: "post", body });
-      assertEquals(res.status, 302);
+    await t.step("POST /login follows a same-site ?next= and refuses an off-site one", async () => {
+      const login = (next: string) => {
+        const body = new FormData();
+        body.append("email", "john@example.com");
+        body.append("password", "password1!");
+        return app.request(`/login?next=${encodeURIComponent(next)}`, { method: "post", body });
+      };
+      for (const [next, location] of [["/c/1", "/c/1"], ["//evil.example", "/u"], ["/\\evil.example", "/u"]]) {
+        const res = await login(next);
+        assertEquals([next, res.status, res.headers.get("location")], [next, 302, location]);
+      }
     });
 
     await t.step("GET /forgot", async () => {
@@ -787,6 +811,8 @@ Deno.test(
       const names = ((await res.json()) as { name: string }[]).map((u) => u.name);
       assertEquals(names.includes("john_doe"), true);
       assertEquals(names.includes("fresh_user"), false);
+      for (const bad of ["abc", "-1", "0", "501", "1.5"])
+        assertEquals([bad, (await app.request(`/us?limit=${bad}`)).status], [bad, 400]);
     });
 
     await t.step(
@@ -908,11 +934,7 @@ Deno.test(
 
     await t.step("data-unread is present only for logged-in viewers", async () => {
       assertEquals((await (await app.request("/")).text()).includes("data-unread"), false);
-      const loginBody = new FormData();
-      loginBody.append("email", "john@example.com");
-      loginBody.append("password", "password1!");
-      const boot = await app.request("/login", { method: "POST", body: loginBody });
-      const cookie = boot.headers.get("set-cookie")!.split(";")[0];
+      const cookie = await loginCookie("john@example.com");
       assertStringIncludes(await (await app.request("/", { headers: { cookie } })).text(), `data-unread="`);
     });
 
@@ -995,11 +1017,7 @@ Deno.test(
     });
 
     await t.step("GET /c?org=secret renders single-org header for member", async () => {
-      const loginBody = new FormData();
-      loginBody.append("email", "john@example.com");
-      loginBody.append("password", "password1!");
-      const boot = await app.request("/login", { method: "POST", body: loginBody });
-      const cookie = boot.headers.get("set-cookie")!.split(";")[0];
+      const cookie = await loginCookie("john@example.com");
       const res = await app.request("/c?org=secret", { headers: { cookie } });
       const html = await res.text();
       assertEquals(html.includes(`<h2>*secret</h2>`), true);
@@ -1446,16 +1464,6 @@ Deno.test(
   pgtest((sql) => async (t) => {
     const jAuth = basic("john@example.com", "password1!");
     const janeAuth = basic("jane@example.com", "password1!");
-    const fd = (o: Record<string, string>) => {
-      const f = new FormData();
-      for (const [k, v] of Object.entries(o)) f.append(k, v);
-      return f;
-    };
-    const cidFromLocation = (loc: string) => {
-      const m = loc.match(/^\/c\/(\d+)/);
-      if (!m) throw new Error(`bad location: ${loc}`);
-      return +m[1];
-    };
 
     await t.step("POST /c root happy path", async () => {
       const res = await app.request("/c", {
@@ -1534,13 +1542,10 @@ Deno.test(
     });
 
     await t.step("DB constraint still rejects raw tagless + recipientless root insert", async () => {
-      let threw = false;
-      try {
-        await sql`insert into com (created_by, body, tags, usrs) values ('john_doe', 'nope', '{}', '{}')`;
-      } catch {
-        threw = true;
-      }
-      assertEquals(threw, true);
+      const e = await assertRejects(() =>
+        sql`insert into com (created_by, body, tags, usrs) values ('john_doe', 'nope', '{}', '{}')`
+      );
+      assertStringIncludes(String(e), "com_tags_pub_check");
     });
 
     await t.step("POST /c root 403 when *org not in orgs_w", async () => {
@@ -1675,13 +1680,7 @@ Deno.test(
     });
 
     await t.step("GET /c/355 returns 200 for member (positive private access)", async () => {
-      const boot = await app.request("/login", {
-        method: "POST",
-        body: fd({ email: "john@example.com", password: "password1!" }),
-      });
-      const setCookie = boot.headers.get("set-cookie");
-      if (!setCookie) throw new Error("no set-cookie on login");
-      const cookie = setCookie.split(";")[0];
+      const cookie = await loginCookie("john@example.com");
       const res = await app.request("/c/355", { headers: { cookie } });
       assertEquals(res.status, 200);
     });
@@ -1836,9 +1835,7 @@ Deno.test(
       await sql`select refresh_score(array(select cid from com where created_by = ${author}))`;
       return r.cid as number;
     };
-    const react = async (reactor: string, pid: number, body: string) => {
-      await sql`insert into com (parent_cid, created_by, body, tags) values (${pid}, ${reactor}, ${body}, '{x}')`;
-      await sql`update com set c_reactions = c_reactions || hstore(${body}, (coalesce((c_reactions->${body})::int,0)+1)::text) where cid = ${pid}`;
+    const rescore = async (pid: number) => {
       const [p] = await sql`select created_by, tags, domains from com where cid = ${pid}`;
       // stat_tag/stat_domain are snapshots, so the reputation this reaction just changed is
       // invisible to refresh_score until they are refreshed — in prod that is the cron; here
@@ -1849,18 +1846,15 @@ Deno.test(
           ${p.domains.length ? sql`or domains && ${p.domains}::text[]` : sql``}
       ))`;
     };
+    const react = async (reactor: string, pid: number, body: string) => {
+      await sql`insert into com (parent_cid, created_by, body, tags) values (${pid}, ${reactor}, ${body}, '{x}')`;
+      await sql`update com set c_reactions = c_reactions || hstore(${body}, (coalesce((c_reactions->${body})::int,0)+1)::text) where cid = ${pid}`;
+      await rescore(pid);
+    };
     const unreact = async (reactor: string, pid: number, body: string) => {
       await sql`delete from com where parent_cid = ${pid} and created_by = ${reactor} and body = ${body}`;
       await sql`update com set c_reactions = c_reactions || hstore(${body}, greatest(coalesce((c_reactions->${body})::int,0)-1, 0)::text) where cid = ${pid}`;
-      const [p] = await sql`select created_by, tags, domains from com where cid = ${pid}`;
-      // stat_tag/stat_domain are snapshots, so the reputation this reaction just changed is
-      // invisible to refresh_score until they are refreshed — in prod that is the cron; here
-      // it has to be explicit, or these steps would be measuring the refresh cadence.
-      await refreshStats();
-      await sql`select refresh_score(array(
-        select cid from com where cid = ${pid} or created_by = ${p.created_by} or tags && ${p.tags}::text[]
-          ${p.domains.length ? sql`or domains && ${p.domains}::text[]` : sql``}
-      ))`;
+      await rescore(pid);
     };
     const score = async (cid: number) => {
       const [r] = await sql`select score from com where cid = ${cid}`;
@@ -1973,16 +1967,6 @@ Deno.test(
     const botAuth = basic("bot-test@ding.bar", "botpass!");
     const jAuth = basic("john@example.com", "password1!");
     const janeAuth = basic("jane@example.com", "password1!");
-    const fd = (o: Record<string, string>) => {
-      const f = new FormData();
-      for (const [k, v] of Object.entries(o)) f.append(k, v);
-      return f;
-    };
-    const cidFromLocation = (loc: string) => {
-      const m = loc.match(/^\/c\/(\d+)/);
-      if (!m) throw new Error(`bad location: ${loc}`);
-      return +m[1];
-    };
 
     await t.step("bot can post via Basic Auth", async () => {
       const res = await app.request("/c", {
@@ -2233,12 +2217,6 @@ Deno.test(
   "synthetic domain tags",
   pgtest((sql) => async (t) => {
     const jAuth = basic("john@example.com", "password1!");
-    const fd = (o: Record<string, string>) => {
-      const f = new FormData();
-      for (const [k, v] of Object.entries(o)) f.append(k, v);
-      return f;
-    };
-    const cidFromLocation = (loc: string) => +loc.match(/^\/c\/(\d+)/)![1];
 
     await t.step("POST /c root stores a distinct ~host tag per URL", async () => {
       const res = await app.request("/c", {
@@ -2310,11 +2288,6 @@ Deno.test(
   pgtest((_sql) => async (t) => {
     const jAuth = basic("john@example.com", "password1!");
     const janeAuth = basic("jane@example.com", "password1!");
-    const fd = (o: Record<string, string>) => {
-      const f = new FormData();
-      for (const [k, v] of Object.entries(o)) f.append(k, v);
-      return f;
-    };
 
     await t.step("mention shows up as unread in /n", async () => {
       // jane posts mentioning john
@@ -2432,11 +2405,7 @@ Deno.test(
     // the header count disagrees with the inbox. The badge must also not fire on /n/unread
     // itself — that request renders no nav, so counting there is pure duplicate work.
     await t.step("nav badge count agrees with /n/unread", async () => {
-      const loginBody = new FormData();
-      loginBody.append("email", "john@example.com");
-      loginBody.append("password", "password1!");
-      const boot = await app.request("/login", { method: "POST", body: loginBody });
-      const cookie = boot.headers.get("set-cookie")!.split(";")[0];
+      const cookie = await loginCookie("john@example.com");
 
       const { count } = await (await app.request("/n/unread", { headers: jAuth })).json();
       const html = await (await app.request("/", { headers: { cookie } })).text();
@@ -2629,6 +2598,7 @@ Deno.test(
 
       await t.step("i.ding.bar proxy serves valid path", async () => {
         const orig = globalThis.fetch;
+        const prevUrl = Deno.env.get("R2_PUBLIC_URL");
         Deno.env.set("R2_PUBLIC_URL", "https://r2-pub.example");
         globalThis.fetch = ((input: string | URL | Request) => {
           const url = typeof input === "string" ? input : input.toString();
@@ -2649,6 +2619,7 @@ Deno.test(
           assertEquals(res.headers.get("cache-control"), "public, max-age=31536000, immutable");
         } finally {
           globalThis.fetch = orig;
+          prevUrl === undefined ? Deno.env.delete("R2_PUBLIC_URL") : Deno.env.set("R2_PUBLIC_URL", prevUrl);
         }
       });
 
@@ -2708,15 +2679,6 @@ Deno.test(
   pgtest((sql) => async (t) => {
     // `GET /` reads the signed cookie, not Basic Auth — the compose form (and with it the
     // preset chips) only renders for a cookie session.
-    const login = async (email: string) => {
-      const body = new FormData();
-      body.append("email", email);
-      body.append("password", "password1!");
-      const boot = await app.request("/login", { method: "POST", body });
-      const setCookie = boot.headers.get("set-cookie");
-      if (!setCookie) throw new Error(`no set-cookie on login as ${email}`);
-      return setCookie.split(";")[0];
-    };
     // The chips live in one `.tag-presets` div; the feed below renders its own label links,
     // so a whole-page substring search would happily match the wrong thing.
     const presetsOf = (html: string) => html.match(/<div class="tag-presets">([\s\S]*?)<\/div>/)?.[1] ?? "";
@@ -2785,7 +2747,7 @@ Deno.test(
           tg,
         ]})`;
       }
-      const chips = await frontpage(await login("john@example.com"));
+      const chips = await frontpage(await loginCookie("john@example.com"));
       assertEquals(zTags.some((tg) => chips.includes(`>#${tg}<`)), true, "personal tags lost to alphabetical cutoff");
       assertStringIncludes(chips, `>*secret<`); // writable org still pinned first
     });
@@ -2797,7 +2759,7 @@ Deno.test(
         (null, 'BugHunter42', 'roadmap c', '{roadmap}', '{secret}')`;
       await refreshStats(); // else a stale snapshot hides #roadmap and the step proves nothing
       // jane_doe reads no orgs, so #roadmap must be invisible to her however the dice fall.
-      const cookie = await login("jane@example.com");
+      const cookie = await loginCookie("jane@example.com");
       for (let i = 0; i < 12; i++) {
         assertEquals(
           (await frontpage(cookie)).includes(">#roadmap<"),
@@ -2810,7 +2772,9 @@ Deno.test(
     await t.step("frontpage presets reserve discovery slots behind capped personal tags", async () => {
       // john_doe now owns 25 z-tags + *secret. Personal chips must cap at 12 so the
       // discovery slice can't be crowded out, and the whole row stays within 20.
-      const labels = [...(await frontpage(await login("john@example.com"))).matchAll(/class="tag-preset">([^<]*)/g)]
+      const labels = [
+        ...(await frontpage(await loginCookie("john@example.com"))).matchAll(/class="tag-preset">([^<]*)/g),
+      ]
         .map((m) => m[1]);
       assertEquals(labels.length <= 20, true, `too many chips: ${labels.length}`);
       assertEquals(labels.filter((l) => l.startsWith("#zz_own_") || l === "*secret").length, 12);
@@ -2822,7 +2786,7 @@ Deno.test(
     // no upvote behind it.
     await t.step("an explicit ▲ on a tag surfaces as a compose chip", async () => {
       await sql`delete from pref where uid = 'jane_doe'`;
-      const cookie = await login("jane@example.com");
+      const cookie = await loginCookie("jane@example.com");
       assertEquals((await frontpage(cookie)).includes(">#astronomy<"), false, "precondition: not already a chip");
       await sql`insert into pref (uid, kind, val, vote) values ('jane_doe', 'tag', 'astronomy', 1)`;
       assertStringIncludes(await frontpage(cookie), ">#astronomy<");
@@ -2834,7 +2798,7 @@ Deno.test(
     await t.step("an explicit ▲ outranks own posts for the capped personal slots", async () => {
       await sql`delete from pref where uid = 'john_doe'`;
       await sql`insert into pref (uid, kind, val, vote) values ('john_doe', 'tag', 'zz_picked', 1)`;
-      const chips = await frontpage(await login("john@example.com"));
+      const chips = await frontpage(await loginCookie("john@example.com"));
       assertStringIncludes(chips, ">#zz_picked<");
       const labels = [...chips.matchAll(/class="tag-preset">([^<]*)/g)].map((m) => m[1]);
       assertEquals(labels.indexOf("#zz_picked"), 1, `picked tag should sit right after *secret: ${labels.slice(0, 3)}`);
@@ -2849,7 +2813,7 @@ Deno.test(
       // that the 25 seeded z-tags are competing for.
       await sql`insert into com (parent_cid, created_by, body, tags)
                 values (null, 'john_doe', 'mute me', '{zz_muteme}')`;
-      const cookie = await login("john@example.com");
+      const cookie = await loginCookie("john@example.com");
       assertStringIncludes(await frontpage(cookie), ">#zz_muteme<"); // reaches the row via own
       await sql`insert into pref (uid, kind, val, vote) values ('john_doe', 'tag', 'zz_muteme', -1)`;
       assertEquals((await frontpage(cookie)).includes(">#zz_muteme<"), false, "a muted tag came back as a chip");
@@ -2866,7 +2830,7 @@ Deno.test(
       await refreshStats();
       await sql`insert into pref (uid, kind, val, vote) values ('jane_doe', 'tag', 'mutedisco', -1)`;
       // disco is a weighted random sample, so one draw proves nothing — take many.
-      const cookie = await login("jane@example.com");
+      const cookie = await loginCookie("jane@example.com");
       for (let i = 0; i < 20; i++)
         assertEquals((await frontpage(cookie)).includes(">#mutedisco<"), false, "muted tag surfaced via discovery");
       await sql`delete from pref where uid = 'jane_doe'`;
@@ -2887,7 +2851,7 @@ Deno.test(
       }
       await refreshStats();
       // jane_doe has no posts, orgs or upvotes, so every chip she sees is a discovery chip.
-      const cookie = await login("jane@example.com");
+      const cookie = await loginCookie("jane@example.com");
       const union = new Set<string>();
       for (let i = 0; i < 30; i++) {
         const chips = [...(await frontpage(cookie)).matchAll(/class="tag-preset">([^<]*)/g)].map((m) => m[1]);
@@ -2936,24 +2900,6 @@ Deno.test("parseLabels", async (t) => {
   });
 });
 
-Deno.test("encodeLabels", async (t) => {
-  await t.step("encodes labels to URLSearchParams", () => {
-    const labels = { tag: ["pub"], org: ["org"], usr: ["user"], www: ["example.com"], text: "query" };
-    const params = encodeLabels(labels);
-    assertEquals(params.getAll("tag"), ["pub"]);
-    assertEquals(params.getAll("org"), ["org"]);
-    assertEquals(params.getAll("usr"), ["user"]);
-    assertEquals(params.getAll("www"), ["example.com"]);
-    assertEquals(params.get("q"), "query");
-  });
-
-  await t.step("handles empty text", () => {
-    const labels = { tag: ["pub"], org: [], usr: [], www: [], text: "" };
-    const params = encodeLabels(labels);
-    assertEquals(params.get("q"), null);
-  });
-});
-
 Deno.test("decodeLabels", async (t) => {
   await t.step("decodes URLSearchParams to search string", () => {
     const params = new URLSearchParams("tag=pub&org=org&usr=user&www=example.com&q=query");
@@ -2986,15 +2932,6 @@ Deno.test("formatLabels", async (t) => {
     const result = formatLabels(record);
     assertEquals(result, ["#news", "~example.com", "~taylor.town"]);
   });
-});
-
-Deno.test("label encoding round-trip", () => {
-  const input = "#pub *org @User ~example.com lorem ipsum";
-  const labels = parseLabels(input);
-  const params = encodeLabels(labels);
-  const decoded = decodeLabels(params);
-  // Note: order may differ and case is normalized
-  assertEquals(decoded, "#pub *org @User ~example.com lorem ipsum");
 });
 
 //// EXTRACT DOMAINS TESTS ////////////////////////////////////////////////////
@@ -3928,11 +3865,7 @@ Deno.test(
 Deno.test(
   "account hub (/u)",
   pgtest((sql) => async (t) => {
-    const loginBody = new FormData();
-    loginBody.append("email", "john@example.com");
-    loginBody.append("password", "password1!");
-    const boot = await app.request("/login", { method: "POST", body: loginBody });
-    const cookie = boot.headers.get("set-cookie")!.split(";")[0];
+    const cookie = await loginCookie("john@example.com");
 
     await t.step("owner hub shows logout, invite form, orgs, self-custody status", async () => {
       const res = await app.request("/u", { headers: { cookie } });
@@ -4113,28 +4046,17 @@ Deno.test(
     });
 
     await t.step("DM recipient and org member see their own", async () => {
-      const login = (email: string) => {
-        const fd = new FormData();
-        fd.append("email", email);
-        fd.append("password", "password1!");
-        return app.request("/login", { method: "POST", body: fd });
-      };
-      const jane = (await login("jane@example.com")).headers.get("set-cookie")!.split(";")[0];
+      const jane = await loginCookie("jane@example.com");
       const janeHtml = await (await app.request("/c/301", { headers: { cookie: jane } })).text();
       assertEquals(janeHtml.includes("dm aside for jane"), true);
       assertEquals(janeHtml.includes("secret org aside"), false); // jane has no orgs
-      const john = (await login("john@example.com")).headers.get("set-cookie")!.split(";")[0];
+      const john = await loginCookie("john@example.com");
       const johnHtml = await (await app.request("/c/301", { headers: { cookie: john } })).text();
       assertEquals(johnHtml.includes("secret org aside"), true); // orgs_r = {secret}
     });
 
     await t.step("GET /?body= prefills the compose textarea", async () => {
-      const fd = new FormData();
-      fd.append("email", "john@example.com");
-      fd.append("password", "password1!");
-      const cookie = (await app.request("/login", { method: "POST", body: fd })).headers.get("set-cookie")!.split(
-        ";",
-      )[0];
+      const cookie = await loginCookie("john@example.com");
       const html = await (await app.request("/?body=https%3A%2F%2Fnomatch.example%2Fx", { headers: { cookie } }))
         .text();
       assertEquals(html.includes("https://nomatch.example/x"), true);
@@ -4659,14 +4581,7 @@ Deno.test(
         const html = await (await app.request("/u", { headers: { cookie } })).text();
         return html.slice(html.indexOf("<h2>people</h2>"), html.indexOf("<h2>interests</h2>"));
       };
-      const login = async (email: string) => {
-        const body = new FormData();
-        body.append("email", email);
-        body.append("password", "password1!");
-        const boot = await app.request("/login", { method: "POST", body });
-        return boot.headers.get("set-cookie")!.split(";")[0];
-      };
-      const [jCookie, janeCookie] = [await login("john@example.com"), await login("jane@example.com")];
+      const [jCookie, janeCookie] = [await loginCookie("john@example.com"), await loginCookie("jane@example.com")];
 
       await vote("@jane_doe", "1");
       assertStringIncludes(await mutualsOf(jCookie), "no mutuals yet", "one-sided follow is not a mutual");
@@ -4723,13 +4638,6 @@ Deno.test(
 Deno.test(
   "pref-personalized frontpage",
   pgtest((sql) => async (t) => {
-    const login = async (email: string) => {
-      const body = new FormData();
-      body.append("email", email);
-      body.append("password", "password1!");
-      const boot = await app.request("/login", { method: "POST", body });
-      return boot.headers.get("set-cookie")!.split(";")[0];
-    };
     // Post titles are the first body line and each renders as `>title</a>`, so reading the
     // order off the rendered feed is what actually proves the ORDER BY.
     const feed = async (qs = "", cookie?: string) => {
@@ -4746,8 +4654,8 @@ Deno.test(
       (901, 'BugHunter42', 'prefpost-alpha', '{alphatag}', '{alpha.example}', ${top},                          ${top}),
       (902, 'BugHunter42', 'prefpost-beta',  '{betatag}',  '{beta.example}',  ${top} - interval '1 hour',  ${top} - interval '1 hour'),
       (903, 'jane_doe',    'prefpost-gamma', '{gammatag}', '{gamma.example}', ${top} - interval '2 hours', ${top} - interval '2 hours')`;
-    const jCookie = await login("john@example.com");
-    const janeCookie = await login("jane@example.com");
+    const jCookie = await loginCookie("john@example.com");
+    const janeCookie = await loginCookie("jane@example.com");
     const baseline = ["prefpost-alpha", "prefpost-beta", "prefpost-gamma"];
 
     await t.step("a viewer with no prefs sees the global ranking", async () => {
@@ -5125,10 +5033,7 @@ Deno.test(
       );
     });
     const origin = `http://127.0.0.1:${fixture.addr.port}`;
-    const body = new FormData();
-    body.append("email", "jane@example.com");
-    body.append("password", "password1!");
-    const cookie = (await app.request("/login", { method: "POST", body })).headers.get("set-cookie")!.split(";")[0];
+    const cookie = await loginCookie("jane@example.com");
     const share = async (url: string) => {
       const res = await app.request(`/?submit=${encodeURIComponent(url)}`, { headers: { cookie } });
       return { status: res.status, html: await res.text() };

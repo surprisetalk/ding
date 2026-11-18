@@ -9,6 +9,7 @@ export default (api: Api) =>
         const skip = Math.floor(Math.random() * (attempt === 0 ? 5000 : 1000));
         const res = await fetch(
           `https://openaccess-api.clevelandart.org/api/artworks/?has_image=1&cc0=1&type=Painting&limit=1&skip=${skip}`,
+          { signal: AbortSignal.timeout(10_000) },
         );
         if (!res.ok) throw new Error(`Cleveland API: HTTP ${res.status}`);
         const a = (await res.json()).data?.[0];

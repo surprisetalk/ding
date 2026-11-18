@@ -156,7 +156,7 @@ const aesKey = async (secret: string) =>
     ],
   );
 
-export const wrapSecret = async (plaintext: string, secret: string) => {
+const wrapSecret = async (plaintext: string, secret: string) => {
   const iv = crypto.getRandomValues(new Uint8Array(12));
   const ct = new Uint8Array(
     await crypto.subtle.encrypt({ name: "AES-GCM", iv }, await aesKey(secret), enc.encode(plaintext)),
@@ -181,8 +181,7 @@ export const unwrapSecret = async (buf: Uint8Array, secret: string) => {
   }
 };
 
-export const unwrapPriv = async (enc: Uint8Array, secret: string) =>
-  importPriv(JSON.parse(await unwrapSecret(enc, secret)));
+const unwrapPriv = async (enc: Uint8Array, secret: string) => importPriv(JSON.parse(await unwrapSecret(enc, secret)));
 
 // Minimal structural view of a postgres.js `sql` tag, so dht.ts stays dependency-free.
 // deno-lint-ignore no-explicit-any

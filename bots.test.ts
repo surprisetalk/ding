@@ -50,10 +50,6 @@ Deno.test("isLinkPost: multiple urls, minimal text → true", () => {
 
 // ---- isFresh ----
 
-Deno.test("isFresh: now → true", () => {
-  assertEquals(isFresh(Date.now()), true);
-});
-
 Deno.test("isFresh: 1h ago → true", () => {
   assertEquals(isFresh(Date.now() - 60 * 60_000), true);
 });

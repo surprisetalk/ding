@@ -16,9 +16,9 @@ console.log(`
   ding DHT — prod secrets (generated locally; store securely, never commit)
 ================================================================================
 
-All four go in DENO DEPLOY env — project "dong" → Dashboard → Settings → Environment
-Variables. ADDED to your existing vars (COOKIE_SECRET, EMAIL_TOKEN_SECRET, DATABASE_URL,
-RESEND_*, STRIPE_*, R2_*). The server refuses to boot without KEY_WRAP_SECRET.
+All four go in /var/lib/ding/env on pc (mode 0600), next to the existing vars in that file
+(COOKIE_SECRET, EMAIL_TOKEN_SECRET, DATABASE_URL, RESEND_*, STRIPE_*, R2_*). The server
+refuses to boot without KEY_WRAP_SECRET.
 
   KEY_WRAP_SECRET=${keyWrap}
   DING_ORG_PK=${pub}
@@ -29,9 +29,9 @@ RESEND_*, STRIPE_*, R2_*). The server refuses to boot without KEY_WRAP_SECRET.
      custodial keys are unrecoverable. Back it up in a password manager / secret store. Do not
      rotate casually (rotation needs a decrypt-then-re-encrypt pass with the old value).
 
-  ~  DING_ORG_SK is the checkmark trust root, signed by the in-server Deno.cron. SIMPLE path
-     for now: it lives on the main server. Harden later by moving the cron to a separate Deno
-     Deploy project (or GitHub Actions) so a server breach can't also mint fake checkmarks.
+  ~  DING_ORG_SK is the checkmark trust root, signed by the in-server Deno.cron. It lives on
+     the main server. Moving the cron to a separate host stops a server breach from also
+     minting fake checkmarks.
 
   (trust-root org id, for reference: ${id})
 ================================================================================

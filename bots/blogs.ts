@@ -58,9 +58,11 @@ const fetchFeed = async (b: Blog): Promise<Item[]> => {
 };
 
 export default async (api: Api) => {
-  const blogsRes = await fetch(BLOGS_URL, { headers: { "user-agent": UA } });
+  const blogsRes = await fetch(BLOGS_URL, { headers: { "user-agent": UA }, signal: AbortSignal.timeout(15_000) });
   if (!blogsRes.ok) throw new Error(`blogs.json fetch failed: HTTP ${blogsRes.status}`);
   const all: Blog[] = await blogsRes.json();
+  if (!Array.isArray(all))
+    throw new Error(`expected a JSON array from ${BLOGS_URL}, received ${typeof all}; check BLOGS_URL`);
   const pool = shuffle(all.filter((b) => b.feed));
   const sample = pool.slice(0, SAMPLE);
   console.log(`Sampling ${sample.length} of ${pool.length} feeds`);

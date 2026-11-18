@@ -40,8 +40,12 @@ export const dnsDingId = async (domain: string): Promise<string | null> => {
 // interpolation (no SSRF / path injection).
 export const githubDingId = async (handle: string, id: string): Promise<boolean> => {
   if (!/^[A-Za-z0-9-]+$/.test(handle)) return false;
-  const res = await fetch(`https://api.github.com/users/${handle}`, { headers: { "user-agent": "ding" } });
-  if (!res.ok) return false;
+  const res = await fetch(`https://api.github.com/users/${handle}`, {
+    headers: { "user-agent": "ding" },
+    signal: AbortSignal.timeout(10_000),
+  });
+  if (res.status === 404) return false;
+  if (!res.ok) throw new Error(`github ${handle}: expected 200 or 404, received ${res.status}`);
   return String((await res.json()).bio ?? "").includes(id);
 };
 
@@ -52,7 +56,14 @@ export const runCheckmark = async (opts: { sql?: Sql; sink?: (rows: Row[]) => Pr
   const ORG_PK = Deno.env.get("DING_ORG_PK"), ORG_SK = Deno.env.get("DING_ORG_SK");
   if (!ORG_PK || !ORG_SK) throw new Error("DING_ORG_PK and DING_ORG_SK (the org's private JWK) are required");
   const orgPriv = await importPriv(JSON.parse(ORG_SK));
-  const sql = opts.sql ?? pg(Deno.env.get("DATABASE_URL")?.replace(/flycast/, "internal")!, { database: "ding" });
+  const sql = opts.sql ?? pg(
+    Deno.env.get("DATABASE_URL") ?? (() => {
+      throw new Error(
+        "checkmark: expected DATABASE_URL in the environment, received none. fix: export DATABASE_URL=postgres://… and rerun.",
+      );
+    })(),
+    { database: "ding" },
+  );
   try {
     const now = Math.floor(Date.now() / 1000);
     // current org-issued marks still comfortably fresh, keyed "<subject>:<claim>", so we don't
@@ -104,7 +115,13 @@ export const runCheckmark = async (opts: { sql?: Sql; sink?: (rows: Row[]) => Pr
         method: "POST",
         headers: { "content-type": "application/x-ndjson" },
         body: rows.map((r) => JSON.stringify(r)).join("\n"),
+        signal: AbortSignal.timeout(30_000),
       });
+      if (!res.ok) {
+        throw new Error(
+          `expected 2xx from ${DB}, received ${res.status}; check the node is up and DING_DB is correct`,
+        );
+      }
       console.log(`checkmark: posted ${rows.length} marks → ${res.status} ${await res.text()}`);
     }
   } finally {

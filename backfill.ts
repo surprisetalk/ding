@@ -90,11 +90,25 @@ export const backfill = async (
 };
 
 if (import.meta.main) {
-  const sql = pg(Deno.env.get("DATABASE_URL")?.replace(/flycast/, "internal")!, { database: "ding", max: 12 });
+  const sql = pg(
+    Deno.env.get("DATABASE_URL") ?? (() => {
+      throw new Error(
+        "backfill: expected DATABASE_URL in the environment, received none. fix: export DATABASE_URL=postgres://… and rerun.",
+      );
+    })(),
+    { database: "ding", max: 12 },
+  );
   const limit = +(Deno.env.get("BACKFILL_LIMIT") ?? "0") || undefined;
   let total = 0, totalSkipped = 0, pass = 0;
   // Loop until a pass makes no progress: replies whose parents land mid-pass get caught next pass.
+  // Each pass signs at least one reply level, so MAX_PASSES bounds the thread depth it can reach.
+  const MAX_PASSES = 100;
   while (true) {
+    if (pass >= MAX_PASSES) {
+      throw new Error(
+        `backfill: expected no progress within ${MAX_PASSES} passes, received progress on every pass (${total} signed). fix: look for a reply cycle in com.parent_cid.`,
+      );
+    }
     const { signed, skipped } = await backfill(sql, { limit });
     total += signed;
     totalSkipped = skipped;

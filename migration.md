@@ -39,13 +39,11 @@ new+empty. Idempotent and re-runnable. Validated against a copy of the old schem
 forward-compatible** — the currently-deployed code ignores the new columns/tables, so you can sit here safely before
 deploying.
 
-The tail of `migrate.sql` also `create or replace`s the **`stat_tag`** view so it only aggregates public root posts
-(`orgs = '{}' and usrs = '{}'`) — without it, a tag used only inside a `*org` post can surface as a public frontpage
-chip. Column list is unchanged, so the replace is instant and re-runnable. Expect `refresh_score`'s `tag_ups`/
-`tag_downs` signal to shift slightly (private posts stop contributing); existing `score` values are not rewritten until
-the next `refresh_score` call.
+The **`stat_tag`** matview (below) aggregates only public root posts (`orgs = '{}' and usrs = '{}'`), so a tag used only
+inside a `*org` post never surfaces as a public frontpage chip. Expect `refresh_score`'s `tag_ups`/`tag_downs` signal to
+shift slightly (private posts stop contributing); existing `score` values change on the next `refresh_score` call.
 
-Smoke check — **must return zero rows**. It lists any tag the view still exposes that lives only on private posts:
+Smoke check — **must return zero rows**. It lists any tag the matview exposes that lives only on private posts:
 
 ```sql
 select st.tag from stat_tag st
@@ -73,9 +71,8 @@ is read once per logged-in frontpage load plus once per `refresh_score`). The co
 transaction, the one exception to this file's no-`BEGIN` rule: nothing in that block is `CONCURRENTLY`, and without the
 transaction there is a window where `stat_tag` does not exist and every logged-in frontpage 500s.
 
-⚠️ **The matview is a snapshot with no self-refresh.** It is populated at migration time and then frozen until the
-`ding-refresh-stats` `Deno.cron` ships — so run this migration _close to_ the deploy, not days ahead, or tag discovery
-silently stops seeing new tags. Smoke check — **must return `m`**:
+The `ding-refresh-stats` `Deno.cron` (`refreshStats` in server.tsx) refreshes both matviews every 10 min, so the first
+tick after the deploy repopulates them. Smoke check — **must return two rows, both `m`**:
 
 ```sql
 select relname, relkind from pg_class where relname in ('stat_tag', 'stat_domain');

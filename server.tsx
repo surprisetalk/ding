@@ -277,12 +277,6 @@ const deriveBody = async (body: string, isRoot: boolean) => ({
 
 const SYM: Record<string, string> = { tag: "#", org: "*", usr: "@", www: "~" };
 
-export const encodeLabels = (l: Labels) => {
-  const p = new URLSearchParams();
-  Object.entries(l).forEach(([k, v]) => Array.isArray(v) ? v.forEach((x) => p.append(k, x)) : v && p.set("q", v));
-  return p;
-};
-
 export const decodeLabels = (p: URLSearchParams) => {
   const res: string[] = [];
   Object.entries(PFX).forEach(([sym, k]) => p.getAll(k).forEach((v) => res.push(sym + v)));
@@ -374,7 +368,7 @@ const validateEmailToken = async (
 
 type Sql = ReturnType<typeof pg>;
 export let sql: Sql = pg(
-  Deno.env.get(`DATABASE_URL`)?.replace(/flycast/, "internal")!,
+  Deno.env.get(`DATABASE_URL`)!,
   // Keep the pool small and let idle connections go. statement_timeout stops one pathological query pinning a slot.
   // REVIEW: Keep prepare:false on pc's direct socket. A migration that changes a result type ("alter table com drop
   // column ...") makes every cached plan fail with `cached plan must not change result type` until its connection
@@ -705,11 +699,11 @@ const drainAuthId = async (c: Context): Promise<string> => {
 };
 
 // Pull-based replication: drain a bootstrap node's log from `cursor` onward, verify +
-// store each row locally, and return the advanced cursor. The dull, Deno-Deploy-friendly
-// mirror of the WS live-tail; a node polls this on an interval.
+// store each row locally, and return the advanced cursor. The polling mirror of the WS
+// live-tail. The timeout bounds the whole drain, body included.
 export const replicate = async (bootstrap: string, queries: string[], cursor: string): Promise<string> => {
   const qp = queries.map((q) => `q=${encodeURIComponent(q)}`).join("&");
-  const res = await fetch(`${bootstrap}/?after=${cursor}&${qp}`);
+  const res = await fetch(`${bootstrap}/?after=${cursor}&${qp}`, { signal: AbortSignal.timeout(30_000) });
   if (!res.ok) throw new Error(`replicate: GET ${bootstrap} → ${res.status} ${await res.text()}`);
   for (const line of (await res.text()).split("\n").map((l) => l.trim()).filter(Boolean)) {
     let row: Row;
@@ -731,8 +725,12 @@ export const replicate = async (bootstrap: string, queries: string[], cursor: st
 
 // Gossip discovery: read peer rows from a node to learn other nodes' dialable origins.
 export const discoverPeers = async (bootstrap: string): Promise<{ ips: string[]; serves: string[] }[]> => {
-  const res = await fetch(`${bootstrap}/?q=$peer`);
-  if (!res.ok) return [];
+  const res = await fetch(`${bootstrap}/?q=$peer`, { signal: AbortSignal.timeout(15_000) });
+  if (!res.ok) {
+    throw new Error(
+      `discoverPeers: GET ${bootstrap}/?q=$peer expected 200, received ${res.status} ${await res.text()}`,
+    );
+  }
   return (await res.text()).split("\n").map((l) => l.trim()).filter(Boolean).map((l) => {
     const r = JSON.parse(l);
     return { ips: (r.ips ?? []) as string[], serves: (r.serves ?? []) as string[] };
@@ -742,11 +740,14 @@ export const discoverPeers = async (bootstrap: string): Promise<{ ips: string[];
 // Announce this node's dialable origins + the queries it serves, so others can find us.
 export const publishPeer = async (bootstrap: string, ips: string[], serves: string[], priv: CryptoKey, pub: string) => {
   const row = await signRow("peer", nowSec(), { ips, serves }, priv, pub);
-  await fetch(bootstrap, {
+  const res = await fetch(bootstrap, {
     method: "POST",
     headers: { "content-type": "application/x-ndjson" },
     body: JSON.stringify(row),
+    signal: AbortSignal.timeout(15_000),
   });
+  if (!res.ok)
+    throw new Error(`publishPeer: POST ${bootstrap} expected 2xx, received ${res.status} ${await res.text()}`);
 };
 
 // Resolve a self-asserted @name to a canonical id when multiple usr registers claim it:
@@ -1377,19 +1378,20 @@ const ok = (c: Context) => host(c) === "api" ? c.body(null, 204) : c.redirect("/
 const basicAuthName = async (c: Context): Promise<string | null> => {
   const a = c.req.header("Authorization");
   if (!a || !/^basic /i.test(a)) return null;
+  let raw: string;
   try {
     // UTF-8, as hono's basicAuth decodes it: raw atob would read a non-ASCII password as latin-1.
-    const raw = new TextDecoder().decode(Uint8Array.from(atob(a.slice(6).trim()), (ch) => ch.charCodeAt(0)));
-    const [u, ...rest] = raw.split(":");
-    const [usr] = await sql`select name from usr where (email=${u} or name=${u}) and password=crypt(${
-      rest.join(
-        ":",
-      )
-    }, password)`;
-    return usr?.name ?? null;
+    raw = new TextDecoder().decode(Uint8Array.from(atob(a.slice(6).trim()), (ch) => ch.charCodeAt(0)));
   } catch {
-    return null;
+    return null; // not base64: bad credentials, not a server fault
   }
+  // Postgres text cannot hold a NUL; the query would raise a 500 instead of refusing the credentials.
+  if (raw.includes("\0")) return null;
+  const [u, ...rest] = raw.split(":");
+  const [usr] = await sql`select name from usr where (email=${u} or name=${u}) and password=crypt(${
+    rest.join(":")
+  }, password)`;
+  return usr?.name ?? null;
 };
 
 // Optionally-authed viewer: session cookie if present, else Basic auth, else anonymous.
@@ -1452,16 +1454,20 @@ const MIME_BY_EXT: Record<string, string> = {
 // Mirrored in public/client.js (pre-flight check + user-facing copy) — change both.
 const MAX_UPLOAD_BYTES = 25 * 1024 * 1024;
 
-// Static client-side JS (uploads, drawing pad, search box, compose autosave). The
-// per-login notification poller is appended per-request in the "*" middleware.
-
 app.use("*", async (c, next) => {
   if (host(c) !== "i") return next();
   const seg = c.req.path.replace(/^\//, "");
   if (!IMG_EXT_RE.test(seg)) throw new HTTPException(404);
   const r2Url = Deno.env.get("R2_PUBLIC_URL");
   if (!r2Url) throw new HTTPException(500, { message: "R2_PUBLIC_URL unset" });
-  const res = await fetch(`${r2Url}/i/${seg}`);
+  // The timeout covers the headers only. The body streams to the client, and a 25 MB video to a slow client
+  // must not abort mid-stream.
+  const ctl = new AbortController();
+  const timer = setTimeout(
+    () => ctl.abort(new Error(`i. proxy: expected headers from ${new URL(r2Url).host} within 10000 ms, received none`)),
+    10_000,
+  );
+  const res = await fetch(`${r2Url}/i/${seg}`, { signal: ctl.signal }).finally(() => clearTimeout(timer));
   if (!res.ok) {
     throw new HTTPException((res.status === 404 ? 404 : 502) as 404 | 502, {
       message: res.status === 404 ? "Image not found." : `Image upstream failed (status ${res.status}).`,
@@ -2382,9 +2388,8 @@ app.post("/login", async (c) => {
   }
   await setSignedCookie(c, "name", u.name, cookieSecret, cookieOpts);
   if (resendFailed) return c.redirect("/u?error=verify_resend_failed");
-  return c.redirect(
-    c.req.query("next")?.startsWith("/") ? c.req.query("next")! : "/u",
-  );
+  // Browsers read `//host` and `/\host` as protocol-relative, so only a single leading slash stays on-site.
+  return c.redirect(next && /^\/(?![\/\\])/.test(next) ? next : "/u");
 });
 
 app.get("/logout", (c) => (deleteCookie(c, "name"), c.redirect("/")));
@@ -2992,7 +2997,16 @@ const verifiedUsers = (limit: number) =>
     order by created_at desc limit ${limit}
   `;
 
-app.get("/us", async (c) => c.json(await verifiedUsers(Math.min(+(c.req.query("limit") || 100), 500)), 200));
+app.get("/us", async (c) => {
+  const raw = c.req.query("limit") ?? "100";
+  const limit = /^\d+$/.test(raw) ? +raw : NaN;
+  if (!(limit >= 1 && limit <= 500)) {
+    throw new HTTPException(400, {
+      message: `expected ?limit= an integer from 1 to 500, received "${raw}". fix: omit it for 100.`,
+    });
+  }
+  return c.json(await verifiedUsers(limit), 200);
+});
 
 app.get("/o/new", authed, (c) =>
   c.render(
@@ -3234,16 +3248,27 @@ app.post("/o/:name/remove", authed, async (c) => {
 
 app.post("/api/stripe-webhook", async (c) => {
   const sig = c.req.header("stripe-signature");
+  if (!sig) {
+    throw new HTTPException(400, {
+      message: "POST /api/stripe-webhook: expected a stripe-signature header, received none. fix: send it from Stripe.",
+    });
+  }
+  const secret = Deno.env.get("STRIPE_WEBHOOK_SECRET");
+  if (!secret) {
+    throw new HTTPException(500, {
+      message: "POST /api/stripe-webhook: STRIPE_WEBHOOK_SECRET is unset. fix: add it to /var/lib/ding/env on pc.",
+    });
+  }
   const body = await c.req.text();
   let event;
   try {
-    event = await stripe.webhooks.constructEventAsync(
-      body,
-      sig!,
-      Deno.env.get("STRIPE_WEBHOOK_SECRET")!,
-    );
-  } catch (_err) {
-    throw new HTTPException(400, { message: `Webhook Error` });
+    event = await stripe.webhooks.constructEventAsync(body, sig, secret);
+  } catch (err) {
+    // A wrong secret and a forged request both land here. The log tells them apart; the body stays generic.
+    console.error(`POST /api/stripe-webhook: signature check failed: ${err instanceof Error ? err.message : err}`);
+    throw new HTTPException(400, {
+      message: "POST /api/stripe-webhook: expected a stripe-signature that verifies, received one that does not.",
+    });
   }
 
   if (event.type === "checkout.session.completed") {
@@ -3259,9 +3284,9 @@ app.post("/api/stripe-webhook", async (c) => {
     const sub = event.data.object;
     const [org] = await sql`select name from org where stripe_sub_id = ${sub.id}`;
     if (org) {
-      await sql.begin(async (tx) => {
-        const sql = tx;
-        await sql`update usr set orgs_r = array_remove(orgs_r, ${org.name}), orgs_w = array_remove(orgs_w, ${org.name})`;
+      await sql.begin(async (sql) => {
+        await sql`update usr set orgs_r = array_remove(orgs_r, ${org.name}), orgs_w = array_remove(orgs_w, ${org.name})
+          where ${org.name} = any(orgs_r) or ${org.name} = any(orgs_w)`;
         await sql`delete from org where name = ${org.name}`;
       });
     }
@@ -4118,15 +4143,10 @@ app.use("/*", serveStatic({ root: "./public" }));
 
 //// BOT FLEET ////
 
-// Bots used to run as a GitHub Actions matrix POSTing to https://ding.bar, then in-process
-// through `app.request`. They now call the database directly via feedPosts/createPost.
+// Bots call feedPosts/createPost directly, not through `app.request`: an HTTP hop re-runs Basic
+// Auth, a bcrypt compare inside Postgres, on every bot action.
 //
-// The in-process HTTP hop was not free: every bot action re-ran routing, the whole middleware
-// chain, and Basic Auth — and Basic Auth is a bcrypt comparison inside Postgres, measured at
-// ~49ms of database CPU per request. Across 46 bots on a 5-minute tick that was the single
-// largest source of load on the database, spent re-proving credentials the process already had.
-//
-// The ACL did NOT come from the HTTP layer, which is why this is safe: visibleTo lives inside
+// The ACL does NOT come from the HTTP layer, which is why this is safe: visibleTo lives inside
 // feedPosts and every parent/org/self check lives inside createPost, so the direct callers are
 // gated by the same code the route is. The password is still verified — once per bot per run,
 // in botApi — because that is what stops a mistyped BOT_<N>_EMAIL from posting as someone else.
@@ -4250,7 +4270,8 @@ export const checks: { cond: string; fix: string; grade: () => Promise<number> }
   },
   {
     cond: "Somebody paid for an org this month.",
-    fix: "no org subscription started: check the Stripe webhook deliveries and POST /org in `journalctl -u ding` on pc",
+    fix:
+      "no org subscription started: check the Stripe webhook deliveries, POST /o/new, and POST /api/stripe-webhook in `journalctl -u ding` on pc",
     grade: async () =>
       await count(sql<{ n: number }[]>`
         select count(*)::int as n from org
@@ -4438,9 +4459,8 @@ export const CRONS: { name: string; schedule: string; periodS: number; run: () =
     name: "ding-checkmark",
     schedule: "0 * * * *",
     periodS: 3600,
-    // SIMPLE path for now: DING_ORG_SK lives on the main server. Harden later by moving the cron
-    // to a separate Deno Deploy project so the trust root is off the public server.
-    // Marks go straight into the dht via ingestMsg: a Deploy isolate that fetches its own custom domain redirect-loops.
+    // DING_ORG_SK lives on the main server. Moving this cron to a separate host keeps the trust root off the public
+    // server. Marks go straight into the dht via ingestMsg, which skips an HTTP hop to db.ding.bar.
     run: () =>
       runCheckmark({
         sql,

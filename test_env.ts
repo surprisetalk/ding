@@ -23,3 +23,5 @@ if (!Deno.env.get("DING_ORG_SK")) {
     }),
   );
 }
+if (!Deno.env.get("STRIPE_WEBHOOK_SECRET"))
+  Deno.env.set("STRIPE_WEBHOOK_SECRET", "whsec_test_mock");

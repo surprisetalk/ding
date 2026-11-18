@@ -9,7 +9,12 @@ interface ArxivItem {
 }
 
 async function fetchArxivFeed(category: string): Promise<ArxivItem[]> {
-  const res = await fetch(`https://rss.arxiv.org/rss/${category}`);
+  const res = await fetch(`https://rss.arxiv.org/rss/${category}`, { signal: AbortSignal.timeout(15_000) });
+  if (!res.ok) {
+    throw new Error(
+      `arxiv ${category}: expected HTTP 200 from rss.arxiv.org, received ${res.status}; retry later`,
+    );
+  }
   const xml = await res.text();
   const items: ArxivItem[] = [];
   let stale = 0, undated = 0;

@@ -59,9 +59,10 @@ const send = async (row: Row) => {
       method: "POST",
       headers: { "content-type": "application/x-ndjson" },
       body: JSON.stringify(row),
+      signal: AbortSignal.timeout(10_000),
     });
   } catch (e) {
-    return die(`could not reach node ${DB}: ${e instanceof Error ? e.message : e}`);
+    return die(`expected an answer from node ${DB} within 10 s, received: ${e instanceof Error ? e.message : e}`);
   }
   const text = await res.text();
   if (!res.ok) return die(`POST ${DB} → ${res.status}: ${text}`);

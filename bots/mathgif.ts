@@ -6,6 +6,7 @@ export default (api: Api) =>
     make: async () => {
       const listRes = await fetch(
         "https://commons.wikimedia.org/w/api.php?action=query&list=categorymembers&cmtitle=Category:Animations_of_mathematics&cmtype=file&cmlimit=500&format=json",
+        { signal: AbortSignal.timeout(10_000) },
       );
       if (!listRes.ok) throw new Error(`Wikimedia category list: HTTP ${listRes.status}`);
       const members = (await listRes.json()).query?.categorymembers;
@@ -16,6 +17,7 @@ export default (api: Api) =>
         `https://commons.wikimedia.org/w/api.php?action=query&titles=${
           encodeURIComponent(title)
         }&prop=imageinfo&iiprop=url&format=json`,
+        { signal: AbortSignal.timeout(10_000) },
       );
       if (!infoRes.ok) throw new Error(`Wikimedia imageinfo: HTTP ${infoRes.status}`);
       const pages = (await infoRes.json()).query.pages;
