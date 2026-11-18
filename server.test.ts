@@ -561,11 +561,9 @@ Deno.test(
       }
     });
 
-    // This file shipped as one string containing "\\n", i.e. LITERAL backslash-n, so every
-    // crawler saw a single unparseable line and ding had no rules at all.
-    // 2026-08-13: a database wobble took the WHOLE site down, robots.txt included, because
-    // the middleware awaited refreshVerified() on every request with no error handling. These
-    // two steps are the regression guard: a failing database must cost checkmarks, not the site.
+    // A database wobble once took the WHOLE site down, robots.txt included, because the middleware
+    // awaited refreshVerified() on every request with no error handling. These two steps are the
+    // regression guard: a failing database must cost checkmarks, not the site.
     await t.step("robots.txt touches the database zero times", async () => {
       let calls = 0;
       verified.at = 0; // force the state where the middleware WOULD query, if it ran at all
@@ -607,6 +605,7 @@ Deno.test(
       }
     });
 
+    // A one-string robots.txt with LITERAL backslash-n gives every crawler a single unparseable line, so no rules.
     await t.step("robots.txt is a real multi-line file", async () => {
       const res = await app.request("/robots.txt");
       assertEquals(res.status, 200);
@@ -2146,15 +2145,6 @@ Deno.test(
       const botReplies = children.filter((c: { created_by: string }) => c.created_by === "bot_test");
       assertEquals(botReplies.length, 1);
       assertEquals(botReplies[0].body, "@john_doe Correct!");
-    });
-
-    await t.step("bot reply inherits parent tags/orgs", async () => {
-      // Use DB directly to avoid rate limiter (which is in-memory and shared across test suites)
-      const [root] =
-        await sql`insert into com (created_by, body, tags) values ('bot_test', 'tagged post', '{alpha,beta}') returning cid`;
-      await sql`insert into com (parent_cid, created_by, body, tags, orgs, usrs) values (${root.cid}, 'john_doe', 'reply inherits tags', '{alpha,beta}', '{}', '{}')`;
-      const [reply] = await sql`select tags from com where parent_cid = ${root.cid} and created_by = 'john_doe'`;
-      assertEquals(reply.tags, ["alpha", "beta"]);
     });
 
     await t.step("reactions don't appear in child_comments", async () => {

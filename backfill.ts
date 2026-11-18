@@ -30,7 +30,9 @@ export const backfill = async (
   opts: { limit?: number; concurrency?: number } = {},
 ): Promise<{ signed: number; skipped: number }> => {
   const KEY_WRAP_SECRET = Deno.env.get("KEY_WRAP_SECRET") ?? (() => {
-    throw new Error("KEY_WRAP_SECRET required");
+    throw new Error(
+      "backfill: expected KEY_WRAP_SECRET in the environment, received none. fix: export KEY_WRAP_SECRET=… (the value from /var/lib/ding/env) and rerun.",
+    );
   })();
   // Promise-cached so concurrent workers minting the same author share one mint.
   const cache = new Map<string, Promise<{ priv: CryptoKey; pub: string; id: string }>>();

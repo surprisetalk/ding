@@ -29,7 +29,7 @@ git config core.hooksPath .githooks
   `PGHOST`).
 - postgres.js uses `prepare: false`. DDL that changes a result type breaks cached plans. Fix with
   `pg_terminate_backend`, never `deallocate all`. Also `max: 3`, `idle_timeout: 20`, `statement_timeout: 15s`.
-- Remixes run in the browser (ffmpeg.wasm). The server transcodes no video.
+- The server transcodes no video.
 - Crons run in-server (`Deno.cron`). Cron name, schedule, and period live in `CRONS`.
 - The in-server checkmark cron and bot fleet call `ingestMsg` and `botApi` directly. They never fetch their own origin.
 

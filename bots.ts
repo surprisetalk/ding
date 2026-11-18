@@ -967,6 +967,7 @@ export async function redditBot(api: Api, opts: {
   const max = opts.maxPosts ?? 3;
   console.log(`${todo.length} new items after dedup; posting up to ${max}`);
 
+  let attempted = 0, landed = 0;
   for (const it of todo.slice(0, max)) {
     const lines = [it.title];
     if (opts.selftext !== false) {
@@ -987,8 +988,14 @@ export async function redditBot(api: Api, opts: {
     if (it.imageUrl) lines.push("", it.imageUrl);
     lines.push("", `via ${it.author} on r/${it.sub}`);
     console.log(`Posting: ${it.title.slice(0, 60)}... (r/${it.sub})`);
-    if (!await post(api, lines.join("\n"), opts.tags?.(it.sub) ?? `#reddit #${slugTag(it.sub)} #bot`))
-      console.error(`Failed to post: ${it.title}`);
+    attempted++;
+    if (await post(api, lines.join("\n"), opts.tags?.(it.sub) ?? `#reddit #${slugTag(it.sub)} #bot`)) landed++;
+    else console.error(`Failed to post: ${it.title}`);
+  }
+  if (attempted && !landed) {
+    throw new Error(
+      `redditBot: expected at least 1 of ${attempted} POSTs to land, received 0 (source: post() returned false; likely fix: check rate limit and bot credentials)`,
+    );
   }
 }
 
@@ -1001,14 +1008,20 @@ export async function scanBot(
   const answered = await getAnsweredCids(api, { since: Date.now() - MAX_AGE_MS });
   console.log(`Already answered ${answered.size} posts in last 4h`);
   const posts = await getJson<Post[]>(api, `/c?sort=new&limit=50`);
-  let replies = 0;
+  let replies = 0, attempts = 0;
   for (const post of posts) {
     if (replies >= (opts.max ?? 3)) break;
     if (post.created_by.startsWith("bot_") || answered.has(post.cid) || !isFresh(post.created_at)) continue;
     const body = opts.match(post.body.replace(/https?:\/\/\S+/g, "").replace(/@\S+/g, "").trim(), post);
     if (!body) continue;
     console.log(`Replying to cid=${post.cid}`);
+    attempts++;
     if (await reply(api, post.cid, body)) replies++;
+  }
+  if (attempts && !replies) {
+    throw new Error(
+      `@${api.botUsername}: expected at least 1 of ${attempts} replies to land, received 0 (source: reply() returned false; likely fix: check rate limit and bot credentials)`,
+    );
   }
   console.log(`Replied to ${replies} posts`);
 }

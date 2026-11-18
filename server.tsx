@@ -348,12 +348,7 @@ export const emailToken = async (ts: Date, email: string) => {
     key,
     new TextEncoder().encode(`${epoch}:${email}`),
   );
-  return `${epoch}:${
-    Array.from(new Uint8Array(sig))
-      .map((b) => b.toString(16).padStart(2, "0"))
-      .join("")
-      .slice(0, 32)
-  }`;
+  return `${epoch}:${hex(new Uint8Array(sig)).slice(0, 32)}`;
 };
 
 const EMAIL_TOKEN_MAX_AGE_MS = 48 * 3600_000;
@@ -1432,9 +1427,6 @@ const basicAuthName = async (c: Context): Promise<string | null> => {
 // Optionally-authed viewer: session cookie if present, else Basic auth, else anonymous.
 const viewer = async (c: Context): Promise<string | undefined> =>
   c.get("name") ?? (await basicAuthName(c)) ?? undefined;
-
-const threadUrl = (parent: number | string | null | undefined, cid: number | string) =>
-  parent ? `/c/${parent}#${cid}` : `/c/${cid}`;
 
 const getOrg = async (c: Context) => {
   const [org] = await sql`select * from org where name = ${c.req.param("name") ?? ""}`;
@@ -3437,7 +3429,7 @@ export type PostOutcome =
 // com_tags_pub_check (db.sql) wants one of those on every root. The POST /c draft and createPost both ask it.
 const labelled = (l: Labels) => l.tag.length > 0 || l.usr.length > 0;
 
-export const createPost = async (
+const createPost = async (
   author: string,
   body: string,
   opts: { parentCid?: number | string | null; labels?: string } = {},
@@ -3621,7 +3613,7 @@ app.post("/c/:p?", async (c) => {
 
   // Redirect shapes are unchanged from when this logic lived inline; only their inputs
   // now come from the outcome instead of local state.
-  const thread = () => threadUrl(r.grandparent, String(r.parentCid));
+  const thread = () => (r.grandparent ? `/c/${r.grandparent}#${r.parentCid}` : `/c/${r.parentCid}`);
   if (r.kind === "self") return c.redirect(`${thread()}?err=self-${r.what}`);
   if (r.kind === "flagged") return c.redirect(thread());
   if (r.kind === "unreacted") {
@@ -4314,7 +4306,7 @@ export const beat = async (name: string) => {
 const count = async (q: PromiseLike<{ n: number }[]>) => (await q)[0].n;
 
 // Each grade is actual / threshold, never clamped: 45 means 45 times the bar. A ceiling is threshold / actual.
-export const checks: { cond: string; fix: string; grade: () => Promise<number> }[] = [
+const checks: { cond: string; fix: string; grade: () => Promise<number> }[] = [
   {
     cond: "100 humans posted in the past 24h.",
     fix: "too few daily posters, or the web app is down: open https://ding.bar and check `journalctl -u ding` on pc",

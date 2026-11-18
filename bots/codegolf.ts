@@ -1,6 +1,6 @@
 // Daily code golf bot — posts one programming challenge per day from a hardcoded bank.
 
-import { type Api, dailyPostBot, dayNumber } from "../bots.ts";
+import { type Api, dailyPostBot, dayNumber, todaySeed } from "../bots.ts";
 
 const PROBLEMS = [
   {
@@ -59,7 +59,7 @@ const PROBLEMS = [
   {
     title: "Digit Fifth Powers",
     body:
-      "Find the sum of all numbers that can be written as the sum of fifth powers of their digits.\n\nExample: 1634 = 1⁴ + 6⁴ + 3⁴ + 4⁴ (but with 5th powers).",
+      "Find the sum of all numbers that can be written as the sum of fifth powers of their digits.\n\nExample: 4150 = 4⁵ + 1⁵ + 5⁵ + 0⁵.",
     difficulty: "medium",
   },
   {
@@ -302,7 +302,7 @@ export default (api: Api) =>
   dailyPostBot(api, {
     tags: "#codegolf #game #bot",
     make: () => {
-      const problem = PROBLEMS[Math.floor(Date.now() / 86_400_000) % PROBLEMS.length];
+      const problem = PROBLEMS[todaySeed() % PROBLEMS.length];
       const dayNum = dayNumber();
       return `Day ${dayNum}: ${problem.title} [${problem.difficulty}]\n\n${problem.body}\n\nReply with your solution in any language. Shortest wins!`;
     },
