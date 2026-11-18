@@ -4311,6 +4311,9 @@ export const beat = async (name: string) => {
 const count = async (q: PromiseLike<{ n: number }[]>) => (await q)[0].n;
 
 // Each grade is actual / threshold, never clamped: 45 means 45 times the bar. A ceiling is threshold / actual.
+// When the deploy check first saw GitHub's main ahead of the running commit. A deploy restarts ding and clears it.
+let deployBehindSince: number | null = null;
+
 const checks: { cond: string; fix: string; grade: () => Promise<number> }[] = [
   {
     cond: "100 humans posted in the past 24h.",
@@ -4475,6 +4478,26 @@ const checks: { cond: string; fix: string; grade: () => Promise<number> }[] = [
       "Deno.resolveDns fails on this host, so fetchPublic refuses every page and image: see `journalctl -u ding` on pc for resolver errors",
     // fetchPublic resolves every host before it fetches, and refuses when the lookup throws.
     grade: async () => (await Deno.resolveDns("ding.bar", "A")).length,
+  },
+  {
+    cond: "ding.bar runs GitHub's main within 10 minutes of a push.",
+    fix:
+      "ding-pull on pc is not deploying: read `journalctl -u ding-pull`. A stray file in ~/ding blocks it: `cd ~/ding && jj diff`",
+    // ding-pull (/etc/nixos/flake.nix) moves ~/ding to main each minute and refuses while ~/ding holds an edit, which
+    // only its own log shows. git's smart-HTTP ref listing needs no token and has no API rate limit.
+    grade: async () => {
+      const deployed = Deno.env.get("DENO_DEPLOYMENT_ID");
+      if (!deployed) throw new Error("expected DENO_DEPLOYMENT_ID (the ding unit on pc sets it), received none");
+      const res = await fetch("https://github.com/surprisetalk/ding.git/info/refs?service=git-upload-pack", {
+        signal: AbortSignal.timeout(4_000),
+      });
+      if (!res.ok) throw new Error(`expected HTTP 200 from GitHub's ref listing, received ${res.status}`);
+      const main = (await res.text()).match(/([0-9a-f]{40}) refs\/heads\/main\n/)?.[1];
+      if (!main) throw new Error("expected a refs/heads/main line in GitHub's ref listing, received none");
+      if (main === deployed) deployBehindSince = null;
+      else deployBehindSince ??= Date.now();
+      return 600_000 / Math.max(deployBehindSince === null ? 0 : Date.now() - deployBehindSince, 60_000);
+    },
   },
 ];
 

@@ -4860,6 +4860,16 @@ Deno.test(
         String(p).endsWith("/nightly.dump")
           ? Promise.resolve({ mtime: new Date() } as Deno.FileInfo)
           : stat(p)) as typeof Deno.stat;
+    // ding.bar runs DEPLOYED, and GitHub's main is whatever `main` holds. Only GitHub's ref listing is stubbed.
+    const DEPLOYED = "d".repeat(40);
+    let main = DEPLOYED;
+    const origFetch = globalThis.fetch;
+    globalThis.fetch =
+      ((input: string | URL | Request, init?: RequestInit) =>
+        String(input).startsWith("https://github.com/surprisetalk/ding.git/info/refs")
+          ? Promise.resolve(new Response(`001e# service=git-upload-pack\n0000003f${main} refs/heads/main\n0000`))
+          : origFetch(input, init)) as typeof fetch;
+    Deno.env.set("DENO_DEPLOYMENT_ID", DEPLOYED);
     try {
       const SENTENCES = [
         "100 humans posted in the past 24h.",
@@ -4877,6 +4887,7 @@ Deno.test(
         "The nightly pg_dump is under 26 hours old.",
         "The ?submit= tagger used under 80% of its daily cap of 200 Haiku calls.",
         "DNS lookups answer, so ding can fetch link previews and /img.",
+        "ding.bar runs GitHub's main within 10 minutes of a push.",
       ];
       const get = async () => {
         gradeMemo.run = null;
@@ -4897,9 +4908,9 @@ Deno.test(
 
       await t.step("the tagger cap grades today's spend row", async () => {
         await sql`delete from spend`;
-        assertEquals((await grades())[SENTENCES[SENTENCES.length - 2]], 160);
+        assertEquals((await grades())[SENTENCES[13]], 160);
         await sql`insert into spend (day, name, n) values ((now() at time zone 'utc')::date, 'tagger', 320)`;
-        assertEquals((await grades())[SENTENCES[SENTENCES.length - 2]], 0.5);
+        assertEquals((await grades())[SENTENCES[13]], 0.5);
         await sql`delete from spend`;
       });
 
@@ -4929,6 +4940,22 @@ Deno.test(
         await sql`insert into com (created_by, body, tags, orgs, usrs)
         values ('bot_lectures', ${"Ann: Talk " + rows[0].url}, '{lecture}', '{}', '{}')`;
         assertEquals((await grades())[SENTENCES[5]], Math.floor((rows.length - 1) / 14 * 100) / 100);
+      });
+
+      await t.step("the deploy check fails once GitHub's main runs 10 minutes ahead of ding.bar", async () => {
+        const deploy = SENTENCES[SENTENCES.length - 1];
+        assertEquals((await grades())[deploy], 10);
+        main = "e".repeat(40); // a push lands, and ding-pull has 10 minutes to deploy it
+        assertEquals((await grades())[deploy], 10);
+        const now = Date.now;
+        Date.now = () => now() + 11 * 60_000;
+        try {
+          assertEquals((await grades())[deploy] < 1, true);
+        } finally {
+          Date.now = now;
+          main = DEPLOYED;
+        }
+        assertEquals((await grades())[deploy], 10);
       });
 
       await t.step("a healthy db answers 200", async () => {
@@ -5044,7 +5071,7 @@ Deno.test(
         const dns = Deno.resolveDns;
         Deno.resolveDns = (() => Promise.reject(new Error("resolver unreachable"))) as typeof Deno.resolveDns;
         try {
-          assertEquals((await get()).body[SENTENCES.at(-1)!]["0"], 0);
+          assertEquals((await get()).body[SENTENCES[14]]["0"], 0);
         } finally {
           Deno.resolveDns = dns;
         }
@@ -5052,6 +5079,8 @@ Deno.test(
     } finally {
       Deno.stat = stat;
       process.cpuUsage = cpuUsage;
+      globalThis.fetch = origFetch;
+      Deno.env.delete("DENO_DEPLOYMENT_ID");
     }
   }),
 );
