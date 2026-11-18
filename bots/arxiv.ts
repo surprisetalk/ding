@@ -1,4 +1,4 @@
-import { type Api, extractPubDate, getJson, isFresh, post } from "../bots.ts";
+import { type Api, decodeEntities, extractPubDate, getJson, isFresh, post } from "../bots.ts";
 
 const CATEGORIES = ["cs"];
 
@@ -28,10 +28,9 @@ async function fetchArxivFeed(category: string): Promise<ArxivItem[]> {
       stale++;
       continue;
     }
-    const title = (itemXml.match(/<title>([\s\S]*?)<\/title>/)?.[1] || "")
-      .replace(/\s*\(arXiv:[^)]+\)\s*$/, "")
-      .replace(/&lt;/g, "<").replace(/&gt;/g, ">").replace(/&amp;/g, "&")
-      .trim();
+    const title = decodeEntities(
+      (itemXml.match(/<title>([\s\S]*?)<\/title>/)?.[1] || "").replace(/\s*\(arXiv:[^)]+\)\s*$/, ""),
+    ).trim();
     const link = itemXml.match(/<link>(.*?)<\/link>/)?.[1] || "";
     const cats = [
       ...itemXml.matchAll(/<category>([^<]+)<\/category>/g),

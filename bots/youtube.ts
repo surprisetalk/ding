@@ -66,20 +66,17 @@ export default async (api: Api) => {
 
   // Real shorts return 200 at /shorts/{id}; regular videos return 303 to /watch?v=...
   const isShort = async (videoId: string): Promise<boolean> => {
-    const ac = new AbortController();
-    const t = setTimeout(() => ac.abort(), FETCH_TIMEOUT_MS);
     try {
       const res = await fetch(`https://www.youtube.com/shorts/${videoId}`, {
         method: "HEAD",
         redirect: "manual",
-        signal: ac.signal,
+        signal: AbortSignal.timeout(FETCH_TIMEOUT_MS),
         headers: { "user-agent": UA },
       });
       return res.status === 200;
-    } catch {
+    } catch (e) {
+      console.error(`isShort ${videoId}: ${e}`);
       return false;
-    } finally {
-      clearTimeout(t);
     }
   };
 
@@ -93,10 +90,10 @@ export default async (api: Api) => {
     .sort((a, b) => +b.pubDate - +a.pubDate);
   console.log(`${todo.length} items after dedup; posting up to ${MAX_POSTS}`);
 
-  let posts = 0;
+  let attempted = 0, landed = 0;
   let probes = 0;
   for (const it of todo) {
-    if (posts >= MAX_POSTS || probes >= MAX_PROBES) break;
+    if (landed >= MAX_POSTS || probes >= MAX_PROBES) break;
     probes++;
     if (await isShort(it.videoId)) {
       console.log(`Skipping short: ${it.title.slice(0, 60)}`);
@@ -107,7 +104,8 @@ export default async (api: Api) => {
     const channelTag = slugTag(it.channelTitle);
     const tags = `#youtube #video #bot${channelTag ? ` #${channelTag}` : ""}`;
     console.log(`Posting: ${body.slice(0, 80)}`);
-    await post(api, body, tags);
-    posts++;
+    attempted++;
+    if (await post(api, body, tags)) landed++;
   }
+  if (attempted && !landed) throw new Error(`youtube: ${attempted} posts attempted, none landed`);
 };

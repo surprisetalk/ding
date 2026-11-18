@@ -73,7 +73,6 @@ import app, {
   refreshStats,
   replicate,
   resend,
-  resolveName,
   runBotFleet,
   runCron,
   setAssetV,
@@ -1138,11 +1137,8 @@ Deno.test(
       "write API: POST /c, react, POST /p and GET /n answer JSON over Basic Auth; bad credentials answer 401 JSON",
       async () => {
         const auth = basic("john@example.com", "password1!"), bad = basic("john@example.com", "wrong!");
-        const post = (path: string, o: Record<string, string>, headers: Record<string, string>) => {
-          const body = new FormData();
-          for (const [k, v] of Object.entries(o)) body.append(k, v);
-          return app.request(`http://api.ding.bar${path}`, { method: "POST", body, headers });
-        };
+        const post = (path: string, o: Record<string, string>, headers: Record<string, string>) =>
+          app.request(`http://api.ding.bar${path}`, { method: "POST", body: fd(o), headers });
 
         for (
           const [path, o] of [["/c", { body: "hi", tags: "#misc" }], ["/p", { label: "#humor", vote: "1" }]] as const
@@ -3782,19 +3778,6 @@ Deno.test(
       assertEquals(await drainHas(await authAs(member.kp, member.pub)), true); // a member sees it
       const outsider = await mkKey();
       assertEquals(await drainHas(await authAs(outsider.kp, outsider.pub)), false); // a non-member does not
-    });
-
-    await t.step("resolveName ranks contested @names by trust-root marks, then first-seen", async () => {
-      const now = nowSec();
-      const a = await mkKey(), b = await mkKey();
-      await postDb([await signRow("usr", now, { name: "gwern", bio: "", links: [] }, a.priv, a.pub)]);
-      await postDb([await signRow("usr", now + 1, { name: "gwern", bio: "", links: [] }, b.priv, b.pub)]);
-      assertEquals(await resolveName("gwern"), a.id); // no marks → first-seen wins
-      assertEquals(await resolveName("nobody-has-this-name"), null);
-      // a trust-root mark on b flips the ranking
-      const orgPriv = await importPriv(ORG.jwk);
-      await postDb([await signRow("mark", now, buildMark(b.id, "email", now + YEAR), orgPriv, ORG.pub)]);
-      assertEquals(await resolveName("gwern"), b.id);
     });
   }),
 );

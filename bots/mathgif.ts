@@ -20,7 +20,12 @@ export default (api: Api) =>
         { signal: AbortSignal.timeout(10_000) },
       );
       if (!infoRes.ok) throw new Error(`Wikimedia imageinfo: HTTP ${infoRes.status}`);
-      const pages = (await infoRes.json()).query.pages;
+      const pages = (await infoRes.json()).query?.pages;
+      if (!pages) {
+        throw new Error(
+          `Wikimedia imageinfo for ${title}: expected query.pages, got none. API shape changed or title deleted.`,
+        );
+      }
       const fileUrl = pages[Object.keys(pages)[0]]?.imageinfo?.[0]?.url;
       if (!fileUrl) throw new Error(`No imageinfo URL for ${title}`);
 

@@ -265,8 +265,7 @@ http  ding.bar/key                           # download your custodial key (POST
 - Signed `flag` rows: `ingestMsg` counts distinct flagger pubkeys per target hash, mirrors the count onto `com.c_flags`
   (the `[flagged]` suppression), and sets `dht.flagged` at the threshold. `ding flag <hash>` and the web flag button on
   signed posts emit them. Legacy unsigned posts keep the name-based `flaggers` array.
-- `usr`/`org` registers: signed rows `{name, bio, links[]}` (org adds `members[]`). `resolveName` ranks contested
-  `@name` claims by trust-root marks, then first-seen.
+- `usr`/`org` registers: signed rows `{name, bio, links[]}` (org adds `members[]`).
 - Private content uses auth-gated delivery, not e2e encryption. `@user` DMs and `*org` posts enter the log with
   id-scoped `usrs`/`orgs`. `ingestMsg` accepts them. The `GET /db` drain is default-deny: public rows, plus the DMs of
   an id and the `*org` rows of orgs whose signed `members` register lists it, for a subscriber that proves a key via a
@@ -279,8 +278,7 @@ http  ding.bar/key                           # download your custodial key (POST
   (100 years) and `dns:`/`github:` marks (1-day leases) from a user's `usr` register links: `_ding.<domain>` TXT
   `ding_id=<id>`, or the id in a GitHub bio. It runs hourly via `Deno.cron` in `server.tsx`, only when
   `DENO_DEPLOYMENT_ID` is set. The in-server cron passes a `sink` so marks go through `ingestMsg` directly.
-  `deno task
-  checkmark` runs standalone and POSTs over HTTP. `Deno.cron` needs `unstable: ["cron"]` in `deno.json`.
+  `deno task checkmark` runs standalone and POSTs over HTTP. `Deno.cron` needs `unstable: ["cron"]` in `deno.json`.
   `bots/checkmark.test.ts` mocks DNS and fetch.
 - Replication (pull): `dht.seq bigserial` is the local arrival order. `GET /db?after=<seq>` is keyset pagination, and
   returns the next `seq` in the `X-Ding-Cursor` header. `?t=YYYYMMDDhhmmss` is a coarse manual filter.
@@ -303,7 +301,7 @@ http  ding.bar/key                           # download your custodial key (POST
   checkmarks.
 - Not built: lease-wrapping of register links, mark revocation tombstones (long email marks keep the recycled-address
   weakness), verified-link chips in the UI, weighted-flag trust engine, in-browser WebCrypto signing for self-custody
-  web posts, retention and compaction, `resolveName` in the web DM compose.
+  web posts, retention and compaction, resolving contested `@name` claims in the web DM compose.
 
 ## bots
 

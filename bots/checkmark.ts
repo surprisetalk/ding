@@ -4,7 +4,7 @@
 // the node for verification + storage.
 //
 // - email  : ding.bar already verifies emails (usr.email_verified_at) -> 100yr "email" mark.
-// - dns    : a `usr` register link whose domain serves TXT _ding.<domain>=ding_id<id> -> 1day "dns:<domain>".
+// - dns    : a `usr` register link whose domain serves TXT _ding.<domain>=ding_id=<id> -> 1day "dns:<domain>".
 // - github : a `usr` register link to github.com/<handle> whose bio contains the id -> 1day "github:<handle>".
 // DAY leases ARE the revocation mechanism: drop the TXT / edit the bio and the badge lapses.
 

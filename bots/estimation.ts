@@ -64,18 +64,17 @@ const QUESTIONS: Question[] = [
 function parseNumber(s: string): number | null {
   const cleaned = s.replace(/,/g, "").trim();
   const sci = cleaned.match(/^([\d.]+)\s*[xX×]\s*10\s*\^\s*(\d+)$/);
-  if (sci) return parseFloat(sci[1]) * Math.pow(10, +sci[2]);
   const suf = cleaned.match(/^([\d.]+)\s*([kmbt])$/i);
-  if (suf) {
-    const mult: Record<string, number> = { k: 1e3, m: 1e6, b: 1e9, t: 1e12 };
-    return parseFloat(suf[1]) * mult[suf[2].toLowerCase()];
-  }
-  const n = parseFloat(cleaned);
-  return isNaN(n) ? null : n;
+  const mult: Record<string, number> = { k: 1e3, m: 1e6, b: 1e9, t: 1e12 };
+  const n = sci
+    ? parseFloat(sci[1]) * Math.pow(10, +sci[2])
+    : suf
+    ? parseFloat(suf[1]) * mult[suf[2].toLowerCase()]
+    : parseFloat(cleaned);
+  return Number.isFinite(n) && n > 0 ? n : null;
 }
 
-const logDist = (guess: number, actual: number) =>
-  guess <= 0 || actual <= 0 ? Infinity : Math.abs(Math.log10(guess) - Math.log10(actual));
+const logDist = (guess: number, actual: number) => Math.abs(Math.log10(guess) - Math.log10(actual));
 
 type ThreadPost = { cid: number; created_at: string; child_comments?: ChildComment[] };
 type ChildComment = { cid: number; body: string; created_by: string };

@@ -35,7 +35,7 @@ async function lowpoly(imageBytes: Uint8Array): Promise<string> {
   const channels = info.channels;
 
   const cols = 30;
-  const rows = Math.round(cols * (h / w));
+  const rows = Math.max(1, Math.round(cols * (h / w)));
   const cellW = w / cols;
   const cellH = h / rows;
 

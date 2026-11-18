@@ -78,11 +78,18 @@ export default async (api: Api) => {
     .sort((a, b) => +b.pubDate - +a.pubDate);
   console.log(`${todo.length} items after dedup; posting up to ${MAX_POSTS}`);
 
-  for (const it of todo.slice(0, MAX_POSTS)) {
+  const batch = todo.slice(0, MAX_POSTS);
+  let landed = 0;
+  for (const it of batch) {
     const body = `${it.title}\n\n${it.link}\n\nvia ${it.blogTitle}`;
     const blogTag = slugTag(it.blogTitle);
     const tags = `#blog #bot${blogTag ? ` #${blogTag}` : ""}`;
     console.log(`Posting: ${body.slice(0, 80)}`);
-    await post(api, body, tags);
+    if (await post(api, body, tags)) landed++;
+  }
+  if (batch.length && !landed) {
+    throw new Error(
+      `blogs: expected at least 1 of ${batch.length} POSTs to land, received 0 (source: post() returned false; likely fix: check rate limit and bot credentials)`,
+    );
   }
 };

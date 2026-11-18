@@ -463,6 +463,16 @@ Deno.test("verdictBot: bracketed but invalid JSON rejects with the raw slice", a
     ));
 });
 
+Deno.test("verdictBot: null element rejects with expected and received", async () => {
+  const { api } = verdictApi({ fresh: [freshPost(1)] });
+  await withClaude("[null]", () =>
+    assertRejects(
+      () => verdictBot(api, { system: "judge", verdicts: {} }),
+      Error,
+      "expected a JSON array of {cid,verdict,note} objects",
+    ));
+});
+
 // String-typed cids from the model must still resolve to their candidate.
 Deno.test("verdictBot: string cid is coerced", async () => {
   const { api, posts } = verdictApi({ fresh: [freshPost(7)] });

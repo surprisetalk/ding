@@ -14,7 +14,13 @@ import { genKey, importPriv, pubHexOf } from "./dht.ts";
 const BOOTSTRAP = Deno.env.get("BOOTSTRAP") ?? "https://db.ding.bar";
 const QUERIES = (Deno.env.get("PEER_QUERIES") ?? "$msg&$usr&$org&$mark&$flag&$peer").split("&").filter(Boolean);
 const MY_IPS = (Deno.env.get("MY_IPS") ?? "").split(",").map((s) => s.trim()).filter(Boolean);
-const N_PEERS = +(Deno.env.get("N_PEERS") ?? "4");
+const rawPeers = Deno.env.get("N_PEERS") ?? "4";
+if (!/^\d+$/.test(rawPeers)) {
+  throw new Error(
+    `node: expected N_PEERS to be a non-negative integer, received "${rawPeers}". fix: unset it, or set e.g. N_PEERS=4 (0 mirrors the bootstrap only).`,
+  );
+}
+const N_PEERS = +rawPeers;
 
 const nodeKey = await (async () => {
   const raw = Deno.env.get("NODE_KEY");

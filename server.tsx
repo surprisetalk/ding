@@ -773,23 +773,6 @@ export const publishPeer = async (bootstrap: string, ips: string[], serves: stri
     throw new Error(`publishPeer: POST ${bootstrap} expected 2xx, received ${res.status} ${await res.text()}`);
 };
 
-// Resolve a self-asserted @name to a canonical id when multiple usr registers claim it:
-// prefer the one with the most live trust-root marks, then the earliest seen (first-come).
-// Returns null if no register claims the name. (Names aren't key-bound; marks break ties.)
-export const resolveName = async (name: string): Promise<string | null> => {
-  const [best] = await sql`
-    select u.id from (
-      select distinct on (pubkey) id, seq from dht where kind = 'usr' and val->>'name' = ${name} order by pubkey, seq asc
-    ) u
-    order by (
-      select count(*) from dht m
-      where m.kind = 'mark' and m.target = u.id and m.pubkey = ${DING_ORG_PK ?? ""}
-        and (m.val->'mark'->>'exp')::bigint > extract(epoch from now())
-    ) desc, u.seq asc
-    limit 1`;
-  return best?.id ?? null;
-};
-
 //// RESEND ///////////////////////////////////////////////////////////////////
 
 if (!Deno.env.get(`RESEND_API_KEY`)) {
@@ -2427,10 +2410,7 @@ app.post("/login", async (c) => {
     try {
       await sendVerify(u.email);
     } catch (err) {
-      console.error(
-        `/login resend failed for ${u.email}:`,
-        (err as { response?: { body?: unknown } })?.response?.body || err,
-      );
+      logEmailFailure("/login", u.email, err);
       resendFailed = true;
     }
   }
@@ -3157,28 +3137,32 @@ const createOrg = async (session: Stripe.Checkout.Session, source: string) => {
         `${source}: expected a checkout session with orgName, creatorName and a subscription id, received one without (session ${session.id}). fix: start a new org from /o/new.`,
     });
   }
-  const inserted = await sql`
+  // One transaction: a crash between the org insert and the member grant would leave a paid org with no member, and
+  // the retry's idempotent branch below would never grant it.
+  return await sql.begin(async (sql) => {
+    const inserted = await sql`
     insert into org ${sql({ name: orgName, created_by: creatorName, stripe_sub_id: subId })}
     on conflict (name) do nothing
     returning name
   `;
-  if (!inserted.length) {
-    const [existing] = await sql`select created_by, stripe_sub_id from org where name = ${orgName}`;
-    if (existing?.stripe_sub_id === subId) return orgName; // idempotent retry, already created
-    console.error(
-      `createOrg collision: wanted "${orgName}" for ${creatorName} (sub=${subId}) but exists for ${existing?.created_by} (sub=${existing?.stripe_sub_id}). Manual reconciliation required.`,
-    );
-    throw new HTTPException(409, {
-      message: `Org "${orgName}" already exists. Your subscription ${subId} needs manual reconciliation.`,
-    });
-  }
-  await sql`
+    if (!inserted.length) {
+      const [existing] = await sql`select created_by, stripe_sub_id from org where name = ${orgName}`;
+      if (existing?.stripe_sub_id === subId) return orgName; // idempotent retry, already created
+      console.error(
+        `createOrg collision: wanted "${orgName}" for ${creatorName} (sub=${subId}) but exists for ${existing?.created_by} (sub=${existing?.stripe_sub_id}). Manual reconciliation required.`,
+      );
+      throw new HTTPException(409, {
+        message: `Org "${orgName}" already exists. Your subscription ${subId} needs manual reconciliation.`,
+      });
+    }
+    await sql`
     update usr
     set orgs_r = array_append(orgs_r, ${orgName}),
         orgs_w = array_append(orgs_w, ${orgName})
     where name = ${creatorName}
   `;
-  return orgName;
+    return orgName;
+  });
 };
 
 app.get("/o/success", authed, async (c) => {

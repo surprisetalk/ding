@@ -50,10 +50,8 @@
 
 ## Blocked on you
 
-- [ ] @lectures.bsky.social posts one talk a day from a catalog Taylor curates. Built and committed: `bots/lectures.ts`,
-      seeded rows in `bots/data/lectures.tsv` (from the old posts and the ideas.tsv "lectures" draft, none from the
-      "technical lectures" rows: they hold no URLs), the runway status condition, and tests. Blocker: you set fave,
-      create the account, and deploy.
+- [ ] @lectures.bsky.social posts one talk a day from a catalog Taylor curates. Blocker: you set fave, create the
+      account, and deploy.
   1. Open `bots/data/lectures.tsv`. Set `fave` to 1 on favorites and fill `tags`. Add rows from HN "favorite talks"
      threads until it holds 100.
   2. Create the `bot_lectures` account like `bot_album`. Put `BOT_LECTURES_EMAIL` and `BOT_LECTURES_PASSWORD` in
@@ -137,9 +135,8 @@
      buttons in a browser, because `client.js` has no test harness.
 
 - [ ] Every LLM call goes to the local llama.cpp model on pc, so the Anthropic bill no longer limits ding. Blocker: pc's
-      GPU has no room. On 11-17 the RX 5700 XT sat at 99% busy with 7.9 of 8.2 GB VRAM held by three llama servers
-      (chat, vixing's embedder, vixing's ReaderLM), and gemma-4-12b answered at 0.9 tok/s and crashed once with
-      `vk::DeviceLostError`. The bots' 90 s `BOT_TIMEOUT_MS` and the in-request `?submit=` tagger need about 30 tok/s.
+      GPU is shared with other llama servers and has too little free VRAM. The bots' 90 s `BOT_TIMEOUT_MS` and the
+      in-request `?submit=` tagger need about 30 tok/s.
   1. Free the GPU first: stop or shrink another llama server, or give ding a smaller model. Then measure tok/s with one
      `curl 127.0.0.1:8080/v1/chat/completions` call; it must reach 20.
   2. `claude()` in `bots.ts` → `127.0.0.1:8080/v1/chat/completions` with
@@ -155,12 +152,10 @@
   3. Remove `DATABASE_URL` and the Neon lines from `.env`, and delete `.claude/cutover/` (stub, bearer, env copies,
      final dump).
 
-- [ ] Humans find ding and post each week. The only non-bot poster this week is `taylor_town`. Serves "Somebody verified
-      their email this week." (0), "3 humans besides taylor posted this week." (0.33), "100 humans posted in the past
-      24h." (0.01), and "Somebody paid for an org this month." (0).
-  1. Fix the condition: server.tsx excludes `created_by <> 'taylor'`, but Taylor posts as `taylor_town`. That account
-     gives "3 humans besides taylor" its 0.33. Change it to `not in ('taylor', 'taylor_town')`. The score then drops to
-     0, which is true.
+- [ ] Humans find ding and post each week. Serves "Somebody verified their email this week.", "3 humans besides taylor
+      posted this week.", "100 humans posted in the past 24h.", and "Somebody paid for an org this month."
+  1. Fix the condition: server.tsx excludes `created_by <> 'taylor'`, but Taylor posts as `taylor_town`, which counts as
+     a human. Change it to `not in ('taylor', 'taylor_town')`.
   2. Sign up with a fresh address on https://ding.bar/signup. Confirm that the verify email arrives. If it does not,
      check `grep -c '^RESEND_API_KEY=' /var/lib/ding/env` and `journalctl -u ding` for 'Could not send verification
      email'.
@@ -172,7 +167,7 @@
 
 - [ ] You use ding from an iPhone app with real push notifications. Decision: native, not a PWA — push is the entire
       reason, and iOS web push needs the app installed anyway. Needs an Apple developer account, an APNs key, a device,
-      and App Store review on every release. Do it after the JSON API entry.
+      and App Store review on every release.
   1. Backend push: `usr.apns_token`, and the notification insert path sends to APNs.
   2. `ding-ios` (new repo), SwiftUI, four screens: feed, thread, compose, notifications. Nothing else.
 

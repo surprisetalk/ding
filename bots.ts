@@ -365,7 +365,9 @@ export async function redditFetch(url: string): Promise<Response> {
   let res = await get();
   if (res.status === 429) {
     await res.body?.cancel();
-    const retryAfter = parseInt(res.headers.get("retry-after") || "5", 10);
+    // An HTTP-date or missing Retry-After falls back to a fixed 5s wait.
+    const n = parseInt(res.headers.get("retry-after") ?? "", 10);
+    const retryAfter = Number.isFinite(n) && n > 0 ? n : 5;
     console.warn(`Reddit 429, sleeping ${retryAfter}s then retrying`);
     await new Promise((r) => setTimeout(r, Math.min(retryAfter, 30) * 1000));
     res = await get();
@@ -882,6 +884,13 @@ export async function verdictBot(api: Api, opts: {
     verdicts = JSON.parse(m[0]);
   } catch (e) {
     throw new Error(`verdictBot: unparseable verdicts (${e}): ${m[0].slice(0, 200)}`);
+  }
+  if (verdicts.some((v) => v === null)) {
+    throw new Error(
+      `verdictBot: expected a JSON array of {cid,verdict,note} objects from claude reply, received ${
+        m[0].slice(0, 200)
+      }`,
+    );
   }
   const max = opts.maxActions ?? 8;
   const byCid = new Map(candidates.map((p) => [p.cid, p]));
