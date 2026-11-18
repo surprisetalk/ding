@@ -20,6 +20,7 @@ export const resend = new Resend(Deno.env.get("RESEND_API_KEY") || "re_missing")
 import Stripe from "stripe";
 import { parseHTML } from "linkedom";
 import { Readability } from "@mozilla/readability";
+import { timingSafeEqual } from "@std/crypto/timing-safe-equal";
 import { type Api, claude, fetchPublic, R2Conflict, readCapped, uploadToR2 } from "./bots.ts";
 import { BOTS } from "./bots/mod.ts";
 import { LECTURES_PATH, parseLectures, unpostedCount } from "./bots/lectures.ts";
@@ -44,7 +45,6 @@ import {
   verifyRow,
 } from "./dht.ts";
 export { parseLabels };
-export type { Labels };
 
 declare module "@hono/hono" {
   interface ContextRenderer {
@@ -57,7 +57,7 @@ declare module "@hono/hono" {
 
 //// TYPES /////////////////////////////////////////////////////////////////////
 
-export type Usr = {
+type Usr = {
   name: string;
   email: string;
   password: string | null;
@@ -77,9 +77,9 @@ export type TagStat = { tag: string; posts: number; ups: number };
 // A profile's follow state. `vote` is the VIEWER's ▲/▼ on this profile (null = no vote,
 // and -1 only ever reaches the viewer's own render — a mute is private). `followers`
 // counts ▲ only, so a downvote is invisible in every count.
-export type Follow = { vote: number | null; followers: number; following: number; follows_me: boolean };
+type Follow = { vote: number | null; followers: number; following: number; follows_me: boolean };
 
-export type ChildCom = {
+type ChildCom = {
   cid: number;
   parent_cid: number | null;
   body: string;
@@ -141,7 +141,7 @@ const extractFirstUrl = (b: string) => {
   return core + ")".repeat(Math.max(0, Math.min(open, closes)));
 };
 export const extractLinks = (b: string) => [...b.matchAll(/https:\/\/ding\.bar\/c\/(\d+)/g)].map((m) => parseInt(m[1]));
-export const extractMentions = (b: string) => [
+const extractMentions = (b: string) => [
   ...new Set(
     [...b.matchAll(/@([0-9a-zA-Z_]{4,32})/g)].map((m) => m[1].toLowerCase()),
   ),
@@ -275,6 +275,10 @@ const deriveBody = async (body: string, isRoot: boolean) => ({
 //// LABEL PARSING /////////////////////////////////////////////////////////////
 // parseLabels / Labels / PFX live in dht.ts (shared with the CLI); re-exported above.
 
+// The usr and org name check in db.sql. The HTML pattern attribute and the server share it.
+const NAME_PATTERN = "^[0-9a-zA-Z_]{4,32}$";
+const NAME_RE = new RegExp(NAME_PATTERN);
+
 const SYM: Record<string, string> = { tag: "#", org: "*", usr: "@", www: "~" };
 
 export const decodeLabels = (p: URLSearchParams) => {
@@ -325,7 +329,9 @@ const buildAdditiveLink = (
 
 const SECRET = Deno.env.get("EMAIL_TOKEN_SECRET") ||
   (() => {
-    throw new Error("EMAIL_TOKEN_SECRET required");
+    throw new Error(
+      "EMAIL_TOKEN_SECRET required (it signs verify and reset links). fix: add it to /var/lib/ding/env on pc.",
+    );
   })();
 
 export const emailToken = async (ts: Date, email: string) => {
@@ -350,18 +356,13 @@ export const emailToken = async (ts: Date, email: string) => {
   }`;
 };
 
-const validateEmailToken = async (
-  token: string,
-  email: string,
-  maxAge = 172800000,
-) => {
-  const [epoch] = token.split(":"),
-    ts = parseInt(epoch) * 1000;
-  return (
-    ts &&
-    Date.now() - ts < maxAge &&
-    token === (await emailToken(new Date(ts), email))
-  );
+const EMAIL_TOKEN_MAX_AGE_MS = 48 * 3600_000;
+const validateEmailToken = async (token: string, email: string) => {
+  const ts = parseInt(token.split(":")[0]) * 1000;
+  if (!ts || Date.now() - ts >= EMAIL_TOKEN_MAX_AGE_MS) return false;
+  const enc = new TextEncoder();
+  const [got, want] = [enc.encode(token), enc.encode(await emailToken(new Date(ts), email))];
+  return got.length === want.length && timingSafeEqual(got, want);
 };
 
 //// POSTGRES //////////////////////////////////////////////////////////////////
@@ -445,7 +446,7 @@ const bumpCounts = (db: pg.ISql, cid: number | string, body: string) =>
 // the dht row, so replay re-ingests cleanly). on-conflict-do-nothing makes a genuine
 // replay a no-op. PUBLIC posts only: msg rows scoped to *org or @usr are rejected so
 // private bodies never enter the log.
-export const ingestMsg = async (
+const ingestMsg = async (
   row: Row,
   opts: { verify?: boolean; parentCid?: number | null; gate?: (pubkey: string) => void; comTags?: string[] } = {},
 ): Promise<{ cid: number | null; isNew: boolean }> => {
@@ -701,11 +702,23 @@ const drainAuthId = async (c: Context): Promise<string> => {
 // Pull-based replication: drain a bootstrap node's log from `cursor` onward, verify +
 // store each row locally, and return the advanced cursor. The polling mirror of the WS
 // live-tail. The timeout bounds the whole drain, body included.
+// REVIEW: Throw when a drain page passes REPLICATE_MAX_BYTES. A drain page holds at most 10,000 rows, and typical rows
+// are well under 1 KB. Alternative: put seq on the wire and ingest the complete lines of a truncated page. It never
+// stalls the cursor but changes the wire format that every node shares.
+const REPLICATE_MAX_BYTES = 64 * 1024 * 1024;
+// Reads a foreign node's NDJSON body with a size bound, so a hostile peer cannot fill memory.
+const readPeerBody = async (res: Response, max: number, src: string) => {
+  if (!res.body) throw new Error(`${src}: expected a response body, received none`);
+  const { bytes, whole } = await readCapped(res.body, max);
+  if (!whole) throw new Error(`${src}: expected a body under ${max} bytes, received more. fix: check the peer.`);
+  return new TextDecoder().decode(bytes);
+};
 export const replicate = async (bootstrap: string, queries: string[], cursor: string): Promise<string> => {
   const qp = queries.map((q) => `q=${encodeURIComponent(q)}`).join("&");
   const res = await fetch(`${bootstrap}/?after=${cursor}&${qp}`, { signal: AbortSignal.timeout(30_000) });
   if (!res.ok) throw new Error(`replicate: GET ${bootstrap} → ${res.status} ${await res.text()}`);
-  for (const line of (await res.text()).split("\n").map((l) => l.trim()).filter(Boolean)) {
+  const text = await readPeerBody(res, REPLICATE_MAX_BYTES, `replicate: GET ${bootstrap}`);
+  for (const line of text.split("\n").map((l) => l.trim()).filter(Boolean)) {
     let row: Row;
     try {
       row = JSON.parse(line) as Row;
@@ -731,9 +744,18 @@ export const discoverPeers = async (bootstrap: string): Promise<{ ips: string[];
       `discoverPeers: GET ${bootstrap}/?q=$peer expected 200, received ${res.status} ${await res.text()}`,
     );
   }
-  return (await res.text()).split("\n").map((l) => l.trim()).filter(Boolean).map((l) => {
-    const r = JSON.parse(l);
-    return { ips: (r.ips ?? []) as string[], serves: (r.serves ?? []) as string[] };
+  const src = `discoverPeers: GET ${bootstrap}/?q=$peer`;
+  const strs = (v: unknown) => Array.isArray(v) && v.every((x) => typeof x === "string");
+  return (await readPeerBody(res, 1024 * 1024, src)).split("\n").map((l) => l.trim()).filter(Boolean).map((l) => {
+    let r: { ips?: unknown; serves?: unknown };
+    try {
+      r = JSON.parse(l);
+    } catch {
+      throw new Error(`${src}: expected one JSON peer row per line, received ${JSON.stringify(l.slice(0, 80))}`);
+    }
+    if (!strs(r.ips) || !strs(r.serves))
+      throw new Error(`${src}: expected a peer row with string arrays ips and serves, received ${l.slice(0, 80)}`);
+    return { ips: r.ips as string[], serves: r.serves as string[] };
   });
 };
 
@@ -821,7 +843,7 @@ const sendVerify = async (email: string) => {
 };
 
 // Known throwaway/temp-mail domains, vendored (deploys with the code; readable on Deno Deploy).
-export const disposableDomains = new Set(
+const disposableDomains = new Set(
   Deno.readTextFileSync(new URL("./disposable-domains.txt", import.meta.url))
     .split("\n").map((l) => l.trim().toLowerCase())
     .filter((l) => l && !l.startsWith("#")),
@@ -829,11 +851,11 @@ export const disposableDomains = new Set(
 
 // A domain can receive mail if it has an MX record, or (SMTP fallback) an A record. Deno throws
 // NotFound for both NXDOMAIN and "exists but no such record"; any OTHER error is transient → fail
-// open so a flaky resolver never blocks real signups.
+// open so a flaky resolver never blocks real signups. A timeout counts as transient.
 const hasMailExchange = async (domain: string): Promise<boolean> => {
   for (const kind of ["MX", "A"] as const) {
     try {
-      if ((await Deno.resolveDns(domain, kind)).length > 0) return true;
+      if ((await Deno.resolveDns(domain, kind, { signal: AbortSignal.timeout(3_000) })).length > 0) return true;
     } catch (e) {
       if (!(e instanceof Deno.errors.NotFound)) return true;
     }
@@ -1342,7 +1364,11 @@ const cookieOpts = { maxAge: 60 * 60 * 24 * 365, path: "/", httpOnly: true, same
 const notFound = () => {
   throw new HTTPException(404, { message: "Not found." });
 };
-const form = async (c: Context) => {
+// Each name in `required` must be present, so its field types as string; every other field may be undefined.
+const form = async <K extends string = never>(
+  c: Context,
+  ...required: K[]
+): Promise<Record<K, string> & Partial<Record<string, string>>> => {
   const ct = c.req.header("content-type") || "";
   if (!ct.includes("form") && !ct.includes("multipart")) {
     throw new HTTPException(400, {
@@ -1352,9 +1378,18 @@ const form = async (c: Context) => {
         }". fix: send form fields, e.g. httpie -f or curl -F.`,
     });
   }
-  return Object.fromEntries(
+  const f: Record<string, string> = Object.fromEntries(
     [...(await c.req.formData()).entries()].map(([k, v]) => [k, v.toString()]),
   );
+  const missing = required.find((k) => f[k] === undefined);
+  if (missing) {
+    throw new HTTPException(400, {
+      message: `expected form field "${missing}", received fields [${
+        Object.keys(f).join(", ")
+      }]. source: ${c.req.method} ${new URL(c.req.url).pathname}. fix: send ${missing}=… in the form body.`,
+    });
+  }
+  return f as Record<K, string> & Partial<Record<string, string>>;
 };
 const host = (c: Context) => {
   const src = c.req.header("host") ?? (() => {
@@ -1483,7 +1518,7 @@ app.use("*", async (c, next) => {
 
 // Trusted-ish client IP: Cloudflare's CF-Connecting-IP first (unspoofable behind CF), else the
 // first x-forwarded-for hop, else a shared "unknown" bucket. Used by every per-IP rate limiter.
-export const clientIp = (c: Context): string =>
+const clientIp = (c: Context): string =>
   c.req.header("cf-connecting-ip")?.trim() ||
   (c.req.header("x-forwarded-for") ?? "").split(",")[0].trim() ||
   "unknown";
@@ -1536,9 +1571,16 @@ app.use("*", async (c, next) => {
     const ip = clientIp(c);
     if (!rateBump(dbIngestRate.ip, ip, dbIngestRate.reqPerMin))
       throw new HTTPException(429, { message: "ingest rate limit — slow down." });
-    if (+(c.req.header("content-length") ?? 0) > 8_000_000)
-      throw new HTTPException(413, { message: "ingest body too large (max 8MB per request)." });
-    const lines = (await c.req.text()).split("\n").map((l) => l.trim()).filter(Boolean);
+    // The cap counts bytes as they stream, so a chunked body with no content-length cannot skip it.
+    const { bytes, whole } = c.req.raw.body
+      ? await readCapped(c.req.raw.body, 8_000_000)
+      : { bytes: new Uint8Array(), whole: true };
+    if (!whole) {
+      throw new HTTPException(413, {
+        message: "expected an ingest body of at most 8 MB, received more. fix: split the rows across requests.",
+      });
+    }
+    const lines = new TextDecoder().decode(bytes).split("\n").map((l) => l.trim()).filter(Boolean);
     if (lines.length > 10_000) throw new HTTPException(413, { message: "too many rows (max 10000 per request)." });
     const gate = (pubkey: string) => {
       if (!rateBump(dbIngestRate.key, pubkey, dbIngestRate.rowsPerKeyPerMin)) {
@@ -1689,7 +1731,7 @@ const assetRe = /\.(css|js|ico|png|svg|webmanifest|txt)$/;
 // stale JS after a deploy. Version the URL instead: DENO_DEPLOYMENT_ID changes every deploy,
 // so `?v=` is a new URL and the old one is never asked for again — which makes `immutable`
 // safe. Unset locally, where we then version nothing and cache nothing, so edits show up.
-export let assetV = Deno.env.get("DENO_DEPLOYMENT_ID") ?? "";
+let assetV = Deno.env.get("DENO_DEPLOYMENT_ID") ?? "";
 export const setAssetV = (v: string) => (assetV = v); // tests only, like setSql
 const assetUrl = (p: string) => (assetV ? `${p}?v=${assetV}` : p);
 
@@ -2356,7 +2398,7 @@ const home = async (c: Context<{ Variables: { name: string } }>, draft?: { body:
 app.get("/", (c) => home(c));
 
 app.post("/login", async (c) => {
-  const { email, password } = await form(c);
+  const { email, password } = await form(c, "email", "password");
   const [u] =
     await sql`select name, email, email_verified_at, (password = crypt(${password}, password)) as ok from usr where email=${email}`;
   if (!u) {
@@ -2437,7 +2479,7 @@ app.get("/forgot", (c) =>
   ));
 app.post("/forgot", async (c) => {
   signupThrottle(c);
-  const { email } = await form(c),
+  const { email } = await form(c, "email"),
     [u] = await sql`select email from usr where email = ${email}`;
   if (u) {
     try {
@@ -2481,20 +2523,34 @@ app.get("/password", async (c) => {
   );
 });
 app.post("/password", async (c) => {
-  const { email, token, password } = await form(c);
+  const { email, token, password } = await form(c, "email", "token", "password");
   if (!(await validateEmailToken(token, email))) {
     throw new HTTPException(400, {
       message: "Verification link is invalid or expired. Request a new one.",
     });
   }
-  const [u] =
-    await sql`update usr set password = crypt(${password}, gen_salt('bf', 8)), email_verified_at = coalesce(email_verified_at, now()) where email = ${email} returning name`;
+  // REVIEW: A reset token works once: POST /password claims it in used_nonce, which the drain GC already expires.
+  // Alternative: fold the password hash into the HMAC. That also kills older unused links, but costs a usr read
+  // inside every token check and still lets one link work twice before the password changes.
+  const exp = parseInt(token.split(":")[0]) + EMAIL_TOKEN_MAX_AGE_MS / 1000;
+  const u = await sql.begin(async (sql) => {
+    const [claimed] = await sql`insert into used_nonce (nonce, exp) values (${`pw:${token}`}, ${exp})
+      on conflict do nothing returning nonce`;
+    if (!claimed) {
+      throw new HTTPException(400, {
+        message: "expected an unused reset link, received one already used. fix: request a new one from /forgot.",
+      });
+    }
+    const [u] =
+      await sql`update usr set password = crypt(${password}, gen_salt('bf', 8)), email_verified_at = coalesce(email_verified_at, now()) where email = ${email} returning name`;
+    return u;
+  });
   if (u) await setSignedCookie(c, "name", u.name, cookieSecret, cookieOpts);
   return ok(c);
 });
 
 app.post("/invite", authed, async (c) => {
-  const e = (await form(c)).email,
+  const e = (await form(c, "email")).email,
     n = Math.random().toString(36).slice(2);
   if (
     (
@@ -2542,6 +2598,7 @@ app.get("/signup", (c) => {
     conflict: <p>Username or email already taken.</p>,
     email_not_found: <p>No account with that email — sign up below.</p>,
     bad_email: <p>please sign up with a different email address.</p>,
+    bad_name: <p>Username must be 4 to 32 letters, digits or underscores.</p>,
   };
   return c.render(
     <section>
@@ -2555,7 +2612,7 @@ app.get("/signup", (c) => {
           <input
             type="text"
             name="name"
-            pattern="^[0-9a-zA-Z_]{4,32}$"
+            pattern={NAME_PATTERN}
             required
           />
         </label>
@@ -2589,7 +2646,7 @@ const sendOrFail = async (c: Context, email: string, okUrl: string, where: strin
 };
 
 app.post("/signup", async (c) => {
-  const formData = await form(c);
+  const formData = await form(c, "email", "name");
   const email = formData.email,
     name = formData.name;
   const qs = `&email=${encodeURIComponent(email)}`;
@@ -2598,6 +2655,7 @@ app.post("/signup", async (c) => {
   // they can't learn the trap, but create nothing and send nothing.
   if (formData.url) return c.redirect("/signup?ok");
   signupThrottle(c);
+  if (!NAME_RE.test(name)) return c.redirect(`/signup?error=bad_name${qs}`);
   if (await badSignupEmail(email)) return c.redirect(`/signup?error=bad_email${qs}`);
 
   const [existingByEmail] = await sql`select name, email_verified_at from usr where email = ${email}`;
@@ -2628,7 +2686,7 @@ app.post("/signup", async (c) => {
 
 app.post("/signup/resend", async (c) => {
   signupThrottle(c);
-  const { email } = await form(c);
+  const { email } = await form(c, "email");
   const qs = `&email=${encodeURIComponent(email)}`;
   const [u] = await sql`select email, email_verified_at from usr where email = ${email}`;
   if (!u) return c.redirect(`/signup?error=conflict${qs}`); // pretend-success would mislead — ask them to sign up
@@ -2877,6 +2935,14 @@ app.post("/u", authed, async (c) => {
       }. Source: the /u form. Fix: move the slider on /u and save again.`,
     });
   }
+  // Code points, as db.sql's length(bio) counts them.
+  const bioLen = data.bio === undefined ? null : [...data.bio].length;
+  if (bioLen !== null && !(bioLen >= 1 && bioLen <= 4096)) {
+    throw new HTTPException(400, {
+      message:
+        `Expected a bio of 1 to 4096 characters, received ${bioLen}. Source: the /u form. Fix: write 1 to 4096 characters and save again.`,
+    });
+  }
   await sql`update usr set bio = coalesce(${
     data.bio ?? null
   }::text, bio), pref_weight = coalesce(${w}::real, pref_weight)
@@ -3019,7 +3085,7 @@ app.get("/o/new", authed, (c) =>
       <form method="post" action="/o/new" class="form-inline">
         <input
           required
-          pattern="^[0-9a-zA-Z_]{4,32}$"
+          pattern={NAME_PATTERN}
           name="name"
           aria-label="org name"
           placeholder="org_name"
@@ -3035,9 +3101,13 @@ app.get("/o/new", authed, (c) =>
   ));
 
 app.post("/o/new", authed, async (c) => {
-  const { name } = await form(c);
-  if (!name.match(/^[0-9a-zA-Z_]{4,32}$/))
-    throw new HTTPException(400, { message: "Invalid name" });
+  const { name } = await form(c, "name");
+  if (!NAME_RE.test(name)) {
+    throw new HTTPException(400, {
+      message:
+        `expected an org name of 4 to 32 letters, digits or underscores, received "${name}". fix: pick another name.`,
+    });
+  }
 
   const [existing] = await sql`select name from org where name = ${name}`;
   if (existing) {
@@ -3182,7 +3252,7 @@ app.get("/o/:name", async (c) => {
 });
 
 app.post("/o/:name/invite", authed, async (c) => {
-  const [org, { email }] = await Promise.all([getOrg(c), form(c)]);
+  const [org, { email }] = await Promise.all([getOrg(c), form(c, "email")]);
   if (org.created_by !== c.get("name"))
     throw new HTTPException(403, { message: "Only owner can invite" });
   if (!email || !email.includes("@") || email.length < 4 || email.length > 64)
@@ -3214,7 +3284,7 @@ app.post("/o/:name/invite", authed, async (c) => {
 });
 
 app.post("/o/:name/remove", authed, async (c) => {
-  const [org, { name: paramName }] = await Promise.all([getOrg(c), form(c)]);
+  const [org, { name: paramName }] = await Promise.all([getOrg(c), form(c, "name")]);
   const me = c.get("name");
   const isOwner = org.created_by === me;
   const isSelfLeave = paramName === me;
@@ -3892,7 +3962,7 @@ app.get("/c/:cid?", async (c) => {
                 <input
                   type="text"
                   name="name"
-                  pattern="^[0-9a-zA-Z_]{4,32}$"
+                  pattern={NAME_PATTERN}
                   required
                 />
               </label>
@@ -3952,9 +4022,13 @@ app.get("/img", async (c) => {
     await res.body?.cancel();
     throw new HTTPException(502, { message: `upstream ${res.status}` });
   }
-  const ct = res.headers.get("content-type") || "image/png";
-  if (!ct.startsWith("image/"))
-    throw new HTTPException(400, { message: "not an image" });
+  const ct = res.headers.get("content-type") ?? "";
+  if (!ct.startsWith("image/")) {
+    await res.body?.cancel();
+    throw new HTTPException(400, {
+      message: `expected an image/* content-type, received "${ct || "none"}". fix: link a real image.`,
+    });
+  }
   return new Response(res.body, {
     headers: {
       "Content-Type": ct,

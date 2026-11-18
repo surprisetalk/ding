@@ -10,7 +10,7 @@
 // backfilled (yet) are skipped — the multi-pass runner re-signs them once the parent lands.
 //
 //   required: DATABASE_URL, KEY_WRAP_SECRET
-//   optional: BACKFILL_LIMIT (rows/pass; default all), BACKFILL_CONCURRENCY (default 8)
+//   optional: BACKFILL_LIMIT (rows in one pass; default all rows, many passes)
 
 import pg from "postgres";
 import { buildMsg, ensureCustodialKey, signRow } from "./dht.ts";
@@ -50,7 +50,7 @@ export const backfill = async (
     where hash is null and char_length(body) > 1 and orgs = '{}' and usrs = '{}' and created_by is not null
     order by cid asc ${opts.limit ? sql`limit ${opts.limit}` : sql``}`;
 
-  const N = opts.concurrency ?? (+(Deno.env.get("BACKFILL_CONCURRENCY") ?? "8") || 8);
+  const N = opts.concurrency ?? 8;
   let idx = 0, signed = 0, skipped = 0;
   const work = async () => {
     while (idx < rows.length) {
@@ -98,7 +98,13 @@ if (import.meta.main) {
     })(),
     { database: "ding", max: 12 },
   );
-  const limit = +(Deno.env.get("BACKFILL_LIMIT") ?? "0") || undefined;
+  const rawLimit = Deno.env.get("BACKFILL_LIMIT");
+  if (rawLimit !== undefined && !/^[1-9]\d*$/.test(rawLimit)) {
+    throw new Error(
+      `backfill: expected BACKFILL_LIMIT to be a positive integer, received "${rawLimit}". fix: unset it, or set e.g. BACKFILL_LIMIT=1000.`,
+    );
+  }
+  const limit = rawLimit === undefined ? undefined : +rawLimit;
   let total = 0, totalSkipped = 0, pass = 0;
   // Loop until a pass makes no progress: replies whose parents land mid-pass get caught next pass.
   // Each pass signs at least one reply level, so MAX_PASSES bounds the thread depth it can reach.

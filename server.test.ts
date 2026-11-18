@@ -406,6 +406,14 @@ Deno.test(
       }
     });
 
+    await t.step("POST /login without a password names the missing field", async () => {
+      const body = new FormData();
+      body.append("email", "john@example.com");
+      const res = await app.request("/login", { method: "post", body });
+      assertEquals(res.status, 400);
+      assertStringIncludes(await res.text(), "expected form field &quot;password&quot;");
+    });
+
     await t.step("GET /forgot", async () => {
       const res = await app.request("/forgot");
       assertEquals(res.status, 200);
@@ -426,6 +434,21 @@ Deno.test(
       const res = await app.request("/password", { method: "post", body });
       assertEquals(res.status, 400); // Invalid or expired token
       assertStringIncludes(await res.text(), "expired");
+    });
+
+    await t.step("POST /password accepts a reset token once", async () => {
+      const tok = await emailToken(new Date(), "john@example.com");
+      const reset = () => {
+        const body = new FormData();
+        body.append("email", "john@example.com");
+        body.append("token", tok);
+        body.append("password", "password1!");
+        return app.request("/password", { method: "post", body });
+      };
+      assertEquals((await reset()).status, 302);
+      const again = await reset();
+      assertEquals(again.status, 400);
+      assertStringIncludes(await again.text(), "already used");
     });
 
     await t.step("GET /password with no query params shows expired-link page", async () => {
@@ -652,6 +675,19 @@ Deno.test(
       assertEquals(u.email, "fresh@example.com");
       assertEquals(u.password, null);
       assertEquals(u.email_verified_at, null);
+    });
+
+    await t.step("POST /signup with an invalid username redirects to ?error=bad_name", async () => {
+      const body = new FormData();
+      body.append("name", "a b");
+      body.append("email", "badname@example.com");
+      const res = await app.request("/signup", { method: "POST", body });
+      assertEquals(res.status, 302);
+      assertEquals(
+        res.headers.get("location"),
+        `/signup?error=bad_name&email=${encodeURIComponent("badname@example.com")}`,
+      );
+      assertStringIncludes(await (await app.request(res.headers.get("location")!)).text(), "4 to 32 letters");
     });
 
     await t.step("POST /signup duplicate name (different email) redirects to ?error=name_taken", async () => {
@@ -3663,6 +3699,18 @@ Deno.test(
       assertStringIncludes(res.errors[0], "64-hex ids");
     });
 
+    await t.step("ingest refuses a chunked body over 8 MB that declares no content-length", async () => {
+      dbIngestRate.ip.clear();
+      const chunk = new Uint8Array(1024 * 1024).fill(0x20);
+      let sent = 0;
+      const body = new ReadableStream<Uint8Array>({
+        pull: (ctl) => sent++ < 9 ? ctl.enqueue(chunk) : ctl.close(),
+      });
+      const res = await app.request("http://db.ding.bar/", { method: "POST", body, duplex: "half" } as RequestInit);
+      assertEquals(res.status, 413);
+      await res.body?.cancel();
+    });
+
     await t.step("peer rows ingest, drain via $peer, and discoverPeers parses them", async () => {
       const { priv, pub } = await mkKey();
       const peer = await signRow("peer", nowSec(), { ips: ["https://node-b.example"], serves: ["$msg"] }, priv, pub);
@@ -3921,6 +3969,11 @@ Deno.test(
       for (const edge of [0.5, 0, 2]) {
         assertEquals((await save(String(edge), null)).status, 302);
         assertEquals(await row(), { bio: "bio only", pref_weight: edge });
+      }
+      for (const bad of ["", "x".repeat(4097)]) {
+        const r = await save(undefined, bad);
+        assertEquals(r.status, 400, `bio of ${bad.length}`);
+        assertStringIncludes(await r.text(), "Expected a bio of 1 to 4096 characters");
       }
       await sql`update usr set pref_weight = 1 where name = 'john_doe'`;
     });
@@ -5354,17 +5407,24 @@ Deno.test(
         assertEquals(textarea((await share(`  ${origin}/uni`)).html), `uni\n${origin}/uni`);
       });
 
-      await t.step("/img sandboxes what it relays", async () => {
+      await t.step("/img sandboxes what it relays, and refuses a body with no image type", async () => {
         const svg = Deno.serve(
           { port: 0, onListen() {} },
-          () =>
-            new Response("<svg xmlns='http://www.w3.org/2000/svg'/>", { headers: { "content-type": "image/svg+xml" } }),
+          (req) =>
+            new URL(req.url).pathname === "/bare"
+              ? new Response(new Uint8Array([1, 2, 3])) // a byte body gets no content-type
+              : new Response("<svg xmlns='http://www.w3.org/2000/svg'/>", {
+                headers: { "content-type": "image/svg+xml" },
+              }),
         );
         try {
           const res = await app.request(`/img?url=${encodeURIComponent(`http://127.0.0.1:${svg.addr.port}/x.svg`)}`);
           assertEquals(res.headers.get("content-security-policy"), "sandbox");
           assertEquals(res.headers.get("x-content-type-options"), "nosniff");
           await res.body?.cancel();
+          const bare = await app.request(`/img?url=${encodeURIComponent(`http://127.0.0.1:${svg.addr.port}/bare`)}`);
+          assertEquals(bare.status, 400);
+          await bare.body?.cancel();
         } finally {
           await svg.shutdown();
         }

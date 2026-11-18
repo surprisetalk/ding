@@ -10,6 +10,7 @@
     "jsr:@std/assert@0.217": "0.217.0",
     "jsr:@std/assert@^1.0.19": "1.0.19",
     "jsr:@std/async@0.217": "0.217.0",
+    "jsr:@std/crypto@^1.1.0": "1.1.0",
     "jsr:@std/csv@*": "1.0.6",
     "jsr:@std/dotenv@0.217": "0.217.0",
     "jsr:@std/encoding@0.217": "0.217.0",
@@ -82,6 +83,9 @@
     },
     "@std/async@0.217.0": {
       "integrity": "14dac94f59595e39e519de379c47170d8bbedea253824c4b167108aa943ddb69"
+    },
+    "@std/crypto@1.1.0": {
+      "integrity": "b8d6d0a6377a32b213af2661ed7bf1062d94feac0c57def5526a8e74a95c3ec8"
     },
     "@std/csv@1.0.6": {
       "integrity": "52ef0e62799a0028d278fa04762f17f9bd263fad9a8e7f98c14fbd371d62d9fd",
@@ -1078,6 +1082,7 @@
       "jsr:@hono/hono@*",
       "jsr:@hono/hono@4.12.15",
       "jsr:@std/assert@^1.0.19",
+      "jsr:@std/crypto@^1.1.0",
       "jsr:@surprisetalk/pgtemp@~0.3.1",
       "npm:@electric-sql/pglite@0.5.16",
       "npm:@mozilla/readability@0.6",

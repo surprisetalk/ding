@@ -118,8 +118,7 @@ Deno.test("decodeEntities: plain string unchanged", () => {
 
 // ---- paginate ----
 
-// The Api context carries its own fetch, so pagination is testable without
-// monkey-patching the global.
+// Api.feed is injected, so pagination needs no global fetch patch.
 const fakeApi = (pages: unknown[][]): Api => {
   let i = 0;
   return {
@@ -212,7 +211,7 @@ const mention = (cid: number, over: Partial<Post> = {}): Post => ({
 
 // The reported bug: the old harness logged `#<tag>` while cowsay et al. answer @mentions.
 Deno.test("mentionResponderBot: logs the @handle, not a #tag", async () => {
-  const { api } = mentionApi({ mentions: [mention(1)] });
+  const { api, replies } = mentionApi({ mentions: [mention(1)] });
   const lines: string[] = [];
   const orig = console.log;
   console.log = (...a: unknown[]) => void lines.push(a.join(" "));
@@ -222,11 +221,6 @@ Deno.test("mentionResponderBot: logs the @handle, not a #tag", async () => {
     console.log = orig;
   }
   assertEquals(lines.includes("Found 1 unanswered @bot_test posts"), true, lines.join("\n"));
-});
-
-Deno.test("mentionResponderBot: replies to a fresh mention", async () => {
-  const { api, replies } = mentionApi({ mentions: [mention(1)] });
-  await mentionResponderBot(api, { respond: () => "hi" });
   assertEquals(replies, [1]);
 });
 

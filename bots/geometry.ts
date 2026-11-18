@@ -189,7 +189,7 @@ function encodeGif(frames: Uint8Array[], palette: number[][], delayCs: number): 
 
   // Global Color Table
   for (let i = 0; i < (1 << (palBits + 1)); i++) {
-    const c = palette[i] || [0, 0, 0];
+    const c = palette[i];
     parts.push(c[0], c[1], c[2]);
   }
 

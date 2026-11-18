@@ -9,9 +9,9 @@ function parseAndRoll(body: string): string | null {
   const diceRe = /(\d+)d(\d+)(?:(kh|kl)(\d+))?(?:\s*([+-]\s*\d+))?/gi;
   let m;
   while ((m = diceRe.exec(body)) !== null) {
-    const n = Math.min(+m[1], 100);
-    const sides = Math.min(+m[2], 1000);
-    if (n < 1 || sides < 1) continue;
+    const n = +m[1];
+    const sides = +m[2];
+    if (n < 1 || n > 100 || sides < 1 || sides > 1000) continue; // over-limit rolls are skipped, never echoed as a different roll
     const keep = m[3]?.toLowerCase();
     const keepN = m[4] ? Math.min(+m[4], n) : n;
     const mod = m[5] ? parseInt(m[5].replace(/\s/g, "")) : 0;

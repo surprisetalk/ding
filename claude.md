@@ -72,13 +72,6 @@ git config core.hooksPath .githooks
 - Image fetches of `i.ding.bar` go through `directImageUrl`.
 - Verdict bots exclude `bot_%` authors and keep POSTs per run under the 10/min post rate.
 
-## Key Patterns
-
-```tsx
-const users = await sql`SELECT * FROM usr WHERE uid = ${id}`;
-const Post = ({ post }: { post: Com }) => <article>...</article>;
-```
-
 ## Status
 
 - `GET /status` grades every condition in `checks`. Grade = actual / threshold, floored to 2 decimals. Below 1.0 returns

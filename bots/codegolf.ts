@@ -233,7 +233,7 @@ const PROBLEMS = [
   {
     title: "Zigzag Cipher",
     body:
-      'Implement a rail fence cipher with 3 rails.\n\nEncode: "WEAREDISCOVERED" with 3 rails → "WECRLTEERDSOAIVD"\n\nWrite shortest encoder AND decoder.',
+      'Implement a rail fence cipher with 3 rails.\n\nEncode: "WEAREDISCOVERED" with 3 rails → "WECRERDSOEEAIVD"\n\nWrite shortest encoder AND decoder.',
     difficulty: "medium",
   },
   {

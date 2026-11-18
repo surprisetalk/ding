@@ -51,8 +51,8 @@
 ## Blocked on you
 
 - [ ] @lectures.bsky.social posts one talk a day from a catalog Taylor curates. Built and committed: `bots/lectures.ts`,
-      65 seeded rows in `bots/data/lectures.tsv` (63 from the old posts, 1 from ideas.tsv "lectures" draft, none from
-      the "technical lectures" rows: they hold no URLs), the runway status condition, and tests. Blocker: you set fave,
+      seeded rows in `bots/data/lectures.tsv` (from the old posts and the ideas.tsv "lectures" draft, none from the
+      "technical lectures" rows: they hold no URLs), the runway status condition, and tests. Blocker: you set fave,
       create the account, and deploy.
   1. Open `bots/data/lectures.tsv`. Set `fave` to 1 on favorites and fill `tags`. Add rows from HN "favorite talks"
      threads until it holds 100.
@@ -155,10 +155,9 @@
   3. Remove `DATABASE_URL` and the Neon lines from `.env`, and delete `.claude/cutover/` (stub, bearer, env copies,
      final dump).
 
-- [ ] Humans find ding and post each week. Fact (10-31): 74 users, 70 verified, none in the past 7 days. The only
-      non-bot poster this week is `taylor_town` (11 posts). Serves "Somebody verified their email this week." (0), "3
-      humans besides taylor posted this week." (0.33), "100 humans posted in the past 24h." (0.01), and "Somebody paid
-      for an org this month." (0).
+- [ ] Humans find ding and post each week. The only non-bot poster this week is `taylor_town`. Serves "Somebody verified
+      their email this week." (0), "3 humans besides taylor posted this week." (0.33), "100 humans posted in the past
+      24h." (0.01), and "Somebody paid for an org this month." (0).
   1. Fix the condition: server.tsx excludes `created_by <> 'taylor'`, but Taylor posts as `taylor_town`. That account
      gives "3 humans besides taylor" its 0.33. Change it to `not in ('taylor', 'taylor_town')`. The score then drops to
      0, which is true.

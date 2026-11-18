@@ -24,12 +24,7 @@ function sampleColor(
       count++;
     }
   }
-  if (count === 0) return [128, 128, 128];
   return [Math.round(r / count), Math.round(g / count), Math.round(b / count)];
-}
-
-function triangleCentroid(p0: [number, number], p1: [number, number], p2: [number, number]): [number, number] {
-  return [(p0[0] + p1[0] + p2[0]) / 3, (p0[1] + p1[1] + p2[1]) / 3];
 }
 
 async function lowpoly(imageBytes: Uint8Array): Promise<string> {
@@ -44,8 +39,6 @@ async function lowpoly(imageBytes: Uint8Array): Promise<string> {
   const cellW = w / cols;
   const cellH = h / rows;
 
-  const rng = () => Math.random();
-
   // Generate jittered grid points
   const points: [number, number][] = [];
   for (let r = 0; r <= rows; r++) {
@@ -53,8 +46,8 @@ async function lowpoly(imageBytes: Uint8Array): Promise<string> {
       let px = c * cellW;
       let py = r * cellH;
       if (r > 0 && r < rows && c > 0 && c < cols) {
-        px += (rng() - 0.5) * cellW * 0.8;
-        py += (rng() - 0.5) * cellH * 0.8;
+        px += (Math.random() - 0.5) * cellW * 0.8;
+        py += (Math.random() - 0.5) * cellH * 0.8;
       }
       points.push([Math.max(0, Math.min(w, px)), Math.max(0, Math.min(h, py))]);
     }
@@ -71,7 +64,7 @@ async function lowpoly(imageBytes: Uint8Array): Promise<string> {
 
       for (const [i0, i1, i2] of [[tl, tr, bl], [tr, br, bl]] as const) {
         const p0 = points[i0], p1 = points[i1], p2 = points[i2];
-        const [cx, cy] = triangleCentroid(p0, p1, p2);
+        const cx = (p0[0] + p1[0] + p2[0]) / 3, cy = (p0[1] + p1[1] + p2[1]) / 3;
         const [cr, cg, cb] = sampleColor(pixels, w, h, channels, cx, cy, Math.min(cellW, cellH) * 0.3);
         polys.push(
           `<polygon points="${p0[0].toFixed(1)},${p0[1].toFixed(1)} ${p1[0].toFixed(1)},${p1[1].toFixed(1)} ${

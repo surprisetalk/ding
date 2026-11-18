@@ -295,8 +295,8 @@ http  ding.bar/key                           # download your custodial key (POST
   stays the default. PGlite has no LISTEN/NOTIFY, so only `matchesQ` has a unit test.
 - `POST /db` rate limit (`dbIngestRate`): per-IP request cap and per-pubkey accepted-row cap, in memory. `ingestMsg`
   takes a post-verify `gate(pubkey)` hook.
-- Prod migration: `migrate.sql` (idempotent additive delta), `migration.md` (runbook), and `backfill.ts`
-  (`deno task backfill`) signs legacy public posts (resumable; reactions and private posts excluded).
+- Prod migration: `migrate.sql` (idempotent additive delta) and `backfill.ts` (`deno task backfill`) signs legacy public
+  posts (resumable; reactions and private posts excluded).
 - DHT secrets live in `/var/lib/ding/env` on pc (`KEY_WRAP_SECRET`, `DING_ORG_PK`, `DING_ORG_SK`, `DING_DB`). Run
   `keygen.ts` to make them.
 - `DING_ORG_SK` is on the main server. Moving it to a separate cron project would stop a server breach from forging
@@ -416,5 +416,3 @@ deno test -A
 - Schema and seed run once at module load into a `snapshot` blob. Add fixtures to `setup`/`seedSql`.
 - PGlite has no `pgcrypto`. `setup` mocks `gen_salt`/`crypt` and strips `create extension pgcrypto`. Seeded passwords
   are `hashed:<password>`.
-- `pgtemp`'s client comes from `npm:postgres`. The server imports `deno.land/x/postgresjs`. One `as unknown as pg.Sql`
-  cast in `pgtest` bridges them.

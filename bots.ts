@@ -191,26 +191,13 @@ export const shuffle = <T>(arr: T[]): T[] => { // in-place Fisher-Yates; returns
   return arr;
 };
 
-export const stripUrlsMentions = (b: string) => b.replace(/https?:\/\/\S+/g, "").replace(/@\S+/g, "").trim();
-
 export const dayNumber = () => Math.floor(Date.now() / 86_400_000) - 20818; // daily-challenge day counter
 
-// null on timeout/network error, so feed sweeps can skip dead feeds.
-export const fetchTimeout = async (
-  url: string,
-  ms: number,
-  headers: Record<string, string>,
-): Promise<Response | null> => {
-  try {
-    return await fetch(url, { signal: AbortSignal.timeout(ms), headers, redirect: "follow" });
-  } catch {
-    return null;
-  }
-};
-
-// Fetch a syndication feed as text. A body that stalls mid-read skips this feed, not the sweep.
+// Fetch a syndication feed as text. null on timeout/network error, so feed sweeps can skip dead feeds.
+// A body that stalls mid-read skips this feed, not the sweep.
 export const fetchFeedText = async (url: string, ua: string, accept: string, timeoutMs: number) => {
-  const res = await fetchTimeout(url, timeoutMs, { "user-agent": ua, accept });
+  const res = await fetch(url, { signal: AbortSignal.timeout(timeoutMs), headers: { "user-agent": ua, accept } })
+    .catch(() => null);
   if (!res?.ok) return null;
   return await res.text().catch(() => null);
 };
@@ -313,7 +300,6 @@ export function glitchSvg(svg: string, rng: () => number, o: GlitchSvgOpts): str
   return i === -1 ? out : out.slice(0, i) + o.decorate(out, rng) + out.slice(i);
 }
 
-// Fetch a twemoji SVG, glitch it, upload to R2; returns the public URL + source link.
 // The two glitch bots decorate with the same two primitives: ghosted copies of the glyph
 // path, and random colour-noise rects.
 export const dupeLayers = (
@@ -350,6 +336,7 @@ export const noiseRects = (
   return extras;
 };
 
+// Fetch a twemoji SVG, glitch it, upload to R2; returns the public URL + source link.
 export async function glitchTwemojiToR2(cp: string, rng: () => number, prefix: string, o: GlitchSvgOpts) {
   const res = await fetch(`https://raw.githubusercontent.com/twitter/twemoji/master/assets/svg/${cp}.svg`, {
     signal: AbortSignal.timeout(15_000),
@@ -473,7 +460,7 @@ export async function rssBot(api: Api, opts: {
   parseItem: (xml: string) => FeedItem | null;
   max?: number;
 }) {
-  // Dedup spans full bot history (paginated). Feed-item 4h cutoff is the safety net
+  // Dedup spans the last 30 days (DEDUP_WINDOW_MS). Feed-item 4h cutoff is the safety net
   // against runaway re-posts, but a stale URL can still resurface with a fresh pubDate
   // (HN front-page churn, etc.) so dedup must be wider than the cutoff.
   const posted = await getPostedUrls(api);
@@ -500,9 +487,16 @@ export async function rssBot(api: Api, opts: {
   if (stale || undated) console.log(`Filtered ${stale} stale, ${undated} undated items`);
   const todo = items.filter((i) => !posted.has(i.link) && !(i.commentsUrl && posted.has(i.commentsUrl)));
   console.log(`Found ${todo.length} new items to post`);
+  let attempted = 0, landed = 0;
   for (const it of todo.slice(0, opts.max ?? 10)) {
     console.log(`Posting: ${it.body.slice(0, 60)}`);
-    await post(api, it.body, it.tags);
+    attempted++;
+    if (await post(api, it.body, it.tags)) landed++;
+  }
+  if (attempted && !landed) {
+    throw new Error(
+      `rssBot: expected at least 1 of ${attempted} POSTs to land for ${opts.feedUrl}, received 0 (source: post() returned false; likely fix: check rate limit and bot credentials)`,
+    );
   }
 }
 
@@ -835,7 +829,11 @@ export async function personaBot(api: Api, opts: { system: string }) {
   console.log(`Found ${candidates.length} candidates`);
   for (const p of candidates.slice(0, 1)) {
     const text = await claude(p.body, { system: opts.system, maxTokens: 50 });
-    await reply(api, p.cid, text);
+    if (!await reply(api, p.cid, text)) {
+      throw new Error(
+        `personaBot: expected reply to cid=${p.cid} to land, received a rejected POST (source: reply() returned false; likely fix: check rate limit, bot credentials, and that the parent still exists)`,
+      );
+    }
     console.log(`Replied to cid=${p.cid}: ${text.slice(0, 60)}...`);
   }
 }
@@ -1007,7 +1005,7 @@ export async function scanBot(
   for (const post of posts) {
     if (replies >= (opts.max ?? 3)) break;
     if (post.created_by.startsWith("bot_") || answered.has(post.cid) || !isFresh(post.created_at)) continue;
-    const body = opts.match(stripUrlsMentions(post.body), post);
+    const body = opts.match(post.body.replace(/https?:\/\/\S+/g, "").replace(/@\S+/g, "").trim(), post);
     if (!body) continue;
     console.log(`Replying to cid=${post.cid}`);
     if (await reply(api, post.cid, body)) replies++;

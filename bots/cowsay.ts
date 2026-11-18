@@ -81,10 +81,10 @@ function cowsay(text: string, animalKey: string): string {
     bubble = `${border}\n${mid.join("\n")}\n${bottom}`;
   }
 
-  return bubble + "\n" + (ANIMALS[animalKey] || ANIMALS.cow);
+  return bubble + "\n" + ANIMALS[animalKey];
 }
 
-const ANIMAL_KEYS = ["cow", "tux", "stegosaurus", "dragon"];
+const ANIMAL_KEYS = Object.keys(ANIMALS);
 
 export default (api: Api) =>
   mentionResponderBot(api, {

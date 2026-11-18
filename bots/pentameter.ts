@@ -85,6 +85,7 @@ function guessStress(text: string): ("0" | "1")[] {
   const pattern: ("0" | "1")[] = [];
   for (const w of words) {
     const s = countSyllables(w);
+    if (s === 0) continue;
     if (s === 1) pattern.push(UNSTRESSED.has(w) ? "0" : "1");
     else pattern.push(...wordStress(w, s));
   }

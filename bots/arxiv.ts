@@ -34,8 +34,8 @@ async function fetchArxivFeed(category: string): Promise<ArxivItem[]> {
       .trim();
     const link = itemXml.match(/<link>(.*?)<\/link>/)?.[1] || "";
     const cats = [
-      ...(itemXml.matchAll(/<category>([^<]+)<\/category>/g) || []),
-      ...(itemXml.matchAll(/<arxiv:primary_category[^>]*term="([^"]+)"/g) || []),
+      ...itemXml.matchAll(/<category>([^<]+)<\/category>/g),
+      ...itemXml.matchAll(/<arxiv:primary_category[^>]*term="([^"]+)"/g),
     ].map((m) => m[1].trim()).filter(Boolean);
     const categories = [...new Set(cats.length ? cats : [category])];
     if (title && link) items.push({ title, link, categories });
@@ -50,7 +50,7 @@ async function hasDigestForToday(api: Api, category: string): Promise<boolean> {
   const posts = await getJson<{ body: string; created_at: string }[]>(
     api,
     `/c?usr=${api.botUsername}&limit=10`,
-  ).catch(() => []);
+  );
   const today = new Date().toISOString().slice(0, 10);
   return posts.some((p) => p.body.startsWith(`arXiv ${category}`) && p.created_at?.slice(0, 10) === today);
 }
