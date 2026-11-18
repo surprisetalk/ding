@@ -134,7 +134,11 @@ export default async (api: Api) => {
     const dayNum = dayNumber();
     const body = `Estimation #${dayNum}\n\n${question.q}\n\nReply with your best guess (just a number)!`;
     console.log(`Posting: Estimation #${dayNum}`);
-    if (!await post(api, body, "#estimation #game #bot")) throw new Error("estimation: POST /c rejected the post");
+    if (!await post(api, body, "#estimation #game #bot")) {
+      throw new Error(
+        "estimation: expected POST /c to land, received a rejected post (source: post() returned false; likely fix: check rate limit and bot credentials)",
+      );
+    }
     console.log("Posted!");
   } else {
     console.log(`Last post was ${lastAgeHours.toFixed(1)}h ago, skipping new question`);

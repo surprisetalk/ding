@@ -727,10 +727,13 @@ const readPeerBody = async (res: Response, max: number, src: string) => {
   if (!whole) throw new Error(`${src}: expected a body under ${max} bytes, received more. fix: check the peer.`);
   return new TextDecoder().decode(bytes);
 };
+// The first 512 bytes of a peer's error body, for the message. An error page must not dodge the body cap either.
+const peerErrBody = async (res: Response) =>
+  res.body ? new TextDecoder().decode((await readCapped(res.body, 512)).bytes) : "";
 export const replicate = async (bootstrap: string, queries: string[], cursor: string): Promise<string> => {
   const qp = queries.map((q) => `q=${encodeURIComponent(q)}`).join("&");
   const res = await fetch(`${bootstrap}/?after=${cursor}&${qp}`, { signal: AbortSignal.timeout(30_000) });
-  if (!res.ok) throw new Error(`replicate: GET ${bootstrap} → ${res.status} ${await res.text()}`);
+  if (!res.ok) throw new Error(`replicate: GET ${bootstrap} → ${res.status} ${await peerErrBody(res)}`);
   const text = await readPeerBody(res, REPLICATE_MAX_BYTES, `replicate: GET ${bootstrap}`);
   for (const line of text.split("\n").map((l) => l.trim()).filter(Boolean)) {
     let row: Row;
@@ -755,7 +758,7 @@ export const discoverPeers = async (bootstrap: string): Promise<{ ips: string[];
   const res = await fetch(`${bootstrap}/?q=$peer`, { signal: AbortSignal.timeout(15_000) });
   if (!res.ok) {
     throw new Error(
-      `discoverPeers: GET ${bootstrap}/?q=$peer expected 200, received ${res.status} ${await res.text()}`,
+      `discoverPeers: GET ${bootstrap}/?q=$peer expected 200, received ${res.status} ${await peerErrBody(res)}`,
     );
   }
   const src = `discoverPeers: GET ${bootstrap}/?q=$peer`;
@@ -783,7 +786,7 @@ export const publishPeer = async (bootstrap: string, ips: string[], serves: stri
     signal: AbortSignal.timeout(15_000),
   });
   if (!res.ok)
-    throw new Error(`publishPeer: POST ${bootstrap} expected 2xx, received ${res.status} ${await res.text()}`);
+    throw new Error(`publishPeer: POST ${bootstrap} expected 2xx, received ${res.status} ${await peerErrBody(res)}`);
 };
 
 //// RESEND ///////////////////////////////////////////////////////////////////
@@ -1263,7 +1266,7 @@ const Meta = (
       {c.created_by
         ? <a href={`/u/${c.created_by}`}>@{c.created_by}</a>
         : <span class="author-foreign">@{((c as Com).author_id ?? "").slice(0, 8) || "anon"}</span>}
-      {c.body && user == c.created_by && <a href={`/c/${c.cid}/delete`}>delete</a>}
+      {c.body && user && user === c.created_by && <a href={`/c/${c.cid}/delete`}>delete</a>}
       {formatLabels(c).map((l) => (
         <a key={l} href={lh(l)}>
           {l[0] === "@" ? Check(l.slice(1)) : null}

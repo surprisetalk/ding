@@ -72,13 +72,13 @@ export const readCapped = async (body: ReadableStream<Uint8Array>, max: number) 
   return { bytes, whole };
 };
 
-// ---- Bot init ----
+// ---- Bot API seam ----
 
 export type Api = {
   // The bot's real `usr.name`, resolved from BOT_<N>_EMAIL against the database.
   botUsername: string;
   orgsR: string[];
-  // The seam. Both are injected: runBotFleet and botInit hand over implementations backed
+  // The seam. feed, users and post are injected: runBotFleet hands over implementations backed
   // by server.tsx's feedPosts/createPost, so a bot action is a database call rather than an
   // in-process HTTP request that re-runs routing, middleware and a bcrypt auth every time.
   // Typed as a structural contract so bots.ts never imports server.tsx (that would be a
@@ -703,17 +703,9 @@ export async function uploadToR2(
   return `${publicUrl}/${key}`;
 }
 
-async function hmacSha256(key: ArrayBuffer | Uint8Array, data: string | Uint8Array): Promise<ArrayBuffer> {
-  const rawKey = key instanceof Uint8Array ? key.buffer.slice(key.byteOffset, key.byteOffset + key.byteLength) : key;
-  const cryptoKey = await crypto.subtle.importKey(
-    "raw",
-    rawKey as ArrayBuffer,
-    { name: "HMAC", hash: "SHA-256" },
-    false,
-    ["sign"],
-  );
-  const encoded = typeof data === "string" ? new TextEncoder().encode(data) : data;
-  return crypto.subtle.sign("HMAC", cryptoKey, new Uint8Array(encoded) as unknown as BufferSource);
+async function hmacSha256(key: BufferSource, data: string): Promise<ArrayBuffer> {
+  const cryptoKey = await crypto.subtle.importKey("raw", key, { name: "HMAC", hash: "SHA-256" }, false, ["sign"]);
+  return crypto.subtle.sign("HMAC", cryptoKey, new TextEncoder().encode(data));
 }
 
 async function hmacHex(key: ArrayBuffer, data: string): Promise<string> {
@@ -1086,7 +1078,11 @@ export async function mentionResponderBot(api: Api, opts: {
   // Every reply bounced (rate limit, deleted parent, 5xx). `max` bounds successes, not work,
   // so staying quiet here would burn a full run's worth of respond() calls per tick and still
   // report a green run to the fleet.
-  if (attempts && !replies) throw new Error(`@${api.botUsername}: ${attempts} replies attempted, none landed`);
+  if (attempts && !replies) {
+    throw new Error(
+      `@${api.botUsername}: ${attempts} replies attempted, none landed; likely fix: check rate limit, bot credentials, and that the parent still exists`,
+    );
+  }
 }
 
 // Answers @mentions that carry (or reply to) an image: fetch the image bytes, run
@@ -1174,7 +1170,11 @@ export async function dailyPostBot(api: Api, opts: {
   const { body, tags } = typeof made === "string" ? { body: made, tags: opts.tags } : made;
   console.log(`Posting: ${body.split("\n")[0].slice(0, 80)}`);
   // Throw, never Deno.exit — under the in-server cron an exit would kill the whole isolate.
-  if (!(await post(api, body, tags))) throw new Error(`${api.botUsername}: POST /c rejected the post`);
+  if (!(await post(api, body, tags))) {
+    throw new Error(
+      `${api.botUsername}: expected POST /c to land, received a rejected post (source: post() returned false; likely fix: check rate limit and bot credentials)`,
+    );
+  }
   console.log("Posted!");
 }
 

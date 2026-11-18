@@ -3376,6 +3376,17 @@ Deno.test(
       assertEquals(items[0].author_id, ALICE.id);
     });
 
+    await t.step("an anonymous viewer sees no delete link on a post with no local author", async () => {
+      const { priv, pub } = await mkKey(); // no usr row, so the projected com row has created_by null
+      const row = await signRow("msg", nowSec(), buildMsg({ tags: ["nolocal"], body: "from afar" }), priv, pub);
+      assertEquals((await (await postDb([row])).json()).ok, 1);
+      const [{ cid, created_by }] = await sql`select cid, created_by from com where hash = ${row.k}`;
+      assertEquals(created_by, null);
+      const html = await (await app.request(`/c/${cid}`)).text();
+      assertStringIncludes(html, "from afar");
+      assertEquals(html.includes(`/c/${cid}/delete`), false);
+    });
+
     await t.step("GET /db refuses a malformed ?t= instead of draining everything", async () => {
       for (const t of ["2026-11-18", ""]) {
         const res = await app.request(`http://db.ding.bar/?q=$msg&t=${encodeURIComponent(t)}`);
