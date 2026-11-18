@@ -997,6 +997,12 @@ Deno.test(
       assertEquals(res.status, 200);
     });
 
+    await t.step("GET /c with an unknown sort marks hot as the current order, as the feed sorts", async () => {
+      const html = await (await app.request("/c?sort=HOT")).text();
+      assertEquals(html.includes(">hot</a>"), false);
+      assertStringIncludes(html, ">new</a>");
+    });
+
     await t.step("GET /c with tag filter", async () => {
       const res = await app.request("/c?tag=humor");
       assertEquals(res.status, 200);
@@ -3375,6 +3381,11 @@ Deno.test(
         const res = await app.request(`http://db.ding.bar/?q=$msg&t=${encodeURIComponent(t)}`);
         assertEquals([t, res.status], [t, 400]);
         assertStringIncludes(await res.text(), "YYYYMMDDhhmmss");
+      }
+      for (const after of ["abc", "-1", "99999999999999999999"]) {
+        const res = await app.request(`http://db.ding.bar/?q=$msg&after=${after}`);
+        assertEquals([after, res.status], [after, 400]);
+        assertStringIncludes(await res.text(), "seq cursor");
       }
     });
 

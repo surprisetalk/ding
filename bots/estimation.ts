@@ -80,7 +80,7 @@ type ThreadPost = { cid: number; created_at: string; child_comments?: ChildComme
 type ChildComment = { cid: number; body: string; created_by: string };
 
 export default async (api: Api) => {
-  const posts = await getJson<ThreadPost[]>(api, `/c?usr=${api.botUsername}&limit=5`);
+  const posts = await getJson<ThreadPost[]>(api, `/c?usr=${api.botUsername}&sort=new&limit=1`);
   const lastPost = posts[0];
   const lastAgeHours = lastPost ? (Date.now() - new Date(lastPost.created_at).getTime()) / 3_600_000 : Infinity;
 

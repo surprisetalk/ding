@@ -70,7 +70,7 @@ type Usr = {
   created_at: Date;
 };
 
-export type TagStat = { tag: string; posts: number; ups: number };
+type TagStat = { tag: string; posts: number; ups: number };
 
 // A profile's follow state. `vote` is the VIEWER's ▲/▼ on this profile (null = no vote,
 // and -1 only ever reaches the viewer's own render — a mute is private). `followers`
@@ -94,7 +94,7 @@ type ChildCom = {
   child_comments?: ChildCom[];
 };
 
-export type Com = {
+type Com = {
   cid: number;
   parent_cid: number | null;
   created_by: string;
@@ -150,8 +150,8 @@ export const extractImageUrl = (b: string) =>
 // `com.domains` holds bare lowercase hostnames with `www.` stripped, so every path that
 // compares against it — the ?www= filter, a ~domain pref — must speak the same form or it
 // silently matches nothing. normHost is that single definition; HOST_RE is what it accepts.
-export const normHost = (h: string) => h.trim().toLowerCase().replace(/^www\./, "");
-export const HOST_RE = /^[a-z0-9]([a-z0-9-]*[a-z0-9])?(\.[a-z0-9]([a-z0-9-]*[a-z0-9])?)+$/;
+const normHost = (h: string) => h.trim().toLowerCase().replace(/^www\./, "");
+const HOST_RE = /^[a-z0-9]([a-z0-9-]*[a-z0-9])?(\.[a-z0-9]([a-z0-9-]*[a-z0-9])?)+$/;
 
 export const extractDomains = (b: string): string[] => {
   const out = new Set<string>();
@@ -263,13 +263,15 @@ const resolveThumbnail = async (url: string): Promise<string | null> => {
 
 // Everything com derives from a body: mentions/links/domains, plus (root posts only)
 // a thumbnail — which may fetch the first URL, so call OUTSIDE any transaction.
-const deriveBody = async (body: string, isRoot: boolean) => ({
-  mentions: extractMentions(body),
-  links: extractLinks(body),
-  domains: extractDomains(body),
-  thumb: !isRoot ? null : extractImageUrl(body) ||
-    (extractFirstUrl(body) ? await resolveThumbnail(extractFirstUrl(body)!) : null),
-});
+const deriveBody = async (body: string, isRoot: boolean) => {
+  const first = extractFirstUrl(body);
+  return {
+    mentions: extractMentions(body),
+    links: extractLinks(body),
+    domains: extractDomains(body),
+    thumb: !isRoot ? null : extractImageUrl(body) || (first ? await resolveThumbnail(first) : null),
+  };
+};
 
 //// LABEL PARSING /////////////////////////////////////////////////////////////
 // parseLabels / Labels / PFX live in dht.ts (shared with the CLI); re-exported above.
@@ -556,6 +558,18 @@ const ingestMsg = async (
 // ?t=YYYYMMDDhhmmss is a coarse "since this UTC time" filter on seen_at (human/manual
 // drains). The precise, resumable replication cursor is ?after=<seq> (a strictly
 // increasing local arrival counter) — immune to clock skew and same-second collisions.
+// The drain cursor is a dht.seq (int8). A junk cursor must not replay the whole log as 0 would.
+const parseAfter = (a: string | null): bigint => {
+  if (a === null) return 0n;
+  if (!/^\d{1,19}$/.test(a) || BigInt(a) > 9223372036854775807n) {
+    throw new HTTPException(400, {
+      message:
+        `bad after "${a}": expected a seq cursor (digits, at most int8). fix: pass the x-ding-cursor value from the last drain, e.g. ?after=1234.`,
+    });
+  }
+  return BigInt(a);
+};
+
 const parseT = (t: string | null): string => {
   if (t === null) return "1970-01-01 00:00:00";
   if (!/^\d{14}$/.test(t)) {
@@ -1609,7 +1623,7 @@ app.use("*", async (c, next) => {
   if (c.req.method === "GET" && (c.req.header("upgrade") ?? "").toLowerCase() === "websocket") {
     const url = new URL(c.req.url);
     const qs = url.searchParams.getAll("q").map(parseQ);
-    let after = /^\d+$/.test(url.searchParams.get("after") ?? "") ? BigInt(url.searchParams.get("after")!) : 0n;
+    let after = parseAfter(url.searchParams.get("after"));
     let mySub: WsSub | undefined;
     let hb: ReturnType<typeof setInterval> | undefined;
     let closed = false;
@@ -1653,8 +1667,7 @@ app.use("*", async (c, next) => {
     const url = new URL(c.req.url);
     if (url.pathname === "/challenge") return c.json({ nonce: await nodeChallenge() });
     const qs = url.searchParams.getAll("q").map(parseQ);
-    const afterRaw = url.searchParams.get("after") ?? "0";
-    const after = /^\d+$/.test(afterRaw) ? BigInt(afterRaw) : 0n;
+    const after = parseAfter(url.searchParams.get("after"));
     // DEFAULT-DENY: serve only public rows, plus — for an authenticated identity — that
     // id's private DMs and the *org rows of orgs whose current register lists it as a member.
     const me = await drainAuthId(c);
@@ -3490,12 +3503,11 @@ const createPost = async (
       const [existing] =
         await sql`select cid from com where parent_cid = ${pid} and created_by = ${author} and body = ${body} and char_length(body) = 1 limit 1`;
       if (existing) {
-        await sql.begin((sql) =>
-          Promise.all([
-            sql`delete from com where cid = ${existing.cid}`,
-            sql`update com set c_reactions = c_reactions || hstore(${body}, greatest(coalesce((c_reactions->${body})::int,0)-1, 0)::text) where cid = ${pid}`,
-          ])
-        );
+        // One statement: the decrement runs only if this request deleted the reaction, so a double-click un-react
+        // cannot subtract twice.
+        await sql`with del as (delete from com where cid = ${existing.cid} returning 1)
+          update com set c_reactions = c_reactions || hstore(${body}, greatest(coalesce((c_reactions->${body})::int,0)-1, 0)::text)
+          where cid = ${pid} and exists (select 1 from del)`;
         await refreshScores(pid);
         return { kind: "unreacted", parentCid: +pid, grandparent: prm.prm_parent };
       }
@@ -3702,7 +3714,7 @@ app.get("/c/:cid?", async (c) => {
   const q = c.req.query(),
     cid = c.req.param("cid"),
     n = await viewer(c),
-    s = q.sort || "hot",
+    s = q.sort === "new" || q.sort === "top" ? q.sort : "hot",
     lim = Math.min(100, Math.max(1, Math.trunc(+(q.limit || 25)) || 25)),
     p = pageParam(q.p, lim);
   const [u] = n ? await sql`select orgs_r from usr where name = ${n}` : [{ orgs_r: [] }];

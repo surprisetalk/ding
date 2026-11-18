@@ -460,6 +460,18 @@ Deno.test("verdictBot: non-object element rejects with expected and received", a
   }
 });
 
+// The verdict string comes from the model, which post text can steer. "constructor" must not reach Object.prototype.
+// An inherited Object.constructor would "land" (it returns a truthy value) and hide the failed real action.
+Deno.test("verdictBot: an inherited property name is not a verdict", async () => {
+  const { api } = verdictApi({ fresh: [freshPost(1), freshPost(2)] });
+  await withClaude('[{"cid":1,"verdict":"up"},{"cid":2,"verdict":"constructor"}]', () =>
+    assertRejects(
+      () => verdictBot(api, { system: "judge", verdicts: { up: () => false } }),
+      Error,
+      "none landed",
+    ));
+});
+
 Deno.test("verdictBot: string cid is coerced", async () => {
   const { api, posts } = verdictApi({ fresh: [freshPost(7)] });
   await withClaude('[{"cid":"7","verdict":"up"}]', () =>

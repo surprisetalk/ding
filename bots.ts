@@ -692,7 +692,13 @@ export async function uploadToR2(
     await res.body?.cancel();
     throw new R2Conflict(`R2 key ${key} already exists — nothing was overwritten.`);
   }
-  if (!res.ok) throw new Error(`R2 upload failed: HTTP ${res.status} ${await res.text()}`);
+  if (!res.ok) {
+    throw new Error(
+      `uploadToR2: expected HTTP 2xx for PUT ${key} to ${endpoint}, received ${res.status} ${
+        (await res.text()).slice(0, 300)
+      }. fix: a 403 means R2_ACCESS_KEY_ID or R2_SECRET_ACCESS_KEY is wrong; a 404 means R2_BUCKET or R2_ENDPOINT is wrong.`,
+    );
+  }
 
   return `${publicUrl}/${key}`;
 }
@@ -893,7 +899,9 @@ export async function verdictBot(api: Api, opts: {
   const byCid = new Map(candidates.map((p) => [p.cid, p]));
   let acted = 0, attempted = 0, landed = 0, declined = 0, skipped = 0;
   for (const v of verdicts) {
-    const act = opts.verdicts[v.verdict], p = byCid.get(Number(v.cid));
+    // hasOwn: the model's verdict string must not resolve to an Object.prototype method such as "constructor".
+    const act = Object.hasOwn(opts.verdicts, v.verdict) ? opts.verdicts[v.verdict] : undefined,
+      p = byCid.get(Number(v.cid));
     if (!act || !p) {
       skipped++;
       continue;
@@ -1210,13 +1218,25 @@ export async function claude(
   } catch (e) {
     throw e instanceof DOMException && e.name === "TimeoutError" ? new Error(`Claude API: no answer in ${ms}ms`) : e;
   }
-  if (!res.ok) throw new Error(`Claude API ${res.status}: ${data}`);
+  if (!res.ok) {
+    throw new Error(
+      `Claude API ${res.status}: expected HTTP 200 from api.anthropic.com/v1/messages, received ${
+        data.slice(0, 300)
+      }. fix: check ANTHROPIC_API_KEY, CLAUDE_MODEL in bots.ts, and the account's spend limit.`,
+    );
+  }
   try {
     data = JSON.parse(data);
   } catch {
     throw new Error(`Claude API: expected JSON, received ${JSON.stringify(data.slice(0, 80))}`);
   }
   const text = data?.content?.[0]?.text;
-  if (!text) throw new Error(`Claude returned no text: ${JSON.stringify(data)}`);
+  if (!text) {
+    throw new Error(
+      `Claude API: expected content[0].text, received stop_reason=${data?.stop_reason}: ${
+        JSON.stringify(data).slice(0, 300)
+      }`,
+    );
+  }
   return text.trim();
 }
