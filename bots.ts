@@ -89,7 +89,7 @@ export type Api = {
 };
 
 // Mirrors server.tsx's FeedQuery for the subset bots use. Kept structural on purpose.
-export type BotFeedQuery = {
+type BotFeedQuery = {
   cid?: string | number | null;
   viewer?: string;
   orgsR?: string[];
@@ -106,7 +106,7 @@ export type BotFeedQuery = {
 // The paths bots build (`/c?usr=x&sort=new&limit=100&p=2`, `/c/123`) are the vocabulary every
 // bot already speaks, so they stay — this turns one into a query instead of an HTTP request.
 // Anything unrecognised throws rather than silently returning an empty feed.
-export const pathToQuery = (api: Api, path: string): BotFeedQuery => {
+const pathToQuery = (api: Api, path: string): BotFeedQuery => {
   const u = new URL(path, "http://x");
   const single = u.pathname.match(/^\/c\/(\d+)$/);
   if (!single && u.pathname !== "/c") throw new Error(`bot api: unsupported path ${path}`);
@@ -204,7 +204,7 @@ export const fetchFeedText = async (url: string, ua: string, accept: string, tim
 
 // One bad feed skips itself, never the sweep: these bots read dozens of uncurated public
 // feeds, and a single oversized body (parser RangeError) must not take the whole run with it.
-export const sweepOne = async <F, T>(f: F, fetchOne: (f: F) => Promise<T[]>): Promise<T[]> => {
+const sweepOne = async <F, T>(f: F, fetchOne: (f: F) => Promise<T[]>): Promise<T[]> => {
   try {
     return await fetchOne(f);
   } catch (err) {
@@ -280,7 +280,7 @@ type GlitchSvgOpts = {
 
 // Jitter path coordinates + scramble hex colors, then append the caller's decorations.
 // RNG call order is stable, so seeded (per-day deterministic) output stays reproducible.
-export function glitchSvg(svg: string, rng: () => number, o: GlitchSvgOpts): string {
+function glitchSvg(svg: string, rng: () => number, o: GlitchSvgOpts): string {
   let out = svg.replace(
     /\bd="([^"]+)"/g,
     (_m, d: string) =>
@@ -350,13 +350,13 @@ export async function glitchTwemojiToR2(cp: string, rng: () => number, prefix: s
 
 // ---- Reddit ----
 
-export const unescXml = (s: string) =>
+const unescXml = (s: string) =>
   s.replace(/&lt;/g, "<").replace(/&gt;/g, ">").replace(/&amp;/g, "&").replace(/&quot;/g, '"');
 
 const REDDIT_UA = "ding-bot/1.0 (+https://ding.bar; contact: taylor@ding.bar)";
 
 // Reddit throttles aggressively; descriptive UA + single retry on 429 is polite enough.
-export async function redditFetch(url: string): Promise<Response> {
+async function redditFetch(url: string): Promise<Response> {
   const get = () =>
     fetch(url, {
       signal: AbortSignal.timeout(15_000),
@@ -375,7 +375,7 @@ export async function redditFetch(url: string): Promise<Response> {
   return res;
 }
 
-export const extractRedditImage = (html: string): string | null => {
+const extractRedditImage = (html: string): string | null => {
   const u = unescXml(html);
   const raw = u.match(/https:\/\/i\.redd\.it\/[^\s"'<>]+/)?.[0] ??
     u.match(/https:\/\/i\.imgur\.com\/[^\s"'<>]+/)?.[0] ??
@@ -384,9 +384,9 @@ export const extractRedditImage = (html: string): string | null => {
   return raw ? unescXml(raw) : null;
 };
 
-export type RedditItem = { title: string; link: string; imageUrl: string | null; author: string; published: number };
+type RedditItem = { title: string; link: string; imageUrl: string | null; author: string; published: number };
 
-export const parseRedditEntries = (xml: string): RedditItem[] => {
+const parseRedditEntries = (xml: string): RedditItem[] => {
   const items: RedditItem[] = [];
   for (const entry of xml.match(/<entry>[\s\S]*?<\/entry>/g) || []) {
     const title = unescXml(entry.match(/<title>([\s\S]*?)<\/title>/)?.[1] ?? "").trim();
@@ -407,7 +407,7 @@ export const parseRedditEntries = (xml: string): RedditItem[] => {
 // straight past paginate's maxPages cap and throws, which silently killed bot_hn and
 // bot_smallweb for months. Every feed these bots read is a "recent items" feed and the item
 // freshness cutoff is 4–24h, so 30 days is a wide margin against a URL resurfacing.
-export const DEDUP_WINDOW_MS = 30 * 24 * 60 * 60 * 1000;
+const DEDUP_WINDOW_MS = 30 * 24 * 60 * 60 * 1000;
 
 // My own recent rows, newest-first, back to `since`. filter selects the kind:
 // "&comments=1" -> char_length(body) > 1, "&reactions=1" -> single-grapheme votes, "" -> all.
@@ -429,7 +429,7 @@ export const getAnsweredCids = (api: Api, opts: { since?: number } = {}) => cids
 // Dedup for voting bots. `comments=1` filters char_length(body) > 1, so single-grapheme
 // votes are invisible to getAnsweredCids — a voter that only checks it re-judges the same
 // posts every tick and toggles its own votes off (the bug that plagued bot_critic).
-export const getReactedCids = (api: Api, opts: { since?: number } = {}) => cidsOf(api, "&reactions=1", opts.since);
+const getReactedCids = (api: Api, opts: { since?: number } = {}) => cidsOf(api, "&reactions=1", opts.since);
 
 export async function getLastPostAge(api: Api, opts: { replies?: boolean } = {}): Promise<number> {
   const qs = opts.replies ? "&comments=1" : "";
@@ -447,7 +447,7 @@ export async function getPostedUrls(api: Api, opts: { since?: number } = {}): Pr
   return urls;
 }
 
-export type FeedItem = { link: string; commentsUrl?: string; body: string; tags: string };
+type FeedItem = { link: string; commentsUrl?: string; body: string; tags: string };
 
 const PUBDATE_RE = /<(?:pubDate|published|updated|dc:date)>([\s\S]*?)<\/(?:pubDate|published|updated|dc:date)>/i;
 
@@ -569,7 +569,7 @@ export function directImageUrl(url: string): string {
   return `${r2}/i/${url.slice(SELF_IMG_PREFIX.length)}`;
 }
 
-export async function resolveImageUrl(
+async function resolveImageUrl(
   api: Api,
   comment: { cid: number; parent_cid: number | null; body: string },
 ): Promise<string | null> {
@@ -641,8 +641,8 @@ export async function uploadToR2(
   const payloadHash = await sha256Hex(data);
 
   const headers: Record<string, string> = {
-    "Content-Type": contentType,
-    "Host": new URL(endpoint).host,
+    "content-type": contentType,
+    "host": new URL(endpoint).host,
     "x-amz-content-sha256": payloadHash,
     "x-amz-date": amzDate,
   };
@@ -650,17 +650,14 @@ export async function uploadToR2(
   // and atomic, so two uploads racing for the same key can't both win.
   if (noOverwrite) headers["if-none-match"] = "*";
 
-  const signedHeaderKeys = Object.keys(headers).sort().map((k) => k.toLowerCase());
+  const signedHeaderKeys = Object.keys(headers).sort();
   const signedHeaders = signedHeaderKeys.join(";");
 
   const canonicalRequest = [
     "PUT",
     `/${bucket}/${key}`,
     "",
-    ...signedHeaderKeys.map((k) => {
-      const val = k === "host" ? headers["Host"] : k === "content-type" ? headers["Content-Type"] : headers[k];
-      return `${k}:${val}`;
-    }),
+    ...signedHeaderKeys.map((k) => `${k}:${headers[k]}`),
     "",
     signedHeaders,
     payloadHash,
@@ -677,7 +674,7 @@ export async function uploadToR2(
   const signingKey = await getSignatureKey(secretKey, dateStamp, region, service);
   const signature = await hmacHex(signingKey, stringToSign);
 
-  headers["Authorization"] =
+  headers["authorization"] =
     `AWS4-HMAC-SHA256 Credential=${accessKey}/${credentialScope}, SignedHeaders=${signedHeaders}, Signature=${signature}`;
 
   const res = await fetch(url, {
@@ -885,7 +882,7 @@ export async function verdictBot(api: Api, opts: {
   } catch (e) {
     throw new Error(`verdictBot: unparseable verdicts (${e}): ${m[0].slice(0, 200)}`);
   }
-  if (verdicts.some((v) => v === null)) {
+  if (verdicts.some((v) => typeof v !== "object" || v === null || Array.isArray(v))) {
     throw new Error(
       `verdictBot: expected a JSON array of {cid,verdict,note} objects from claude reply, received ${
         m[0].slice(0, 200)

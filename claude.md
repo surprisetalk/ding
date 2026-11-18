@@ -38,7 +38,7 @@ git config core.hooksPath .githooks
 - `visibleTo` is the ACL. Apply it at every nesting level (children and grandchildren). Emit `orgs = '{}'`, not
   `orgs <@ '{}'`: gin cannot seek `<@`.
 - `GET /` and `GET /c` share `visibleTo`, `aggCols`/`aggPairs`, `orderBy`. `GET /` must not select `child_comments`.
-- `?sort=top` orders on the `c_reactions` hstore, not the `reaction_count` alias.
+- `?sort=top` orders on the `c_reactions` hstore, never on a per-row subquery.
 - `wireRow` is the single NDJSON wire format (WS and HTTP drain).
 - `notifWhere` is the single notification predicate (badge, `/n`, `/n/unread`).
 - `pageParam` is the single `?p=` parser. An offset past `paging.maxOffset` is a 400.

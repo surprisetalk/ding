@@ -38,15 +38,17 @@
      bottleneck in claude.md.
 
 - [ ] `blogs` finishes a run every hour. On pc its run fails with
-      `paginate: hit maxPages=50 for /c?usr=bot_blogs&sort=new&limit=100&p=0` (`journalctl -u ding`, 11-17): its dedupe
-      reads its whole post history, more than 5,000 rows.
-  1. Bound the dedupe read in bots/blogs.ts to the URLs it could repost (recent posts, or a lookup by URL), so it never
-     pages past 50.
+      `paginate: hit maxPages=50 for /c?usr=bot_blogs&sort=new&limit=100&p=0`: `getPostedUrls` already reads only the
+      30-day window, but bot_blogs posts more than 50 × 100 rows in 30 days
+      (`select count(*) from com where
+      created_by = 'bot_blogs' and created_at > now() - interval '30 days'`).
+  1. Replace the history read in bots/blogs.ts with a lookup of the candidate URLs only (one query over `com.links` for
+     this run's feed items), so the read no longer grows with post volume.
   2. Test in bots.test.ts: a bot with 6,000 prior posts finishes a run.
 
 - [ ] `reddit` posts every hour again. Since the move on 11-17, Reddit answers 429 to pc's IP for most subreddits.
-  1. Count a day of `journalctl -u ding | grep -c "Reddit 429"`. If it stays high, send a descriptive User-Agent first,
-     then try Reddit's app-only OAuth.
+  1. Count a day of `journalctl -u ding | grep -c "Reddit 429"`. If it stays high, try Reddit's app-only OAuth (the
+     descriptive User-Agent already ships).
 
 ## Blocked on you
 

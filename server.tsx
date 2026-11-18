@@ -116,7 +116,6 @@ export type Com = {
   domains: string[];
   score: string;
   comments?: number;
-  reaction_count?: number;
   reaction_counts?: Record<string, number>;
   user_reactions?: string[];
   child_comments?: ChildCom[];
@@ -1617,6 +1616,7 @@ app.use("*", async (c, next) => {
     return upgradeWebSocket(() => ({
       async onOpen(_e: Event, ws: { send: (s: string) => void }) {
         const push = (r: DhtFull) => {
+          if (closed) return; // a drain page can resolve after the client left
           ws.send(wireRow(r));
           after = BigInt(r.seq);
         };
@@ -1632,9 +1632,13 @@ app.use("*", async (c, next) => {
         mySub = { qs, onRow: push };
         wsSubs.add(mySub);
         await startDhtListener();
+        // A close during the await above already ran onClose, which may have stopped the listener before it started.
+        if (closed) return void await stopDhtListenerIfIdle();
         // catch-up: any rows ingested between the history drain and registration (client
         // dedups by k, so a row caught by both the sweep and the live listener is harmless).
         (await drainPage(after, qs)).forEach(push);
+        // onClose clears only an interval that already exists, so a close during the drain must not start one.
+        if (closed) return;
         hb = setInterval(() => ws.send(JSON.stringify({ hb: String(after) })), 60_000);
       },
       async onClose() {
@@ -1902,10 +1906,8 @@ const notifWhere = (me: string, orgs: Frag) =>
       and (${me}::text = any(usrs) or parent_cid in (select cid from com where created_by = ${me})
         or (mentions @> array[lower(${me}::text)] and usrs = '{}'))`;
 
-// "top" sorts on the denormalized c_reactions hstore, not the reaction_count alias. Both are
-// per-row subqueries, but an alias in ORDER BY is evaluated for every candidate row rather
-// than the 25 returned — and reaction_count's subquery hits `com` while this one only reads
-// an hstore already on the row. Same counter refresh_score ranks on.
+// "top" sorts on the denormalized c_reactions hstore, which is already on the row, so ORDER BY
+// never runs a subquery against `com` for each candidate. Same counter refresh_score ranks on.
 const orderBy = (s: string) =>
   s === "new"
     ? sql`created_at desc`
@@ -1925,7 +1927,6 @@ const aggUserReactions = (a: string, me: string) =>
   sql`array(select body from com where parent_cid = ${sql(a)}.cid and char_length(body) = 1 and created_by = ${me})`;
 const aggCols = (a: string, me: string) =>
   sql`${aggComments(a)} as comments,
-      (select count(*) from com x where x.parent_cid = ${sql(a)}.cid and char_length(x.body) = 1) as reaction_count,
       ${aggReactionCounts(a)} as reaction_counts,
       ${aggUserReactions(a, me)} as user_reactions`;
 const aggPairs = (a: string, me: string) =>
@@ -3489,13 +3490,12 @@ const createPost = async (
       const [existing] =
         await sql`select cid from com where parent_cid = ${pid} and created_by = ${author} and body = ${body} and char_length(body) = 1 limit 1`;
       if (existing) {
-        await sql.begin((tx) => {
-          const sql = tx;
-          return Promise.all([
+        await sql.begin((sql) =>
+          Promise.all([
             sql`delete from com where cid = ${existing.cid}`,
             sql`update com set c_reactions = c_reactions || hstore(${body}, greatest(coalesce((c_reactions->${body})::int,0)-1, 0)::text) where cid = ${pid}`,
-          ]);
-        });
+          ])
+        );
         await refreshScores(pid);
         return { kind: "unreacted", parentCid: +pid, grandparent: prm.prm_parent };
       }

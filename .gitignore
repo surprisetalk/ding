@@ -8,3 +8,5 @@ bots.env
 !.env.example
 .claude/cutover/
 nightly*.dump
+# atomic-write temp files from editors (e.g. bots.ts.tmp.2406044.5425688ca3b6)
+*.tmp.[0-9]*

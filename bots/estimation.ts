@@ -117,7 +117,11 @@ export default async (api: Api) => {
         if (guesses.length > 1) reveal += `\n\n${guesses.length} total guesses`;
 
         console.log(`Revealing answer for cid=${lastPost.cid}`);
-        await reply(api, lastPost.cid, reveal);
+        if (!await reply(api, lastPost.cid, reveal)) {
+          throw new Error(
+            `estimation: expected reply to cid=${lastPost.cid} to land, received rejection (source: POST /c/${lastPost.cid}); check rate limit and bot credentials`,
+          );
+        }
         revealed = true;
       }
     }

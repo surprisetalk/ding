@@ -331,15 +331,18 @@ const freshPost = (cid: number): Post => ({
 });
 
 // claude() reads globalThis.fetch and ANTHROPIC_API_KEY at call time — that's the seam.
-const withClaude = async (reply: string, f: () => Promise<unknown>) => {
+const withClaude = async (
+  reply: string,
+  f: () => Promise<unknown>,
+  onClaude: (init?: RequestInit) => Promise<Response> = () =>
+    Promise.resolve(new Response(JSON.stringify({ content: [{ text: reply }] }), { status: 200 })),
+) => {
   const origFetch = globalThis.fetch;
   const origKey = Deno.env.get("ANTHROPIC_API_KEY");
   Deno.env.set("ANTHROPIC_API_KEY", "test");
   globalThis.fetch =
     ((input: RequestInfo | URL, init?: RequestInit) =>
-      String(input).includes("api.anthropic.com")
-        ? Promise.resolve(new Response(JSON.stringify({ content: [{ text: reply }] }), { status: 200 }))
-        : origFetch(input, init)) as typeof fetch;
+      String(input).includes("api.anthropic.com") ? onClaude(init) : origFetch(input, init)) as typeof fetch;
   try {
     await f();
   } finally {
@@ -349,24 +352,13 @@ const withClaude = async (reply: string, f: () => Promise<unknown>) => {
   }
 };
 
-Deno.test("claude: a call past its timeout names the bound", async () => {
-  const origFetch = globalThis.fetch;
-  const origKey = Deno.env.get("ANTHROPIC_API_KEY");
-  Deno.env.set("ANTHROPIC_API_KEY", "test");
-  // Never answers: rejects only when the caller's signal fires, as a stalled API does.
-  globalThis.fetch =
-    ((_input: RequestInfo | URL, init?: RequestInit) =>
-      new Promise((_, reject) =>
-        init?.signal?.addEventListener("abort", () => reject(init.signal!.reason))
-      )) as typeof fetch;
-  try {
-    await assertRejects(() => claude("hi", { timeoutMs: 20 }), Error, "Claude API: no answer in 20ms");
-  } finally {
-    globalThis.fetch = origFetch;
-    if (origKey === undefined) Deno.env.delete("ANTHROPIC_API_KEY");
-    else Deno.env.set("ANTHROPIC_API_KEY", origKey);
-  }
-});
+Deno.test("claude: a call past its timeout names the bound", () =>
+  withClaude(
+    "",
+    () => assertRejects(() => claude("hi", { timeoutMs: 20 }), Error, "Claude API: no answer in 20ms"),
+    // Never answers: rejects only when the caller's signal fires, as a stalled API does.
+    (init) => new Promise((_, reject) => init?.signal?.addEventListener("abort", () => reject(init.signal!.reason))),
+  ));
 
 Deno.test("verdictBot: dispatches verdicts to actions", async () => {
   const { api, posts } = verdictApi({ fresh: [freshPost(1), freshPost(2)] });
@@ -391,23 +383,16 @@ Deno.test("verdictBot: reacted cids are excluded from candidates", async () => {
     reacted: [{ parent_cid: 1, created_at: new Date().toISOString() }],
   });
   let prompt = "";
-  await withClaude('[{"cid":1,"verdict":"up"},{"cid":2,"verdict":"up"}]', async () => {
-    const origFetch = globalThis.fetch;
-    globalThis.fetch = ((input: RequestInfo | URL, init?: RequestInit) => {
-      if (String(input).includes("api.anthropic.com"))
-        prompt = JSON.parse(String(init?.body)).messages[0].content;
-      return origFetch(input, init);
-    }) as typeof fetch;
-    try {
-      await verdictBot(api, {
-        system: "judge",
-        verdicts: {
-          up: (api2, p) => reply(api2, p.cid, "▲"),
-        },
-      });
-    } finally {
-      globalThis.fetch = origFetch;
-    }
+  const reply2 = '[{"cid":1,"verdict":"up"},{"cid":2,"verdict":"up"}]';
+  await withClaude(reply2, () =>
+    verdictBot(api, {
+      system: "judge",
+      verdicts: {
+        up: (api2, p) => reply(api2, p.cid, "▲"),
+      },
+    }), (init) => {
+    prompt = JSON.parse(String(init?.body)).messages[0].content;
+    return Promise.resolve(new Response(JSON.stringify({ content: [{ text: reply2 }] })));
   });
   assertEquals(prompt.includes("cid=1"), false, `reacted cid leaked into prompt: ${prompt}`);
   assertEquals(posts, [{ cid: 2, body: "▲" }]); // verdict for cid=1 exists but has no candidate
@@ -463,17 +448,18 @@ Deno.test("verdictBot: bracketed but invalid JSON rejects with the raw slice", a
     ));
 });
 
-Deno.test("verdictBot: null element rejects with expected and received", async () => {
+Deno.test("verdictBot: non-object element rejects with expected and received", async () => {
   const { api } = verdictApi({ fresh: [freshPost(1)] });
-  await withClaude("[null]", () =>
-    assertRejects(
-      () => verdictBot(api, { system: "judge", verdicts: {} }),
-      Error,
-      "expected a JSON array of {cid,verdict,note} objects",
-    ));
+  for (const raw of ["[null]", "[1]", '["up"]', "[[1]]"]) {
+    await withClaude(raw, () =>
+      assertRejects(
+        () => verdictBot(api, { system: "judge", verdicts: {} }),
+        Error,
+        "expected a JSON array of {cid,verdict,note} objects",
+      ));
+  }
 });
 
-// String-typed cids from the model must still resolve to their candidate.
 Deno.test("verdictBot: string cid is coerced", async () => {
   const { api, posts } = verdictApi({ fresh: [freshPost(7)] });
   await withClaude('[{"cid":"7","verdict":"up"}]', () =>
