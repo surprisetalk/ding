@@ -1008,7 +1008,7 @@ Deno.test(
     });
 
     await t.step("GET /c/:cid for private post (access denied - shows 404)", async () => {
-      // 355 is a secret post in db.sql. Unauthenticated access should return 404 for privacy.
+      // 355 is a secret post in seedSql. Unauthenticated access should return 404 for privacy.
       const res = await app.request("/c/355");
       assertEquals(res.status, 404);
     });
@@ -3362,6 +3362,14 @@ Deno.test(
       assertEquals(items[0].author_id, ALICE.id);
     });
 
+    await t.step("GET /db refuses a malformed ?t= instead of draining everything", async () => {
+      for (const t of ["2026-11-18", ""]) {
+        const res = await app.request(`http://db.ding.bar/?q=$msg&t=${encodeURIComponent(t)}`);
+        assertEquals([t, res.status], [t, 400]);
+        assertStringIncludes(await res.text(), "YYYYMMDDhhmmss");
+      }
+    });
+
     await t.step("GET /db drains the row verbatim as NDJSON", async () => {
       const res = await app.request("http://db.ding.bar/?q=" + encodeURIComponent("$msg #lol"));
       const lines = (await res.text()).trim().split("\n").filter(Boolean).map((l) => JSON.parse(l));
@@ -4948,7 +4956,6 @@ Deno.test(
         Deno.env.set("BOT_COWSAY_PASSWORD", "cowpw!");
         Deno.env.set("BOT_DICE_EMAIL", "bot-cowsay@ding.bar");
         Deno.env.set("BOT_DICE_PASSWORD", "wrong!");
-        Deno.env.delete("BOT_EIGHTBALL_EMAIL");
         try {
           await runBotFleet(["cowsay", "dice"]);
         } finally {

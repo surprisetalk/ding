@@ -40,7 +40,11 @@ export const backfill = async (
     let p = cache.get(name);
     if (p) return p;
     p = ensureCustodialKey(sql, name, KEY_WRAP_SECRET).then((key) => {
-      if (!key) throw new Error(`@${name} is self-custody — cannot sign their history with a custodial key.`);
+      if (!key) {
+        throw new Error(
+          `backfill: expected a custodial key for @${name}, received none (no usr row, or the user is self-custody: pubkey set, seckey_enc null). source: ensureCustodialKey in dht.ts. fix: give the user a custodial key or exclude this author in the select, then rerun.`,
+        );
+      }
       return key;
     });
     cache.set(name, p);
@@ -114,7 +118,7 @@ if (import.meta.main) {
   while (true) {
     if (pass >= MAX_PASSES) {
       throw new Error(
-        `backfill: expected no progress within ${MAX_PASSES} passes, received progress on every pass (${total} signed). fix: look for a reply cycle in com.parent_cid.`,
+        `backfill: expected a pass with 0 signed rows within ${MAX_PASSES} passes, received progress on every pass (${total} signed). fix: a reply chain deeper than ${MAX_PASSES}, or rows still arriving; raise MAX_PASSES or rerun (the run resumes).`,
       );
     }
     const { signed, skipped } = await backfill(sql, { limit });

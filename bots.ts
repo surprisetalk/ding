@@ -935,7 +935,6 @@ export const categoryRssBot = (
 export async function redditBot(api: Api, opts: {
   subs: string[];
   sample?: number;
-  concurrency?: number;
   maxPosts?: number;
   freshnessMs?: number;
   perFeed?: "newest" | "all";
@@ -959,7 +958,7 @@ export async function redditBot(api: Api, opts: {
   };
   const fresh = opts.perFeed === "all"
     ? (await Promise.all(sample.map((sub) => sweepOne(sub, fetchSub)))).flat().filter((i) => i.published > cutoff)
-    : await sweepFeeds(sample, opts.concurrency ?? 4, fetchSub, (i) => i.published, cutoff);
+    : await sweepFeeds(sample, 4, fetchSub, (i) => i.published, cutoff);
   console.log(`Fetched ${fresh.length} fresh entries`);
 
   const posted = await getPostedUrls(api);

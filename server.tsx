@@ -68,8 +68,6 @@ type Usr = {
   orgs_w: string[];
   last_seen_at: Date;
   created_at: Date;
-  ok?: boolean;
-  post_count?: number;
 };
 
 export type TagStat = { tag: string; posts: number; ups: number };
@@ -557,10 +555,16 @@ const ingestMsg = async (
 // ?t=YYYYMMDDhhmmss is a coarse "since this UTC time" filter on seen_at (human/manual
 // drains). The precise, resumable replication cursor is ?after=<seq> (a strictly
 // increasing local arrival counter) — immune to clock skew and same-second collisions.
-const parseT = (t: string | null): string =>
-  t && /^\d{14}$/.test(t)
-    ? `${t.slice(0, 4)}-${t.slice(4, 6)}-${t.slice(6, 8)} ${t.slice(8, 10)}:${t.slice(10, 12)}:${t.slice(12, 14)}`
-    : "1970-01-01 00:00:00";
+const parseT = (t: string | null): string => {
+  if (t === null) return "1970-01-01 00:00:00";
+  if (!/^\d{14}$/.test(t)) {
+    throw new HTTPException(400, {
+      message:
+        `bad t "${t}": expected YYYYMMDDhhmmss (14 digits), received ${t.length} chars. fix: e.g. ?t=20261118000000.`,
+    });
+  }
+  return `${t.slice(0, 4)}-${t.slice(4, 6)}-${t.slice(6, 8)} ${t.slice(8, 10)}:${t.slice(10, 12)}:${t.slice(12, 14)}`;
+};
 
 // q = "$msg #lol" | "mark @gwern" | "$peer" → { kind, tags, orgs, usrs }. Free text rejected.
 const parseQ = (q: string) => {
@@ -2942,8 +2946,12 @@ app.post("/u", authed, async (c) => {
   return c.redirect("/u");
 });
 
-const notifQuery = (name: string, orgs_r: string[]) =>
-  sql<Com[]>`
+app.get("/n", authed, async (c) => {
+  const name = c.get("name");
+  const [usr] = await sql`select orgs_r from usr where name = ${name}`;
+  // Sequential on purpose: this query reads last_seen_at to mark rows unread, so the
+  // "mark read" update must land after it.
+  const items = await sql<Com[]>`
   select c.*, (c.created_at > u.last_seen_at) as unread,
     -- A reply to my post is a reply even inside a DM, where usrs now names me too.
     case when c.parent_cid in (select cid from com where created_by = ${name}) then 'reply'
@@ -2951,17 +2959,10 @@ const notifQuery = (name: string, orgs_r: string[]) =>
       else 'reply' end as kind
   from com c
   cross join (select last_seen_at from usr where name = ${name}) u
-  where ${notifWhere(name, sql`${orgs_r}::text[]`)}
+  where ${notifWhere(name, sql`${usr?.orgs_r || []}::text[]`)}
   order by c.created_at desc
   limit 100
 `;
-
-app.get("/n", authed, async (c) => {
-  const name = c.get("name");
-  const [usr] = await sql`select orgs_r from usr where name = ${name}`;
-  // Sequential on purpose: notifQuery reads last_seen_at to mark rows unread, so the
-  // "mark read" update must land after it.
-  const items = await notifQuery(name, usr?.orgs_r || []);
   await sql`update usr set last_seen_at = now() where name = ${name}`;
   if (host(c) === "api") return c.json(items);
   return c.render(
@@ -3136,11 +3137,16 @@ app.post("/o/new", authed, async (c) => {
   return c.redirect(session.url!);
 });
 
-const createOrg = async (
-  orgName: string,
-  creatorName: string,
-  subId: string,
-) => {
+// Both checkout paths (the redirect and the webhook) land here, so the session check lives here once.
+const createOrg = async (session: Stripe.Checkout.Session, source: string) => {
+  const { orgName, creatorName } = session.metadata ?? {};
+  const subId = session.subscription;
+  if (!orgName || !creatorName || typeof subId !== "string") {
+    throw new HTTPException(400, {
+      message:
+        `${source}: expected a checkout session with orgName, creatorName and a subscription id, received one without (session ${session.id}). fix: start a new org from /o/new.`,
+    });
+  }
   const inserted = await sql`
     insert into org ${sql({ name: orgName, created_by: creatorName, stripe_sub_id: subId })}
     on conflict (name) do nothing
@@ -3148,7 +3154,7 @@ const createOrg = async (
   `;
   if (!inserted.length) {
     const [existing] = await sql`select created_by, stripe_sub_id from org where name = ${orgName}`;
-    if (existing?.stripe_sub_id === subId) return; // idempotent retry, already created
+    if (existing?.stripe_sub_id === subId) return orgName; // idempotent retry, already created
     console.error(
       `createOrg collision: wanted "${orgName}" for ${creatorName} (sub=${subId}) but exists for ${existing?.created_by} (sub=${existing?.stripe_sub_id}). Manual reconciliation required.`,
     );
@@ -3162,6 +3168,7 @@ const createOrg = async (
         orgs_w = array_append(orgs_w, ${orgName})
     where name = ${creatorName}
   `;
+  return orgName;
 };
 
 app.get("/o/success", authed, async (c) => {
@@ -3176,10 +3183,7 @@ app.get("/o/success", authed, async (c) => {
   if (session.status !== "complete")
     throw new HTTPException(400, { message: "Payment not complete" });
 
-  const { orgName, creatorName } = session.metadata!;
-  await createOrg(orgName, creatorName, session.subscription as string);
-
-  return c.redirect(`/o/${orgName}`);
+  return c.redirect(`/o/${await createOrg(session, "GET /o/success")}`);
 });
 
 app.get("/o/:name", async (c) => {
@@ -3335,13 +3339,7 @@ app.post("/api/stripe-webhook", async (c) => {
 
   if (event.type === "checkout.session.completed") {
     const session = event.data.object;
-    const { orgName, creatorName } = session.metadata ?? {};
-    if (!orgName || !creatorName || !session.subscription) {
-      throw new HTTPException(400, {
-        message: "checkout.session.completed missing orgName/creatorName/subscription",
-      });
-    }
-    await createOrg(orgName, creatorName, session.subscription as string);
+    await createOrg(session, "POST /api/stripe-webhook checkout.session.completed");
   } else if (event.type === "customer.subscription.deleted") {
     const sub = event.data.object;
     const [org] = await sql`select name from org where stripe_sub_id = ${sub.id}`;
