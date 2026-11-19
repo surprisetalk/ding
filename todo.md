@@ -37,7 +37,16 @@
   2. Cut the cost where it lives (PGlite boot, child-process boots, real timers), then record the floor and its
      bottleneck in claude.md.
 
-- [ ] `blogs` finishes a run every hour. On pc its run fails with
+- [ ] ding writes a journal line only for a failed request, so pc's journal holds weeks, not 2.4 days.
+  - Cause: `app.use(logger())` (`server.tsx:1477`) writes a `-->` and a `<--` line for each request: 1.4M lines a day,
+    30% of pc's journal. A check that reads the journal back past 2 days then fails, e.g. telecast's weekly seed.
+  1. Replace `app.use(logger())` with a middleware that writes one line for a response of status 500 or more: method,
+     path without the query, status, and milliseconds. Delete the `@hono/hono/logger` import.
+  2. REVIEW note at the middleware: Log only failures. Alternative: keep the access log with the query cut. It halves
+     the lines but still floods the journal.
+  3. After deploy, `journalctl -u ding --since "1 hour ago" | wc -l` prints under 1,000.
+- [ ] `blogs` finishes a run every hour, so "Every bot in bots/mod.ts finished a run in the past hour." scores 1.0 (the
+      other stale bot is `lectures`, under "Blocked on you"). On pc its run fails with
       `paginate: hit maxPages=50 for /c?usr=bot_blogs&sort=new&limit=100&p=0`: `getPostedUrls` already reads only the
       30-day window, but bot_blogs posts more than 50 × 100 rows in 30 days
       (`select count(*) from com where
