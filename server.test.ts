@@ -5420,6 +5420,9 @@ Deno.test(
         await sql`insert into com (created_by, body, tags, domains) values
           ('john_doe', ${`same host ${origin}/other`}, '{samehost}', '{127.0.0.1}'),
           ('jane_doe', 'mine', '{janeonly}', '{}')`;
+        // A tag on your private post must never reach the Haiku prompt or a public share.
+        await sql`insert into com (created_by, body, tags, orgs, usrs) values
+          ('jane_doe', 'dm', '{janesecret}', '{}', '{john_doe}')`;
         await refreshStats();
         tagger.reply = "samehost";
         const { html } = await share(`${origin}/page`);
@@ -5427,6 +5430,7 @@ Deno.test(
         assertEquals(line.split(" ").includes("botonly"), false, line);
         assertEquals(line.split(" ").includes("samehost"), true, line);
         assertEquals(line.split(" ").includes("janeonly"), true, line);
+        assertEquals(tagger.prompt.includes("janesecret"), false, line);
         assertEquals(labels(html), "#samehost");
       });
 
