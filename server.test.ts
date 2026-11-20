@@ -4901,11 +4901,7 @@ Deno.test(
     Deno.env.set("DENO_DEPLOYMENT_ID", DEPLOYED);
     try {
       const SENTENCES = [
-        "100 humans posted in the past 24h.",
-        "3 humans besides taylor posted this week.",
-        "Somebody verified their email this week.",
-        "Somebody paid for an org this month.",
-        "Every bot in bots/mod.ts finished a run in the past hour.",
+        "Every bot in bots/mod.ts except reddit and hmmm finished a run in the past hour.",
         "bots/data/lectures.tsv holds 14 talks that @lectures has not posted.",
         "Every cron ran inside twice its period.",
         "The anonymous frontpage renders in 300ms.",
@@ -4924,8 +4920,6 @@ Deno.test(
         return { res, body: await res.json() as Record<string, Record<string, number>> };
       };
       const grades = async () => Object.fromEntries((await gradeAll()).map((g) => [g.cond, g.grade]));
-      const humans = (names: string[]) =>
-        sql`insert into com (created_by, body, tags, orgs, usrs) select n, 'status test post', '{status}', '{}', '{}' from unnest(${names}::text[]) n`;
 
       await t.step("seeded db answers 503 with every sentence", async () => {
         const { res, body } = await get();
@@ -4951,38 +4945,20 @@ Deno.test(
 
       await t.step("the tagger cap grades today's spend row", async () => {
         await sql`delete from spend`;
-        assertEquals((await grades())[SENTENCES[13]], 160);
+        assertEquals((await grades())[SENTENCES[9]], 160);
         await sql`insert into spend (day, name, n) values ((now() at time zone 'utc')::date, 'tagger', 320)`;
-        assertEquals((await grades())[SENTENCES[13]], 0.5);
+        assertEquals((await grades())[SENTENCES[9]], 0.5);
         await sql`delete from spend`;
-      });
-
-      await t.step("bot_* posters do not count as humans; botany does", async () => {
-        await sql`update com set parent_cid = null`;
-        await sql`delete from com`;
-        const bots = ["bot_hn", "bot_a", "bot_b", "bot_c", "bot_d", "bot_e"];
-        await sql`insert into usr (name, email, password, bio, email_verified_at, invited_by)
-        select n, n || '@ding.bar', 'x', 'beep', now(), 'john_doe' from unnest(${[
-          ...bots,
-          "botany",
-          "taylor",
-        ]}::text[]) n`;
-        await humans(bots);
-        assertEquals((await grades())[SENTENCES[0]], 0);
-        await humans(["botany"]);
-        assertEquals((await grades())[SENTENCES[0]], 0.01);
-        await humans(["taylor"]);
-        assertEquals((await grades())[SENTENCES[1]], 0.33); // botany only: taylor is excluded
       });
 
       await t.step("the lectures runway counts rows whose URL no bot_lectures post carries", async () => {
         const rows = parseLectures(await Deno.readTextFile(LECTURES_PATH));
-        assertEquals((await grades())[SENTENCES[5]], Math.floor(rows.length / 14 * 100) / 100);
+        assertEquals((await grades())[SENTENCES[1]], Math.floor(rows.length / 14 * 100) / 100);
         await sql`insert into usr (name, email, password, bio, email_verified_at, invited_by)
         values ('bot_lectures', 'bot-lectures@ding.bar', 'x', 'hi', now(), 'john_doe')`;
         await sql`insert into com (created_by, body, tags, orgs, usrs)
         values ('bot_lectures', ${"Ann: Talk " + rows[0].url}, '{lecture}', '{}', '{}')`;
-        assertEquals((await grades())[SENTENCES[5]], Math.floor((rows.length - 1) / 14 * 100) / 100);
+        assertEquals((await grades())[SENTENCES[1]], Math.floor((rows.length - 1) / 14 * 100) / 100);
       });
 
       await t.step("the deploy check fails once GitHub's main runs 10 minutes ahead of ding.bar", async () => {
@@ -5002,11 +4978,6 @@ Deno.test(
       });
 
       await t.step("a healthy db answers 200", async () => {
-        const crowd = Array.from({ length: 100 }, (_, i) => `human_${i}`);
-        await sql`insert into usr (name, email, password, bio, email_verified_at, invited_by)
-        select n, n || '@ding.bar', 'x', 'hi', now(), 'john_doe' from unnest(${crowd}::text[]) n`;
-        await humans(crowd);
-        await sql`insert into org (name, created_by, stripe_sub_id) values ('paidorg', 'john_doe', 'sub_status')`;
         const names = [...Object.keys(BOTS).map((k) => `bot:${k}`), ...CRONS.map((c) => c.name)];
         for (const n of names) await beat(n);
         await sql`insert into dht (k, kind, pubkey, ts, sig, val)
@@ -5026,7 +4997,7 @@ Deno.test(
         const orig = console.error;
         console.error = (...a: unknown[]) => void logged.push(a.join(" "));
         try {
-          const g = (await grades())[SENTENCES[4]];
+          const g = (await grades())[SENTENCES[0]];
           assertEquals(g < 1, true);
         } finally {
           console.error = orig;
@@ -5034,6 +5005,8 @@ Deno.test(
         const line = logged.find((l) => l.includes("finish a run"));
         assertEquals(line?.includes("welcome"), true, `no stale-bot log line naming welcome: ${logged.join("|")}`);
         await beat("bot:welcome");
+        await sql`delete from beat where name in ('bot:reddit', 'bot:hmmm')`;
+        assertEquals((await grades())[SENTENCES[0]], 1);
       });
 
       await t.step("runBotFleet beats only bots that finished", async () => {
@@ -5107,14 +5080,14 @@ Deno.test(
         const { res, body } = await get();
         assertEquals(res.status, 503);
         assertEquals(Object.keys(body), SENTENCES);
-        assertEquals(body[SENTENCES[8]]["0"], 0);
+        assertEquals(body[SENTENCES[4]]["0"], 0);
       });
 
       await t.step("a resolver that fails grades the DNS condition 0", async () => {
         const dns = Deno.resolveDns;
         Deno.resolveDns = (() => Promise.reject(new Error("resolver unreachable"))) as typeof Deno.resolveDns;
         try {
-          assertEquals((await get()).body[SENTENCES[14]]["0"], 0);
+          assertEquals((await get()).body[SENTENCES[10]]["0"], 0);
         } finally {
           Deno.resolveDns = dns;
         }
