@@ -4906,6 +4906,20 @@ Deno.test(
         for (const v of Object.values(body)) assertEquals(Object.keys(v), ["0"]);
       });
 
+      await t.step("only a response of 500 or more writes a log line", async () => {
+        const logged: string[] = [];
+        const [log, error] = [console.log, console.error];
+        console.log = console.error = (...a: unknown[]) => void logged.push(a.join(" "));
+        try {
+          assertEquals((await app.request("/robots.txt")).status, 200);
+          assertEquals(logged, []);
+          assertEquals((await get()).res.status, 503);
+        } finally {
+          [console.log, console.error] = [log, error];
+        }
+        assertEquals(logged.filter((l) => /^GET \/status 503 \d+ms$/.test(l)).length, 1, logged.join("|"));
+      });
+
       await t.step("the tagger cap grades today's spend row", async () => {
         await sql`delete from spend`;
         assertEquals((await grades())[SENTENCES[13]], 160);

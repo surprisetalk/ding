@@ -5,7 +5,6 @@ import { Fragment } from "@hono/hono/jsx";
 import { HTTPException } from "@hono/hono/http-exception";
 import { some } from "@hono/hono/combine";
 import { createMiddleware } from "@hono/hono/factory";
-import { logger } from "@hono/hono/logger";
 import { basicAuth } from "@hono/hono/basic-auth";
 import { html, raw } from "@hono/hono/html";
 import { deleteCookie, getSignedCookie, setSignedCookie } from "@hono/hono/cookie";
@@ -1474,7 +1473,14 @@ const authed = some(
 );
 
 const app = new Hono<{ Variables: { name: string } }>();
-app.use(logger());
+// REVIEW: Log only failures: one line for each response of status 500 or more. Alternative: keep the access log with
+// the query cut. It halves the lines, but 1.4M a day still crowd pc's journal down to 2 days.
+app.use(async (c, next) => {
+  const t = performance.now();
+  await next();
+  if (c.res.status >= 500)
+    console.error(`${c.req.method} ${c.req.path} ${c.res.status} ${Math.round(performance.now() - t)}ms`);
+});
 app.notFound(notFound);
 
 const IMG_EXT_RE = /^([A-Za-z0-9]{8})\.(jpe?g|png|gif|webp|pdf|mp4|webm)$/;

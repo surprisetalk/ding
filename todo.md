@@ -22,8 +22,8 @@
 - [ ] You share a link with `?submit=` and the labels box holds the tags a human would pick for it, not the bot feeds'
       source tags. Today the 150 candidates are the top `stat_tag` rows by `posts_count`, and bots own almost every
       `com` row, so bot tags fill the list. Decision: fix the candidates before the prompt.
-  1. Measure on prod, read-only: the top 30 public root tags overall vs. the top 30 where `created_by !~ '^bot_'`. Write
-     both lists under this entry. If they match, delete steps 2–3 and look at the prompt instead.
+  1. Measured 11-20. Top 10 overall: bot, smallweb, blog, video, youtube, hn, reddit, hmmm, tildes, welcome. Top 10 by
+     humans: design, lol, art, architecture, wtf, web, furniture, humor, math, wood. They differ, so steps 2–4 stand.
   2. `stat_tag` gains `human_posts` (public roots by non-`bot_` authors). The tagger takes candidates with
      `human_posts >= 2`, ordered by `human_posts`. Run `migrate.sql` before the deploy, and terminate the pooled
      backends after: a matview rebuild changes the result type.
@@ -33,18 +33,11 @@
      same-domain post is present.
 
 - [ ] `deno test -A` finishes in under 10 s, so the pre-commit hook stays cheap.
-  1. Time each test with `deno test -A --reporter=junit` and list the five slowest here.
+  1. Measured 11-20: 34.8 s wall. Slowest: routes 2.7, status 2.5, share via ?submit= 2.3, server.tsx boot 2.2, tag
+     discovery 1.8. Needs `LD_LIBRARY_PATH` for sharp, as the hook sets.
   2. Cut the cost where it lives (PGlite boot, child-process boots, real timers), then record the floor and its
      bottleneck in claude.md.
 
-- [ ] ding writes a journal line only for a failed request, so pc's journal holds weeks, not 2.4 days.
-  - Cause: `app.use(logger())` (`server.tsx:1477`) writes a `-->` and a `<--` line for each request: 1.4M lines a day,
-    30% of pc's journal. A check that reads the journal back past 2 days then fails, e.g. telecast's weekly seed.
-  1. Replace `app.use(logger())` with a middleware that writes one line for a response of status 500 or more: method,
-     path without the query, status, and milliseconds. Delete the `@hono/hono/logger` import.
-  2. REVIEW note at the middleware: Log only failures. Alternative: keep the access log with the query cut. It halves
-     the lines but still floods the journal.
-  3. After deploy, `journalctl -u ding --since "1 hour ago" | wc -l` prints under 1,000.
 - [ ] `blogs` finishes a run every hour, so "Every bot in bots/mod.ts finished a run in the past hour." scores 1.0 (the
       other stale bot is `lectures`, under "Blocked on you"). On pc its run fails with
       `paginate: hit maxPages=50 for /c?usr=bot_blogs&sort=new&limit=100&p=0`: `getPostedUrls` already reads only the
@@ -55,11 +48,22 @@
      this run's feed items), so the read no longer grows with post volume.
   2. Test in bots.test.ts: a bot with 6,000 prior posts finishes a run.
 
-- [ ] `reddit` posts every hour again. Since the move on 11-17, Reddit answers 429 to pc's IP for most subreddits.
-  1. Count a day of `journalctl -u ding | grep -c "Reddit 429"`. If it stays high, try Reddit's app-only OAuth (the
-     descriptive User-Agent already ships).
+- [ ] `redditBot` throws when every subreddit fetch fails, so a blocked IP turns "Every bot finished a run" red, not
+      green. Today bot_reddit beats each hour but has posted nothing since 11-14: 3,457 "Reddit 429" lines on 11-20.
+  1. In `redditBot` (bots.ts), count failed `fetchSub` calls. When all fail, throw with the count and the last status.
+  2. Test in bots.test.ts: a stub that answers 429 for every sub makes the run throw.
+
+- [ ] "3 humans besides taylor posted this week." does not count Taylor's `taylor_town` account.
+  1. server.tsx excludes `created_by <> 'taylor'`. Change it to `not in ('taylor', 'taylor_town')`.
 
 ## Blocked on you
+
+- [ ] `reddit` posts every hour again. Reddit answers 429 to pc's IP for most subreddits since the move. Blocker: you
+      register a Reddit app for app-only OAuth (Reddit reviews new API apps) and put its id and secret in
+      `/var/lib/ding/env`.
+  1. Register the app at https://www.reddit.com/prefs/apps. Set `REDDIT_CLIENT_ID` and `REDDIT_CLIENT_SECRET`.
+  2. `redditFetch` gets a bearer token from `/api/v1/access_token` (`grant_type=client_credentials`), caches it until
+     expiry, and reads `https://oauth.reddit.com/r/<sub>/new.json`.
 
 - [ ] @lectures.bsky.social posts one talk a day from a catalog Taylor curates. Blocker: you set fave, create the
       account, and deploy.
@@ -151,8 +155,8 @@
   1. Free the GPU first: stop or shrink another llama server, or give ding a smaller model. Then measure tok/s with one
      `curl 127.0.0.1:8080/v1/chat/completions` call; it must reach 20.
   2. `claude()` in `bots.ts` → `127.0.0.1:8080/v1/chat/completions` with
-     `chat_template_kwargs: {enable_thinking:
-     false}`; drop `ANTHROPIC_API_KEY` from `/var/lib/ding/env` and the
+     `chat_template_kwargs:
+     {enable_thinking: false}`. Drop `ANTHROPIC_API_KEY` from `/var/lib/ding/env` and the
      startup warning. The tagger's daily cap stays: it bounds GPU time instead of spend.
   3. Tests stub `fetch` on `api.anthropic.com` (bots.test.ts, server.test.ts): point them at the new URL and shape.
 
@@ -165,16 +169,14 @@
 
 - [ ] Humans find ding and post each week. Serves "Somebody verified their email this week.", "3 humans besides taylor
       posted this week.", "100 humans posted in the past 24h.", and "Somebody paid for an org this month."
-  1. Fix the condition: server.tsx excludes `created_by <> 'taylor'`, but Taylor posts as `taylor_town`, which counts as
-     a human. Change it to `not in ('taylor', 'taylor_town')`.
-  2. Sign up with a fresh address on https://ding.bar/signup. Confirm that the verify email arrives. If it does not,
+  1. Sign up with a fresh address on https://ding.bar/signup. Confirm that the verify email arrives. If it does not,
      check `grep -c '^RESEND_API_KEY=' /var/lib/ding/env` and `journalctl -u ding` for 'Could not send verification
      email'.
-  3. Write the Slack migration guide as a post on ding, and send it to 3 people you know.
-  4. After the Slack import entry ships, post the guide to 20 target communities (r/True\* subreddits, small Discords,
+  2. Write the Slack migration guide as a post on ding, and send it to 3 people you know.
+  3. After the Slack import entry ships, post the guide to 20 target communities (r/True\* subreddits, small Discords,
      academic Zulip refugees). Keep the target list in `*ding`, not in this file.
-  5. Run `deno task status` after each signup. The first three conditions must rise above 0.
-  6. The 100-posters and paid-org goals wait on the Slack import entry. Do not build marketing code for them.
+  4. Run `deno task status` after each signup. The first three conditions must rise above 0.
+  5. The 100-posters and paid-org goals wait on the Slack import entry. Do not build marketing code for them.
 
 - [ ] You use ding from an iPhone app with real push notifications. Decision: native, not a PWA — push is the entire
       reason, and iOS web push needs the app installed anyway. Needs an Apple developer account, an APNs key, a device,
