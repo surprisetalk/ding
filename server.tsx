@@ -4240,12 +4240,13 @@ export const botApi = async (envPrefix: string): Promise<Api | null> => {
     botUsername: usr.name,
     orgsR: usr.orgs_r,
     users: async (limit) => JSON.parse(JSON.stringify(await verifiedUsers(limit))),
-    // Same URL pattern the bots used to scan bodies with: https?://[^\s]+, matched whole.
+    // JS /https?:\/\/[^\s]+/ spelled out: Postgres \S follows the database locale and keeps NBSP and U+FEFF inside a
+    // URL (and splits on U+0085), so a dedup by \S misses URLs the bots wrote.
     posted: async (urls, since) =>
       new Set(
         (await sql<{ url: string }[]>`
           select distinct m[1] as url
-          from com, regexp_matches(body, '(https?://\\S+)', 'g') m
+          from com, regexp_matches(body, ${"(https?://[^\t\n\v\f\r    -     　﻿]+)"}, 'g') m
           where created_by = ${usr.name} and created_at >= ${new Date(since)} and m[1] = any(${urls}::text[])`)
           .map((r) => r.url),
       ),

@@ -3862,6 +3862,21 @@ Deno.test(
       assertEquals([...got], ["https://example.com/xyz"]);
     });
 
+    await t.step("getPostedUrls() ends a URL where JS \\s does, whatever the database locale", async () => {
+      await sql`insert into com (created_by, body, tags) values
+        ('john_doe', ${"a https://ws.example/nbsp\u00a0b https://ws.example/feff\ufeffc https://ws.example/nel\u0085d"}, '{bot}')`;
+      const got = await getPostedUrls(api, [
+        "https://ws.example/nbsp",
+        "https://ws.example/feff",
+        "https://ws.example/nel\u0085d",
+      ]);
+      assertEquals([...got].sort(), [
+        "https://ws.example/feff",
+        "https://ws.example/nbsp",
+        "https://ws.example/nel\u0085d",
+      ]);
+    });
+
     await t.step("getPostedUrls() answers for a bot with 6,000 posts in the window", async () => {
       await sql`insert into com (created_by, body, tags)
         select 'john_doe', 'bulk https://bulk.example/' || g, '{bot}' from generate_series(1, 6000) g`;

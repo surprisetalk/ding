@@ -671,7 +671,15 @@ Deno.test("uploadToR2: 412 becomes R2Conflict, not a generic upload failure", as
 Deno.test("redditBot: every subreddit feed failing throws instead of finishing quietly", async () => {
   const realFetch = globalThis.fetch;
   const urls: string[] = [];
-  globalThis.fetch = (input) => (urls.push(String(input)), Promise.resolve(new Response("", { status: 403 })));
+  // r/a answers 403; r/b answers 200 with an HTML block page, which must count as a failure too.
+  globalThis.fetch = (input) => {
+    urls.push(String(input));
+    return Promise.resolve(
+      String(input).includes("/r/a/")
+        ? new Response("", { status: 403 })
+        : new Response("<html>blocked</html>", { status: 200 }),
+    );
+  };
   const api: Api = {
     botUsername: "bot_test",
     orgsR: [],
@@ -681,7 +689,11 @@ Deno.test("redditBot: every subreddit feed failing throws instead of finishing q
     post: () => Promise.resolve(true),
   };
   try {
-    await assertRejects(() => redditBot(api, { subs: ["a", "b"] }), Error, "expected at least 1 of 2 subreddit feeds");
+    await assertRejects(
+      () => redditBot(api, { subs: ["a", "b"] }),
+      Error,
+      "expected at least 1 of 2 subreddit feeds to load, received 0 (last: HTTP",
+    );
     assertEquals(urls.length, 2);
   } finally {
     globalThis.fetch = realFetch;

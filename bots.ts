@@ -951,8 +951,11 @@ export async function redditBot(api: Api, opts: {
   const fetchSub = async (sub: string) => {
     try {
       const res = await redditFetch(`https://www.reddit.com/r/${sub}/.rss`);
-      if (!res.ok) return console.warn(`r/${sub} fetch failed: ${res.status}`), failures.push(`HTTP ${res.status}`), [];
-      return parseRedditEntries(await res.text()).map((i) => ({ sub, ...i }));
+      if (!res.ok) throw new Error(`HTTP ${res.status}`);
+      const xml = await res.text();
+      // A block page can answer 200 with HTML. Only an Atom <feed> counts as a loaded feed.
+      if (!/<feed[\s>]/.test(xml)) throw new Error(`HTTP 200 without an Atom <feed>: ${xml.slice(0, 80)}`);
+      return parseRedditEntries(xml).map((i) => ({ sub, ...i }));
     } catch (err) {
       console.warn(`r/${sub} fetch error: ${(err as Error).message}`);
       failures.push((err as Error).message);
