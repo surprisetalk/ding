@@ -38,8 +38,7 @@
   2. Cut the cost where it lives (PGlite boot, child-process boots, real timers), then record the floor and its
      bottleneck in claude.md.
 
-- [ ] `blogs` finishes a run every hour, so "Every bot in bots/mod.ts finished a run in the past hour." scores 1.0 (the
-      other stale bot is `lectures`, under "Blocked on you"). On pc its run fails with
+- [ ] `blogs` finishes a run every hour. On pc its run fails with
       `paginate: hit maxPages=50 for /c?usr=bot_blogs&sort=new&limit=100&p=0`: `getPostedUrls` already reads only the
       30-day window, but bot_blogs posts more than 50 × 100 rows in 30 days
       (`select count(*) from com where
@@ -53,8 +52,26 @@
   1. In `redditBot` (bots.ts), count failed `fetchSub` calls. When all fail, throw with the count and the last status.
   2. Test in bots.test.ts: a stub that answers 429 for every sub makes the run throw.
 
-- [ ] "3 humans besides taylor posted this week." does not count Taylor's `taylor_town` account.
-  1. server.tsx excludes `created_by <> 'taylor'`. Change it to `not in ('taylor', 'taylor_town')`.
+- [ ] You drop a room link into a post and talk to whoever is in it, and busy rooms climb the feed. Decision: real
+      WebRTC, spartan — audio only, mesh, no SFU, no recording, no TURN. ~10% of peers behind symmetric NAT will fail to
+      connect; they see "couldn't connect", never a silent mute.
+  1. `800.ding.bar/<id>`: a new `host(c) === "800"` branch, same subdomain routing as `i`/`db`/`api`/`rss`. Page is join
+     / leave / mute and a participant list. No accounts — the id is the capability.
+  2. Signaling reuses the live-tail plumbing: `pg_notify` on a `room` channel with ONE shared per-isolate `sql.listen`,
+     fanned out in memory to that room's sockets. Cross-isolate is exactly why NOTIFY is there.
+  3. `create table room_peer (rid text, peer text, at timestamptz not null, primary key (rid, peer))`. Client heartbeats
+     every 15s; live = `at > now() - interval '45 seconds'`.
+  4. Bound the mesh at `ROOM_MAX = 8` — connections grow n². The 9th join gets a 409 that says the room is full and how
+     many are in it.
+  5. Compose: a `room` button beside draw/attach in `ComposeTools` mints an 8-char id and inserts the URL into the
+     textarea, exactly like the image upload flow. `formatBody` renders an 800.ding.bar URL as a room card with the live
+     count.
+  6. Ranking: `deriveBody` extracts room ids into a new `com.rooms text[]` (GIN indexed), and `refresh_score` gains
+     `+ interval '6 hours' * ln(live_peers + 1)` from a `room_agg` CTE joining `room_peer`. Boost by live participants,
+     not by pinning — an empty room must fall.
+  7. A `ding-rooms` cron every minute deletes stale `room_peer` rows and re-scores the posts that hold live rooms.
+     Without it an emptied room keeps its boost forever, which is the whole failure mode of this feature.
+  8. Add `800.ding.bar` to the cloudflared ingress in `/etc/nixos` on pc, next to `i`/`db`/`api`/`rss`.
 
 ## Blocked on you
 
@@ -64,6 +81,8 @@
   1. Register the app at https://www.reddit.com/prefs/apps. Set `REDDIT_CLIENT_ID` and `REDDIT_CLIENT_SECRET`.
   2. `redditFetch` gets a bearer token from `/api/v1/access_token` (`grant_type=client_credentials`), caches it until
      expiry, and reads `https://oauth.reddit.com/r/<sub>/new.json`.
+  3. Put `reddit` and `hmmm` back in the bot-run status condition.
+  4. Asked 2026-11-20.
 
 - [ ] @lectures.bsky.social posts one talk a day from a catalog Taylor curates. Blocker: you set fave, create the
       account, and deploy.
@@ -74,6 +93,7 @@
   3. Push to main (pc deploys within a minute), then run `deno task status`. "bots/data/lectures.tsv holds 14 talks" and
      "Every bot finished a run" must score at least 1.
   4. Do step 7 of the move-to-pc entry in ~/Developer/repasta/todo.md: repasta copies `bot_lectures` posts to @lectures.
+  5. Asked 2026-11-20.
 
 - [ ] You are a moderator with a Slack export and you move your community to ding in an afternoon. Blocker: you said to
       hold off. Decision: one-shot import only. A live two-way bridge means tokens, rate limits, and dedup loops
@@ -92,27 +112,6 @@
      none.
   6. Zip: `npm:fflate`. Test: a fixture export with one public channel, one private channel, and one thread imports
      twice into the same rows.
-
-- [ ] You drop a room link into a post and talk to whoever is in it, and busy rooms climb the feed. Blocker: after the
-      pc move, because the subdomain and the NOTIFY signaling change there. Decision: real WebRTC, spartan — audio only,
-      mesh, no SFU, no recording, no TURN. ~10% of peers behind symmetric NAT will fail to connect; they see "couldn't
-      connect", never a silent mute.
-  1. `800.ding.bar/<id>`: a new `host(c) === "800"` branch, same subdomain routing as `i`/`db`/`api`/`rss`. Page is join
-     / leave / mute and a participant list. No accounts — the id is the capability.
-  2. Signaling reuses the live-tail plumbing: `pg_notify` on a `room` channel with ONE shared per-isolate `sql.listen`,
-     fanned out in memory to that room's sockets. Cross-isolate is exactly why NOTIFY is there.
-  3. `create table room_peer (rid text, peer text, at timestamptz not null, primary key (rid, peer))`. Client heartbeats
-     every 15s; live = `at > now() - interval '45 seconds'`.
-  4. Bound the mesh at `ROOM_MAX = 8` — connections grow n². The 9th join gets a 409 that says the room is full and how
-     many are in it.
-  5. Compose: a `room` button beside draw/attach in `ComposeTools` mints an 8-char id and inserts the URL into the
-     textarea, exactly like the image upload flow. `formatBody` renders an 800.ding.bar URL as a room card with the live
-     count.
-  6. Ranking: `deriveBody` extracts room ids into a new `com.rooms text[]` (GIN indexed), and `refresh_score` gains
-     `+ interval '6 hours' * ln(live_peers + 1)` from a `room_agg` CTE joining `room_peer`. Boost by live participants,
-     not by pinning — an empty room must fall.
-  7. A `ding-rooms` cron every minute deletes stale `room_peer` rows and re-scores the posts that hold live rooms.
-     Without it an emptied room keeps its boost forever, which is the whole failure mode of this feature.
 
 - [ ] You hit `remix` on any image, audio, or video and reply with a mangled copy of it — dithered, pixelsorted,
       lowpoly, glitched, chipmunked, reversed, deepfried. The transforms already exist as bots; today they only fire
@@ -159,30 +158,24 @@
      {enable_thinking: false}`. Drop `ANTHROPIC_API_KEY` from `/var/lib/ding/env` and the
      startup warning. The tagger's daily cap stays: it bounds GPU time instead of spend.
   3. Tests stub `fetch` on `api.anthropic.com` (bots.test.ts, server.test.ts): point them at the new URL and shape.
+  4. Asked 2026-11-20. You chose to stay on Anthropic.
 
-- [ ] Deno Deploy and Neon hold no ding data or code, so nothing double-posts and no stale copy can answer. Due 11-24.
-  1. Delete the Deno Deploy app `ding` (it serves the 503 stub and has no `DATABASE_URL`). Deploy shuts down in April
-     2027 anyway.
-  2. Delete the Neon project, including the `ding_owner` role, whose password reached a session transcript on 11-17.
-  3. Remove `DATABASE_URL` and the Neon lines from `.env`, and delete `.claude/cutover/` (stub, bearer, env copies,
-     final dump).
-
-- [ ] Humans find ding and post each week. Serves "Somebody verified their email this week.", "3 humans besides taylor
-      posted this week.", "100 humans posted in the past 24h.", and "Somebody paid for an org this month."
+- [ ] Humans find ding and post each week. You dropped its status conditions on 11-20.
   1. Sign up with a fresh address on https://ding.bar/signup. Confirm that the verify email arrives. If it does not,
      check `grep -c '^RESEND_API_KEY=' /var/lib/ding/env` and `journalctl -u ding` for 'Could not send verification
      email'.
   2. Write the Slack migration guide as a post on ding, and send it to 3 people you know.
   3. After the Slack import entry ships, post the guide to 20 target communities (r/True\* subreddits, small Discords,
      academic Zulip refugees). Keep the target list in `*ding`, not in this file.
-  4. Run `deno task status` after each signup. The first three conditions must rise above 0.
-  5. The 100-posters and paid-org goals wait on the Slack import entry. Do not build marketing code for them.
+  4. The 100-posters and paid-org goals wait on the Slack import entry. Do not build marketing code for them.
+  5. Asked 2026-11-20.
 
 - [ ] You use ding from an iPhone app with real push notifications. Decision: native, not a PWA — push is the entire
       reason, and iOS web push needs the app installed anyway. Needs an Apple developer account, an APNs key, a device,
       and App Store review on every release.
   1. Backend push: `usr.apns_token`, and the notification insert path sends to APNs.
   2. `ding-ios` (new repo), SwiftUI, four screens: feed, thread, compose, notifications. Nothing else.
+  3. Asked 2026-11-20.
 
 - [ ] When the Haiku tagger fails or hits its cap, `?submit=` falls back to a SQL guess instead of an empty labels box.
       Blocker: build only after the empty box shows up as a real complaint.
