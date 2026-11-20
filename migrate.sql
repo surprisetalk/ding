@@ -203,14 +203,23 @@ begin
   if exists (select 1 from pg_class where relname = 'stat_tag' and relkind = 'v') then
     drop view stat_tag;
   end if;
+  -- A stat_tag without human_posts predates the tagger fix. The rebuild changes the result type, so after it
+  -- terminate ding's pooled backends (claude.md, postgres.js).
+  if exists (select 1 from pg_class where relname = 'stat_tag' and relkind = 'm')
+     and not exists (select 1 from pg_attribute where attrelid = 'stat_tag'::regclass and attname = 'human_posts') then
+    drop materialized view stat_tag;
+  end if;
 end $$;
 
 create materialized view if not exists stat_tag as
 select t.tag,
   count(distinct t.cid)::int as posts_count,
+  -- The ?submit= tagger's candidates. Bots write almost every row, so posts_count ranks their feed tags first.
+  -- A null author is a foreign signed post, which a human wrote.
+  count(distinct t.cid) filter (where t.created_by is null or t.created_by !~ '^bot_')::int as human_posts,
   count(*) filter (where r.body = '▲')::int as ups_received,
   count(*) filter (where r.body = '▼')::int as downs_received
-from (select unnest(tags) tag, cid from com
+from (select unnest(tags) tag, cid, created_by from com
        where tags <> '{}' and parent_cid is null and orgs = '{}' and usrs = '{}') t
 left join com r on r.parent_cid = t.cid and char_length(r.body) = 1
 group by t.tag;

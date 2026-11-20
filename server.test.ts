@@ -5411,6 +5411,25 @@ Deno.test(
         assertEquals(/^tags: .*\bcoding\b/m.test(tagger.prompt), false);
       });
 
+      await t.step("tagger candidates: human tags, your own tags, same-domain tags, never bot-only tags", async () => {
+        await sql`insert into usr (name, email, password, bio, email_verified_at, invited_by)
+          values ('bot_feed', 'bot-feed@ding.bar', 'x', 'beep', now(), 'john_doe')`;
+        await sql`insert into com (created_by, body, tags) select 'bot_feed', 'feed item ' || g, '{botonly}'
+          from generate_series(1, 5) g`;
+        // One human post each, so neither tag clears the human_posts >= 2 bar: only its own source can add it.
+        await sql`insert into com (created_by, body, tags, domains) values
+          ('john_doe', ${`same host ${origin}/other`}, '{samehost}', '{127.0.0.1}'),
+          ('jane_doe', 'mine', '{janeonly}', '{}')`;
+        await refreshStats();
+        tagger.reply = "samehost";
+        const { html } = await share(`${origin}/page`);
+        const line = tagger.prompt.split("\n").find((l) => l.startsWith("tags: ")) ?? "";
+        assertEquals(line.split(" ").includes("botonly"), false, line);
+        assertEquals(line.split(" ").includes("samehost"), true, line);
+        assertEquals(line.split(" ").includes("janeonly"), true, line);
+        assertEquals(labels(html), "#samehost");
+      });
+
       await t.step("a tagger failure still fills the share and leaves the labels to the viewer", async () => {
         tagger.status = 529;
         let html = "";

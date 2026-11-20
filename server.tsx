@@ -2145,14 +2145,20 @@ const home = async (c: Context<{ Variables: { name: string } }>, draft?: { body:
     } catch (e) {
       console.error(`share ${url}: article not read: ${why(e)}`);
     }
-    // Haiku picks up to 3 tags, but only from the candidates: public tags in real use plus the viewer's ▲'d ones,
-    // minus the ▼'d ones. A guess never picks a *org or an @user, because those change who can read the post.
+    // Haiku picks up to 3 tags, but only from the candidates: public tags humans use, the viewer's own recent tags,
+    // the tags humans put on public posts from the same ~domain, and the viewer's ▲'d tags, minus the ▼'d ones. A guess never picks a *org or an @user, because those change who can read the post.
     // Prompt injection in the page can at worst pick a wrong candidate, and the viewer sees it before publishing.
     let tags: string[] = [];
     try {
       const known = new Set(
         (await sql<{ tag: string }[]>`
-          (select tag from stat_tag where posts_count >= 3 order by posts_count desc limit 150)
+          (select tag from stat_tag where human_posts >= 2 order by human_posts desc limit 150)
+          union (select tg from com, unnest(tags) tg where created_by = ${name} and parent_cid is null
+                 group by tg order by max(created_at) desc limit 50)
+          union (select tg from com, unnest(tags) tg
+                 where domains @> ${[normHost(new URL(url).hostname)]}::text[] and parent_cid is null
+                   and orgs = '{}' and usrs = '{}' and (created_by is null or created_by !~ '^bot_')
+                 group by tg order by count(*) desc limit 30)
           union select val::text from pref where uid = ${name} and kind = 'tag' and vote = 1
           except select val::text from pref where uid = ${name} and kind = 'tag' and vote = -1
         `).map((r) => r.tag),

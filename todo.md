@@ -19,19 +19,6 @@
      it in one place.
   5. Test: a root post whose link has no og:image and no readable article still renders a card (favicon + no excerpt) —
      a column must never collapse.
-- [ ] You share a link with `?submit=` and the labels box holds the tags a human would pick for it, not the bot feeds'
-      source tags. Today the 150 candidates are the top `stat_tag` rows by `posts_count`, and bots own almost every
-      `com` row, so bot tags fill the list. Decision: fix the candidates before the prompt.
-  1. Measured 11-20. Top 10 overall: bot, smallweb, blog, video, youtube, hn, reddit, hmmm, tildes, welcome. Top 10 by
-     humans: design, lol, art, architecture, wtf, web, furniture, humor, math, wood. They differ, so steps 2–4 stand.
-  2. `stat_tag` gains `human_posts` (public roots by non-`bot_` authors). The tagger takes candidates with
-     `human_posts >= 2`, ordered by `human_posts`. Run `migrate.sql` before the deploy, and terminate the pooled
-     backends after: a matview rebuild changes the result type.
-  3. Add two candidate sources: the viewer's own posted tags (the `own` CTE of the presets query) and the tags humans
-     put on public roots with the same `~domain` as the link. Keep the ▼ exclusion last.
-  4. Test, in "share via ?submit=": a tag only `bot_` posts use is absent from `tagger.prompt`; a tag a human put on a
-     same-domain post is present.
-
 - [ ] A bot with more than 5,000 replies or votes in 30 days still finishes its run. `getAnsweredCids` and
       `getReactedCids` (bots.ts) walk every recent row through `paginate` and throw at `maxPages=50`, as `getPostedUrls`
       did for bot_blogs.

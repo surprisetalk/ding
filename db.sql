@@ -172,9 +172,12 @@ left join rx r on r.uid = u.name;
 create materialized view stat_tag as
 select t.tag,
   count(distinct t.cid)::int as posts_count,
+  -- The ?submit= tagger's candidates. Bots write almost every row, so posts_count ranks their feed tags first.
+  -- A null author is a foreign signed post, which a human wrote.
+  count(distinct t.cid) filter (where t.created_by is null or t.created_by !~ '^bot_')::int as human_posts,
   count(*) filter (where r.body = '▲')::int as ups_received,
   count(*) filter (where r.body = '▼')::int as downs_received
-from (select unnest(tags) tag, cid from com
+from (select unnest(tags) tag, cid, created_by from com
        where tags <> '{}' and parent_cid is null and orgs = '{}' and usrs = '{}') t
 left join com r on r.parent_cid = t.cid and char_length(r.body) = 1
 group by t.tag;
