@@ -32,12 +32,6 @@
   4. Test, in "share via ?submit=": a tag only `bot_` posts use is absent from `tagger.prompt`; a tag a human put on a
      same-domain post is present.
 
-- [ ] `deno test -A` finishes in under 10 s, so the pre-commit hook stays cheap.
-  1. Measured 11-20: 34.8 s wall. Slowest: routes 2.7, status 2.5, share via ?submit= 2.3, server.tsx boot 2.2, tag
-     discovery 1.8. Needs `LD_LIBRARY_PATH` for sharp, as the hook sets.
-  2. Cut the cost where it lives (PGlite boot, child-process boots, real timers), then record the floor and its
-     bottleneck in claude.md.
-
 - [ ] A bot with more than 5,000 replies or votes in 30 days still finishes its run. `getAnsweredCids` and
       `getReactedCids` (bots.ts) walk every recent row through `paginate` and throw at `maxPages=50`, as `getPostedUrls`
       did for bot_blogs.

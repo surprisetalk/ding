@@ -88,3 +88,6 @@ jj push                            # move main to @- and push; a push to main de
 - Schema and seed run once into a snapshot. Add fixtures to `setup`/`seedSql`.
 - PGlite has no `pgcrypto`. `setup` mocks `gen_salt`/`crypt`. Seeded passwords are `hashed:<password>`.
 - Tests serve fixtures on 127.0.0.1 and add it to `fetchGuard.allow`.
+- Suite floor: about 19 s wall on pc (`deno test -A`). Bottleneck: each top-level `pgtest` restores its own PGlite
+  snapshot (about 0.25 s), and the test work runs single-threaded in wasm. `--parallel` helps only across files, and two
+  concurrent halves of `server.test.ts` each took 9 s, so a split buys about 40%. Do not chase it further.
