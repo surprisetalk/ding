@@ -58,13 +58,21 @@ Deno.test("pickLecture: unposted fave first, else first unposted, else throw", (
   assertEquals(unpostedCount(rows, new Set(["https://b.example/2"])), 1);
 });
 
-// Serves the two reads the bot makes: the last-post probe (limit 1) and the full-history walk.
+// Serves the two reads the bot makes: the last-post probe (limit 1) and the posted-URL lookup.
 const botApi = (history: { body: string; created_at: string }[]) => {
   const posts: { body: string; labels?: string }[] = [];
   const api: Api = {
     botUsername: "bot_lectures",
     orgsR: [],
     users: () => Promise.resolve([]),
+    posted: (urls, since) =>
+      Promise.resolve(
+        new Set(
+          history.filter((h) => +new Date(h.created_at) >= since)
+            .flatMap((h) => h.body.match(/https?:\/\/\S+/g) ?? [])
+            .filter((u) => urls.includes(u)),
+        ),
+      ),
     feed: (q) => Promise.resolve(history.slice(q.offset ?? 0, (q.offset ?? 0) + (q.limit ?? 25))),
     post: (body, o) => {
       posts.push({ body, labels: o.labels });

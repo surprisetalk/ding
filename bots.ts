@@ -86,6 +86,8 @@ export type Api = {
   feed: (q: BotFeedQuery) => Promise<unknown[]>;
   users: (limit: number) => Promise<{ name: string; created_at: string }[]>;
   post: (body: string, opts: { parentCid?: number | null; labels?: string }) => Promise<boolean>;
+  // The subset of `urls` that appear in this bot's own posts since `since` (epoch ms).
+  posted: (urls: string[], since: number) => Promise<Set<string>>;
 };
 
 // Mirrors server.tsx's FeedQuery for the subset bots use. Kept structural on purpose.
@@ -390,9 +392,7 @@ const parseRedditEntries = (xml: string): RedditItem[] => {
 
 // ---- API helpers ----
 
-// How far back dedup looks. Unbounded history does not scale: a bot with >5000 posts walks
-// straight past paginate's maxPages cap and throws, which silently killed bot_hn and
-// bot_smallweb for months. Every feed these bots read is a "recent items" feed and the item
+// How far back dedup looks. Every feed these bots read is a "recent items" feed and the item
 // freshness cutoff is 4–24h, so 30 days is a wide margin against a URL resurfacing.
 const DEDUP_WINDOW_MS = 30 * 24 * 60 * 60 * 1000;
 
@@ -427,12 +427,10 @@ export async function getLastPostAge(api: Api, opts: { replies?: boolean } = {})
   return Date.now() - new Date(posts[0].created_at).getTime();
 }
 
-export async function getPostedUrls(api: Api, opts: { since?: number } = {}): Promise<Set<string>> {
-  const posts = await myRecent<{ body: string }>(api, "", opts.since ?? Date.now() - DEDUP_WINDOW_MS);
-  const urls = new Set<string>();
-  for (const p of posts) for (const u of p.body.match(/https?:\/\/[^\s]+/g) || []) urls.add(u);
-  return urls;
-}
+// Looks up only the candidates, so the cost does not grow with the bot's history: a walk of every
+// recent post hit paginate's maxPages once bot_blogs passed 5,000 posts in 30 days.
+export const getPostedUrls = (api: Api, urls: string[], opts: { since?: number } = {}) =>
+  api.posted(urls, opts.since ?? Date.now() - DEDUP_WINDOW_MS);
 
 type FeedItem = { link: string; commentsUrl?: string; body: string; tags: string };
 
@@ -452,8 +450,6 @@ export async function rssBot(api: Api, opts: {
   // Dedup spans the last 30 days (DEDUP_WINDOW_MS). Feed-item 4h cutoff is the safety net
   // against runaway re-posts, but a stale URL can still resurface with a fresh pubDate
   // (HN front-page churn, etc.) so dedup must be wider than the cutoff.
-  const posted = await getPostedUrls(api);
-  console.log(`Found ${posted.size} previously posted URLs`);
   const res = await fetch(opts.feedUrl, { signal: AbortSignal.timeout(15_000) });
   if (!res.ok) throw new Error(`rssBot: expected HTTP 200 from ${opts.feedUrl}, received ${res.status}`);
   const xml = await res.text();
@@ -474,6 +470,7 @@ export async function rssBot(api: Api, opts: {
     if (parsed) items.push(parsed);
   }
   if (stale || undated) console.log(`Filtered ${stale} stale, ${undated} undated items`);
+  const posted = await getPostedUrls(api, items.flatMap((i) => i.commentsUrl ? [i.link, i.commentsUrl] : [i.link]));
   const todo = items.filter((i) => !posted.has(i.link) && !(i.commentsUrl && posted.has(i.commentsUrl)));
   console.log(`Found ${todo.length} new items to post`);
   let attempted = 0, landed = 0;
@@ -948,13 +945,17 @@ export async function redditBot(api: Api, opts: {
   console.log(`Sampling ${sample.length} of ${opts.subs.length} subreddits: ${sample.join(", ")}`);
 
   const cutoff = Date.now() - (opts.freshnessMs ?? 24 * 60 * 60 * 1000);
+  // One sub can fail and the run goes on. Every sub failing means Reddit blocks this host (429s since the move to
+  // pc), and a run that fetched nothing must not beat as finished.
+  const failures: string[] = [];
   const fetchSub = async (sub: string) => {
     try {
       const res = await redditFetch(`https://www.reddit.com/r/${sub}/.rss`);
-      if (!res.ok) return console.warn(`r/${sub} fetch failed: ${res.status}`), [];
+      if (!res.ok) return console.warn(`r/${sub} fetch failed: ${res.status}`), failures.push(`HTTP ${res.status}`), [];
       return parseRedditEntries(await res.text()).map((i) => ({ sub, ...i }));
     } catch (err) {
       console.warn(`r/${sub} fetch error: ${(err as Error).message}`);
+      failures.push((err as Error).message);
       return [];
     }
   };
@@ -962,8 +963,15 @@ export async function redditBot(api: Api, opts: {
     ? (await Promise.all(sample.map((sub) => sweepOne(sub, fetchSub)))).flat().filter((i) => i.published > cutoff)
     : await sweepFeeds(sample, 4, fetchSub, (i) => i.published, cutoff);
   console.log(`Fetched ${fresh.length} fresh entries`);
+  if (failures.length === sample.length) {
+    throw new Error(
+      `redditBot: expected at least 1 of ${sample.length} subreddit feeds to load, received 0 (last: ${
+        failures.at(-1)
+      }; source: https://www.reddit.com/r/<sub>/.rss; likely fix: Reddit blocks this host's IP, see the OAuth entry in todo.md)`,
+    );
+  }
 
-  const posted = await getPostedUrls(api);
+  const posted = await getPostedUrls(api, fresh.map((i) => i.link));
   const todo = fresh.filter((i) => !posted.has(i.link)).sort((a, b) => b.published - a.published);
   const max = opts.maxPosts ?? 3;
   console.log(`${todo.length} new items after dedup; posting up to ${max}`);

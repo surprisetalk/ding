@@ -38,19 +38,13 @@
   2. Cut the cost where it lives (PGlite boot, child-process boots, real timers), then record the floor and its
      bottleneck in claude.md.
 
-- [ ] `blogs` finishes a run every hour. On pc its run fails with
-      `paginate: hit maxPages=50 for /c?usr=bot_blogs&sort=new&limit=100&p=0`: `getPostedUrls` already reads only the
-      30-day window, but bot_blogs posts more than 50 × 100 rows in 30 days
-      (`select count(*) from com where
-      created_by = 'bot_blogs' and created_at > now() - interval '30 days'`).
-  1. Replace the history read in bots/blogs.ts with a lookup of the candidate URLs only (one query over `com.links` for
-     this run's feed items), so the read no longer grows with post volume.
-  2. Test in bots.test.ts: a bot with 6,000 prior posts finishes a run.
-
-- [ ] `redditBot` throws when every subreddit fetch fails, so a blocked IP turns "Every bot finished a run" red, not
-      green. Today bot_reddit beats each hour but has posted nothing since 11-14: 3,457 "Reddit 429" lines on 11-20.
-  1. In `redditBot` (bots.ts), count failed `fetchSub` calls. When all fail, throw with the count and the last status.
-  2. Test in bots.test.ts: a stub that answers 429 for every sub makes the run throw.
+- [ ] A bot with more than 5,000 replies or votes in 30 days still finishes its run. `getAnsweredCids` and
+      `getReactedCids` (bots.ts) walk every recent row through `paginate` and throw at `maxPages=50`, as `getPostedUrls`
+      did for bot_blogs.
+  1. Give `Api` a lookup like `posted`: the subset of candidate cids this bot replied to (or reacted to) since a time.
+     Callers pass the cids of the posts they consider.
+  2. Delete `myRecent` and `cidsOf` once no caller remains.
+  3. Test in server.test.ts with the real `botApi`: 6,000 replies in the window, and the lookup answers.
 
 - [ ] You drop a room link into a post and talk to whoever is in it, and busy rooms climb the feed. Decision: real
       WebRTC, spartan — audio only, mesh, no SFU, no recording, no TURN. ~10% of peers behind symmetric NAT will fail to

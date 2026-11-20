@@ -71,7 +71,7 @@ export default async (api: Api) => {
   const newestPerFeed = await sweepFeeds(sample, CONCURRENCY, fetchFeed, (i) => +i.pubDate, cutoff);
   console.log(`Found ${newestPerFeed.length} recent items across sampled feeds`);
 
-  const posted = await getPostedUrls(api);
+  const posted = await getPostedUrls(api, newestPerFeed.map((i) => i.link));
   const todo = newestPerFeed
     .filter((i) => !posted.has(i.link))
     .filter((i) => !LOW_SIGNAL_TITLE.test(i.title.trim()))

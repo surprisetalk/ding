@@ -77,7 +77,7 @@ export default (api: Api) =>
     make: async () => {
       const rows = parseLectures(await Deno.readTextFile(LECTURES_PATH));
       // since: 0 reads the full history. The 30-day default would repost a talk after a month.
-      const posted = await getPostedUrls(api, { since: 0 });
+      const posted = await getPostedUrls(api, rows.map((r) => r.url), { since: 0 });
       const pick = pickLecture(rows, posted);
       if (!pick) throw new Error(`${api.botUsername}: all ${rows.length} rows in ${PATH} are posted. Add rows.`);
       return { body: formatLecture(pick), tags: ["#lecture", "#bot", ...pick.tags.map((t) => `#${t}`)].join(" ") };

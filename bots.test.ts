@@ -12,6 +12,7 @@ import {
   pickCandidates,
   type Post,
   R2Conflict,
+  redditBot,
   reply,
   scanBot,
   uploadToR2,
@@ -125,6 +126,7 @@ const fakeApi = (pages: unknown[][]): Api => {
     botUsername: "bot_test",
     orgsR: [],
     users: () => Promise.resolve([]),
+    posted: () => Promise.resolve(new Set()),
     feed: () => Promise.resolve(pages[i++] ?? []),
     post: () => Promise.resolve(true),
   };
@@ -184,6 +186,7 @@ const mentionApi = (opts: {
     botUsername: "bot_test",
     orgsR: [],
     users: () => Promise.resolve([]),
+    posted: () => Promise.resolve(new Set()),
     // The real `/c` treats `comments=1` as comments INSTEAD OF roots, so the harness must
     // issue both queries; serving mentions from only the root call proves it does.
     feed: (q) =>
@@ -310,6 +313,7 @@ const verdictApi = (opts: {
     botUsername: "bot_test",
     orgsR: [],
     users: () => Promise.resolve([]),
+    posted: () => Promise.resolve(new Set()),
     feed: (q) =>
       Promise.resolve(
         q.reactionsOnly ? (opts.reacted ?? []) : q.usrs?.length || q.commentsOnly ? [] : opts.fresh,
@@ -504,6 +508,7 @@ const scanApi = (fresh: Partial<Post>[]) => {
     botUsername: "bot_test",
     orgsR: [],
     users: () => Promise.resolve([]),
+    posted: () => Promise.resolve(new Set()),
     // The answered walk (usr + comments=1) returns nothing; everything else is the fresh feed.
     feed: (q) => Promise.resolve(q.usrs?.length ? [] : fresh),
     post: (body, o) => {
@@ -661,4 +666,24 @@ Deno.test("uploadToR2: 412 becomes R2Conflict, not a generic upload failure", as
     assertEquals(e instanceof R2Conflict, true);
     assertEquals((e as Error).message.includes("i/a1b2c3d4.png"), true);
   });
+});
+
+Deno.test("redditBot: every subreddit feed failing throws instead of finishing quietly", async () => {
+  const realFetch = globalThis.fetch;
+  const urls: string[] = [];
+  globalThis.fetch = (input) => (urls.push(String(input)), Promise.resolve(new Response("", { status: 403 })));
+  const api: Api = {
+    botUsername: "bot_test",
+    orgsR: [],
+    users: () => Promise.resolve([]),
+    posted: () => Promise.resolve(new Set()),
+    feed: () => Promise.resolve([]),
+    post: () => Promise.resolve(true),
+  };
+  try {
+    await assertRejects(() => redditBot(api, { subs: ["a", "b"] }), Error, "expected at least 1 of 2 subreddit feeds");
+    assertEquals(urls.length, 2);
+  } finally {
+    globalThis.fetch = realFetch;
+  }
 });

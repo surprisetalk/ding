@@ -4240,6 +4240,15 @@ export const botApi = async (envPrefix: string): Promise<Api | null> => {
     botUsername: usr.name,
     orgsR: usr.orgs_r,
     users: async (limit) => JSON.parse(JSON.stringify(await verifiedUsers(limit))),
+    // Same URL pattern the bots used to scan bodies with: https?://[^\s]+, matched whole.
+    posted: async (urls, since) =>
+      new Set(
+        (await sql<{ url: string }[]>`
+          select distinct m[1] as url
+          from com, regexp_matches(body, '(https?://\\S+)', 'g') m
+          where created_by = ${usr.name} and created_at >= ${new Date(since)} and m[1] = any(${urls}::text[])`)
+          .map((r) => r.url),
+      ),
     feed: async (q) => {
       const rows = await feedPosts(q as FeedQuery);
       // Bots were written against JSON responses, so hand them JSON-shaped rows: postgres.js

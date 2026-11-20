@@ -84,7 +84,7 @@ export default async (api: Api) => {
   const newestPerChannel = await sweepFeeds(sample, CONCURRENCY, fetchFeed, (i) => +i.pubDate, cutoff);
   console.log(`Found ${newestPerChannel.length} recent videos across sampled channels`);
 
-  const posted = await getPostedUrls(api);
+  const posted = await getPostedUrls(api, newestPerChannel.map((i) => i.link));
   const todo = newestPerChannel
     .filter((i) => !posted.has(i.link) && !i.link.includes("/shorts/"))
     .sort((a, b) => +b.pubDate - +a.pubDate);

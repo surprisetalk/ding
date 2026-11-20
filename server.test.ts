@@ -3853,8 +3853,22 @@ Deno.test(
       assertEquals(await post(api, "transport check https://example.com/xyz", "#bot"), true);
     });
 
-    await t.step("getPostedUrls() reads the same row back", async () => {
-      assertEquals((await getPostedUrls(api)).has("https://example.com/xyz"), true);
+    await t.step("getPostedUrls() reads the same row back, and only the candidates asked for", async () => {
+      const got = await getPostedUrls(api, [
+        "https://example.com/xyz",
+        "https://example.com/xy",
+        "https://example.com/new",
+      ]);
+      assertEquals([...got], ["https://example.com/xyz"]);
+    });
+
+    await t.step("getPostedUrls() answers for a bot with 6,000 posts in the window", async () => {
+      await sql`insert into com (created_by, body, tags)
+        select 'john_doe', 'bulk https://bulk.example/' || g, '{bot}' from generate_series(1, 6000) g`;
+      const got = await getPostedUrls(api, ["https://bulk.example/5999", "https://bulk.example/6001"]);
+      assertEquals([...got], ["https://bulk.example/5999"]);
+      assertEquals((await getPostedUrls(api, ["https://bulk.example/5999"], { since: Date.now() + 60_000 })).size, 0);
+      await sql`delete from com where body like 'bulk https://bulk.example/%'`;
     });
 
     // The password is still verified — once per run instead of once per request. It is what
