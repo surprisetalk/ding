@@ -1,3 +1,8 @@
+- [ ] `deno task test` finishes in under 10 s. Fact: on 6 Nov, it took 10 s.
+  1. Find the bottleneck before you change the suite.
+  2. Fix the suite. Do not split it or park it. When the cheap cuts are spent, record the floor and its bottleneck in
+     claude.md once.
+
 - [ ] You scroll a feed of cards in masonry columns: each post fills its card with an image (og:image, a screenshot of
       the link, or an uploaded image), the title, and an article excerpt. Decision: the grid wins over the "craigslist
       density" direction, so text-only posts get a quiet default card instead of a dense row. Decision: masonry columns,
