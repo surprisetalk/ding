@@ -4407,21 +4407,7 @@ const checks: { cond: string; fix: string; grade: () => Promise<number> }[] = [
       return row ? 86400 / Math.max(row.age, 1) : 0;
     },
   },
-  {
-    cond: "The disk that holds Postgres is under 90% full.",
-    fix:
-      "pc's disk is nearly full: run `sudo du -xh --max-depth=2 / | sort -h | tail` on pc, and find big tables with pg_total_relation_size",
-    // Deno has no statfs, so ask df. pc keeps Postgres and ding on one root filesystem.
-    grade: async () => {
-      const out = await new Deno.Command("df", { args: ["--output=pcent", "/"], signal: AbortSignal.timeout(5_000) })
-        .output();
-      const text = new TextDecoder().decode(out.stdout);
-      const pct = Number(text.match(/(\d+)%/)?.[1]);
-      if (!out.success || !Number.isFinite(pct))
-        throw new Error(`df --output=pcent /: expected a percentage, received ${JSON.stringify(text)}`);
-      return 90 / Math.max(pct, 1);
-    },
-  },
+  // NOTE: The status check grades no free disk space. Alternative: grade it here. It turns red in every project on the host when one disk fills.
   {
     cond: "The host has 10% of its RAM available.",
     fix: "pc is short of memory: run `systemctl status` and `ps aux --sort=-rss | head` on pc",

@@ -4906,7 +4906,6 @@ Deno.test(
         "Every cron ran inside twice its period.",
         "The anonymous frontpage renders in 300ms.",
         "The dht ingested a row in the past 24h.",
-        "The disk that holds Postgres is under 90% full.",
         "The host has 10% of its RAM available.",
         "ding used under one CPU core on average since it started.",
         "The nightly pg_dump is under 26 hours old.",
@@ -4945,9 +4944,9 @@ Deno.test(
 
       await t.step("the tagger cap grades today's spend row", async () => {
         await sql`delete from spend`;
-        assertEquals((await grades())[SENTENCES[9]], 160);
+        assertEquals((await grades())[SENTENCES[8]], 160);
         await sql`insert into spend (day, name, n) values ((now() at time zone 'utc')::date, 'tagger', 320)`;
-        assertEquals((await grades())[SENTENCES[9]], 0.5);
+        assertEquals((await grades())[SENTENCES[8]], 0.5);
         await sql`delete from spend`;
       });
 
@@ -5087,7 +5086,7 @@ Deno.test(
         const dns = Deno.resolveDns;
         Deno.resolveDns = (() => Promise.reject(new Error("resolver unreachable"))) as typeof Deno.resolveDns;
         try {
-          assertEquals((await get()).body[SENTENCES[10]]["0"], 0);
+          assertEquals((await get()).body[SENTENCES[9]]["0"], 0);
         } finally {
           Deno.resolveDns = dns;
         }
