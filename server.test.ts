@@ -4881,9 +4881,14 @@ Deno.test(
   "status",
   pgtest((sql) => async (t) => {
     // nightly.dump exists only on pc, so every step sees a fresh one. The test runner burns CPU that ding would not,
-    // so ding's CPU reads idle. Both grades are plain arithmetic.
-    const stat = Deno.stat, cpuUsage = process.cpuUsage;
+    // so ding's CPU reads idle. The suite takes about 2.6 GB and pc's llama servers grow and shrink, so the host's RAM
+    // reads half free. All three grades are plain arithmetic.
+    const stat = Deno.stat, cpuUsage = process.cpuUsage, memInfo = Deno.systemMemoryInfo;
     process.cpuUsage = () => ({ user: 0, system: 0 });
+    Deno.systemMemoryInfo = () => {
+      const m = memInfo();
+      return { ...m, available: m.total / 2 };
+    };
     Deno.stat =
       ((p: string | URL) =>
         String(p).endsWith("/nightly.dump")
@@ -5094,6 +5099,7 @@ Deno.test(
     } finally {
       Deno.stat = stat;
       process.cpuUsage = cpuUsage;
+      Deno.systemMemoryInfo = memInfo;
       globalThis.fetch = origFetch;
       Deno.env.delete("DENO_DEPLOYMENT_ID");
     }
